@@ -16,7 +16,7 @@ terraform {
 provider "cloudpilotai" {
   # API URL for the CloudPilot AI API endpoint
   # Optional. Default is "https://api.cloudpilot.ai"
-  api_url = "https://api.cloudpilot.ai"
+  api_endpoint = "https://api.cloudpilot.ai"
 
   # API key for CloudPilot AI - REQUIRED
   # Can be provided in multiple ways (in order of priority):
