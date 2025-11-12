@@ -79,9 +79,10 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 	clusterUID := api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
 	data.ClusterID = types.StringValue(clusterUID)
 
-	// 1. install cloudpilot ai agent component
-	if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-		data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+	agentInstalled := false
+	if _, err := c.client.GetCluster(clusterUID); err == nil {
+		agentInstalled = true
+	} else if !errors.Is(err, cloudpilitaiclient.ErrNotFound) {
 		resp.Diagnostics.AddError(
 			"failed to install CloudPilot AI agent component",
 			err.Error(),
@@ -89,6 +90,21 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
+	if !agentInstalled {
+		// 1. install cloudpilot ai agent component
+		tflog.Info(ctx, "installing CloudPilot AI agent component")
+		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to install CloudPilot AI agent component",
+				err.Error(),
+			)
+			return
+		}
+		tflog.Info(ctx, "installed CloudPilot AI agent component successfully")
+	}
+
+	tflog.Info(ctx, "waiting for cloudpilot ai agent component to be ready")
 	if err := wait.PollUntilContextTimeout(ctx, 10*time.Second, 5*time.Minute, true, func(ctx context.Context) (done bool, err error) {
 		_, err = c.client.GetCluster(clusterUID)
 		if err != nil {
@@ -108,19 +124,37 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	if !data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool() || data.EnableUpgradeRebalanceComponent.ValueBool() {
-		// 1.2. install cloudpilot ai rebalance component
-		if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-			clusterUID, data.Kubeconfig.ValueString()); err != nil {
-			resp.Diagnostics.AddError(
-				"failed to install CloudPilot AI rebalance component",
-				err.Error(),
-			)
-			return
+	rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to get rebalance configuration",
+			err.Error(),
+		)
+		return
+	}
+
+	rebalanceComponentInstalled := !rebalanceConfig.LastComponentsActiveTime.IsZero()
+
+	if !data.OnlyInstallAgent.ValueBool() ||
+		data.EnableRebalance.ValueBool() ||
+		data.EnableUpgradeRebalanceComponent.ValueBool() {
+		if !rebalanceComponentInstalled {
+			// 1.2. install cloudpilot ai rebalance component
+			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
+			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
+				clusterUID, data.Kubeconfig.ValueString()); err != nil {
+				resp.Diagnostics.AddError(
+					"failed to install CloudPilot AI rebalance component",
+					err.Error(),
+				)
+				return
+			}
+			tflog.Info(ctx, "installed CloudPilot AI rebalance component successfully")
 		}
 	}
 
 	// 2. sync configurations
+	tflog.Info(ctx, "syncing cluster configuration")
 	if err := c.syncConfiguration(ctx, &data, clusterUID); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
@@ -153,6 +187,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	data.ClusterID = types.StringValue(clusterUID)
 
 	upgradeAgentComponent := data.EnableUpgradeAgent.ValueBool()
+	agentExist := true
 	if !upgradeAgentComponent {
 		_, err := c.client.GetCluster(clusterUID)
 		if err != nil {
@@ -164,11 +199,16 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 				return
 			}
 			upgradeAgentComponent = true
+			agentExist = false
 		}
 	}
 
-	if upgradeAgentComponent {
+	upgradedAgent := false
+	// If the agent does not exist when upgrading, install the agent first,
+	// otherwise you should upgrade the rebalance component first, then the agent component.
+	if upgradeAgentComponent && !agentExist {
 		// upgrade cloudpilot ai agent component
+		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
 			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
 			resp.Diagnostics.AddError(
@@ -177,6 +217,9 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 			)
 			return
 		}
+
+		upgradedAgent = true
+		tflog.Info(ctx, "upgraded CloudPilot AI agent component successfully")
 	}
 
 	upgradeRebalanceComponent := data.EnableUpgradeRebalanceComponent.ValueBool()
@@ -197,6 +240,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 
 	if upgradeRebalanceComponent {
 		// upgrade cloudpilot ai rebalance component
+		tflog.Info(ctx, "upgrading CloudPilot AI rebalance component")
 		if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
 			clusterUID, data.Kubeconfig.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
@@ -205,8 +249,24 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 			)
 			return
 		}
+		tflog.Info(ctx, "upgraded CloudPilot AI rebalance component successfully")
 	}
 
+	if !upgradedAgent && agentExist {
+		// upgrade cloudpilot ai agent component
+		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
+		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to upgrade CloudPilot AI agent component",
+				err.Error(),
+			)
+			return
+		}
+		tflog.Info(ctx, "upgraded CloudPilot AI agent component successfully")
+	}
+
+	tflog.Info(ctx, "syncing cluster configuration")
 	if err := c.syncConfiguration(ctx, &data, clusterUID); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
@@ -489,24 +549,32 @@ func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
 
 func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clusterUID string) error {
 	// sync workload configurations
+	tflog.Info(ctx, "syncing workload configuration")
 	if err := helper.SyncWorkloadConfiguration(ctx, c.client, clusterUID, data.Workloads, data.WorkloadTemplates); err != nil {
 		return fmt.Errorf("failed to sync workload configuration: %w", err)
 	}
+	tflog.Info(ctx, "synced workload configuration successfully")
 
 	// sync nodepool configurations
+	tflog.Info(ctx, "syncing nodepool configuration")
 	if err := helper.SyncEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates); err != nil {
 		return fmt.Errorf("failed to sync nodepool configuration: %w", err)
 	}
+	tflog.Info(ctx, "synced nodepool configuration successfully")
 
 	// sync nodeclass configurations
+	tflog.Info(ctx, "syncing nodeclass configuration")
 	if err := helper.SyncEC2NodeClassConfiguration(ctx, c.client, clusterUID, data.ClusterName.ValueString(), data.NodeClasses, data.NodeClassTemplates); err != nil {
 		return fmt.Errorf("failed to sync nodeclass configuration: %w", err)
 	}
+	tflog.Info(ctx, "synced nodeclass configuration successfully")
 
 	// sync rebalance configuration
+	tflog.Info(ctx, "syncing rebalance configuration")
 	if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterUID, data.EnableRebalance.ValueBool(), data.EnableUploadConfig.ValueBool(), data.EnableDiversityInstanceType.ValueBool()); err != nil {
 		return fmt.Errorf("failed to sync rebalance configuration: %w", err)
 	}
+	tflog.Info(ctx, "synced rebalance configuration successfully")
 
 	return nil
 }

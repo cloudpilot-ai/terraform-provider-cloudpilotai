@@ -39,12 +39,7 @@ func InstallCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilo
 	return ExecuteSH(ctx, rebalanceSH, map[string]string{"KUBECONFIG": kubeconfigPath})
 }
 
-const (
-	// Delete the optimized nodes created by CloudPilot AI
-	DeleteOptimizedNodesSH = `for node in $(kubectl get node -l node.cloudpilot.ai/managed=true 2> /dev/null | grep -v 'No resources found' | tail -n +2 | awk '{print $1}'); do kubectl drain $node --ignore-daemonsets --delete-emptydir-data --force; done`
-	// Wait for the nodes created by CloudPilot AI to be removed
-	WaitForOptimizedNodesDeletedSH = `kubectl delete nodeclaim --all; while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
-)
+const DeleteOptimizedNodesSH = `kubectl delete nodeclaim --all; while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
 
 func GetCloudpilotAIOptimizedNodeNumber(ctx context.Context, kubeconfigPath string) (int64, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", `kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length'`)
@@ -88,10 +83,6 @@ func RestoreCloudpilotAIComponent(ctx context.Context, client cloudpilotaiclient
 	}
 
 	if err := ExecuteSH(ctx, DeleteOptimizedNodesSH, map[string]string{"KUBECONFIG": kubeconfigPath}); err != nil {
-		return err
-	}
-
-	if err := ExecuteSH(ctx, WaitForOptimizedNodesDeletedSH, map[string]string{"KUBECONFIG": kubeconfigPath}); err != nil {
 		return err
 	}
 

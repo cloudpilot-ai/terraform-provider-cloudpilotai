@@ -51,11 +51,11 @@ resource "cloudpilotai_eks_cluster" "example" {
   only_install_agent = false
 
   # Enable upgrading the CloudPilot AI agent
-  # Optional. Default is true.
-  enable_upgrade_agent = true
+  # Optional. Default is false.
+  enable_upgrade_agent = false
   # Enable upgrading the CloudPilot AI rebalance component. Ignores `only_install_agent` if set to true.
-  # Optional. Default is true.
-  enable_upgrade_rebalance_component = true
+  # Optional. Default is false.
+  enable_upgrade_rebalance_component = false
 
   # Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
   # Optional. Default is true.
