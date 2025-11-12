@@ -71,13 +71,13 @@ func Schema(ctx context.Context) schema.Schema {
 				Description: "Enable upgrading the CloudPilot AI agent",
 				Optional:    true,
 				Computed:    true,
-				Default:     booldefault.StaticBool(true),
+				Default:     booldefault.StaticBool(false),
 			},
 			"enable_upgrade_rebalance_component": schema.BoolAttribute{
 				Description: "Enable upgrading the CloudPilot AI rebalance component. Ignores `only_install_agent` if set to true.",
 				Optional:    true,
 				Computed:    true,
-				Default:     booldefault.StaticBool(true),
+				Default:     booldefault.StaticBool(false),
 			},
 
 			// rebalance configurations

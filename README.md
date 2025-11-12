@@ -21,6 +21,8 @@ Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation 
 
 - **[Terraform](https://developer.hashicorp.com/terraform/install)** - Version 1.0 or later
 - **[AWS CLI](https://docs.aws.amazon.com/zh_cn/cli/latest/userguide/getting-started-install.html)** - Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as updating kubeconfig. If you haven't created an EKS cluster yet, see the example setup: [eks-ondemand](https://github.com/cloudpilot-ai/examples/tree/main/clusters/eks-ondemand)
+  - **Important**: Even if you provide a `kubeconfig` path, AWS CLI permissions are still required. The kubeconfig parameter only prevents the provider from generating a new kubeconfig file; all kubectl operations still require proper AWS credentials.
+  - **Multi-account setup**: If your AWS CLI is configured with multiple accounts/profiles, ensure you switch to the correct account that matches your EKS cluster before running Terraform commands.
 - **[Kubectl](https://kubernetes.io/docs/tasks/tools)** - For cluster operations and component management
 - **CloudPilot AI API key** - See [CloudPilot AI API Key Documentation](https://docs.cloudpilot.ai/guide/getting_started/get_apikeys) for setup instructions
 
