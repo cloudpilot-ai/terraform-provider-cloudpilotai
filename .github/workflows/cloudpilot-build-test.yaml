@@ -1,0 +1,23 @@
+name: CloudPilot build test
+
+on:
+  pull_request:
+    branches: [ "main", "release-*"]
+
+jobs:
+  build-test:
+    name: CloudPilot build test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: true
+
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.1'
+          cache: false
+
+      - name: build test
+        run: |
+          go build ./...
