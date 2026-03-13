@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strconv"
+	"strings"
 
 	alibabacloudproviderv1alpha1 "github.com/cloudpilot-ai/lib/pkg/alibabacloud/karpenter-provider-alibabacloud/apis/v1alpha1"
 	alibabacloudcorev1 "github.com/cloudpilot-ai/lib/pkg/alibabacloud/karpenter/apis/v1"
@@ -119,6 +120,10 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	if e.NodeClassSpec.Tags != nil {
 		tagsMap := make(map[string]types.String)
 		for k, v := range e.NodeClassSpec.Tags {
+			if k == CloudPilotManagedNodeLabelKey {
+				continue
+			}
+			v = strings.Trim(v, "\"")
 			tagsMap[k] = types.StringValue(v)
 		}
 		instanceTags, diagnostic := customfield.NewMap[types.String](ctx, tagsMap)
@@ -214,7 +219,9 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 		nodePoolModel.NodeDisruptionLimit = types.StringValue(e.NodePoolSpec.Disruption.Budgets[0].Nodes)
 	}
 
-	nodePoolModel.NodeDisruptionDelay = types.StringValue(string(e.NodePoolSpec.Disruption.ConsolidateAfter.Raw))
+	if e.NodePoolSpec.Disruption.ConsolidateAfter.Duration != nil {
+		nodePoolModel.NodeDisruptionDelay = types.StringValue(NormalizeDuration(e.NodePoolSpec.Disruption.ConsolidateAfter.Duration.String()))
+	}
 
 	return &nodePoolModel, nil
 }

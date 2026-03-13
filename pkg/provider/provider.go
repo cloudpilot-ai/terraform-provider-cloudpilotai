@@ -13,7 +13,10 @@ import (
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/consts"
+	eksds "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/nodeautoscale/eks"
+	wads "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/workloadautoscaler"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/nodeautoscale/eks"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/workloadautoscaler"
 )
 
 type CloudpilotaiProvider struct {
@@ -68,10 +71,14 @@ func (p *CloudpilotaiProvider) Configure(ctx context.Context, req provider.Confi
 	client := client.NewCloudPilotClient(data.APIEndpoint.ValueString(), apikey)
 
 	resp.ResourceData = client
+	resp.DataSourceData = client
 }
 
 func (p *CloudpilotaiProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
-	return []func() datasource.DataSource{}
+	return []func() datasource.DataSource{
+		eksds.NewClusterDataSource,
+		wads.NewWorkloadAutoscalerDataSource,
+	}
 }
 
 func (p *CloudpilotaiProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
@@ -82,6 +89,7 @@ func (p *CloudpilotaiProvider) Metadata(ctx context.Context, req provider.Metada
 func (p *CloudpilotaiProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		eks.NewCluster,
+		workloadautoscaler.NewWorkloadAutoscaler,
 	}
 }
 

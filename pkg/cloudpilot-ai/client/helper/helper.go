@@ -200,6 +200,7 @@ func SyncWorkloadConfiguration(ctx context.Context, client cloudpilotaiclient.In
 func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclient.Interface, clusterUID, clusterName string,
 	nodeClassesNestedObjectList customfield.NestedObjectList[api.EC2NodeClassModel],
 	nodeClassesTemplateNestedObjectList customfield.NestedObjectList[api.EC2NodeClassTemplateModel],
+	previousStateNames map[string]struct{},
 ) error {
 	if nodeClassesNestedObjectList.IsNullOrUnknown() {
 		return nil
@@ -263,9 +264,12 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 		}
 	}
 
-	for ni := range existingNodeClasses.EC2NodeClasses {
-		if _, ok := nodeClassNames[existingNodeClasses.EC2NodeClasses[ni].Name]; !ok {
-			if err := client.DeleteNodeClass(clusterUID, existingNodeClasses.EC2NodeClasses[ni].Name); err != nil {
+	// Only delete nodeclasses that were previously tracked in Terraform state
+	// but are no longer in the desired configuration. Server-side nodeclasses
+	// not managed by Terraform are left untouched.
+	for name := range previousStateNames {
+		if _, stillDesired := nodeClassNames[name]; !stillDesired {
+			if err := client.DeleteNodeClass(clusterUID, name); err != nil {
 				return err
 			}
 		}
@@ -277,6 +281,7 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient.Interface, clusterUID string,
 	nodePoolsNestedObjectList customfield.NestedObjectList[api.EC2NodePoolModel],
 	nodePoolsTemplateNestedObjectList customfield.NestedObjectList[api.EC2NodePoolTemplateModel],
+	previousStateNames map[string]struct{},
 ) error {
 	if nodePoolsNestedObjectList.IsNullOrUnknown() {
 		return nil
@@ -346,9 +351,12 @@ func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient
 		}
 	}
 
-	for ni := range existingNodePools.EC2NodePools {
-		if _, ok := nodePoolNames[existingNodePools.EC2NodePools[ni].Name]; !ok {
-			if err := client.DeleteNodePool(clusterUID, existingNodePools.EC2NodePools[ni].Name); err != nil {
+	// Only delete nodepools that were previously tracked in Terraform state
+	// but are no longer in the desired configuration. Server-side nodepools
+	// not managed by Terraform are left untouched.
+	for name := range previousStateNames {
+		if _, stillDesired := nodePoolNames[name]; !stillDesired {
+			if err := client.DeleteNodePool(clusterUID, name); err != nil {
 				return err
 			}
 		}
