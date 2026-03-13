@@ -30,22 +30,21 @@ Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation 
 
 ## Example Usage
 
-See the [`examples/`](examples/) directory for real-world configurations.
-
-**All examples default to basic installation without enabling Node Autoscaler optimization.** Optimization options (`only_install_agent`, `enable_rebalance`) are defined as variables — modify them in `terraform.tfvars` and re-apply to enable optimization when ready.
+See the [`examples/eks/`](examples/eks/) directory for EKS configurations, ordered from minimal to full-featured.
 
 | Example | Description | Use Case |
 |---------|-------------|----------|
-| [`0_details`](examples/nodeautoscale/eks/0_details/) | Full-featured reference with all options | Production setup with workload templates, nodeclasses, nodepools, Workload Autoscaler, and data sources |
-| [`1_read-only_access`](examples/nodeautoscale/eks/1_read-only_access/) | Minimal agent-only installation | Testing or monitoring without any optimization changes |
-| [`2_basic_rebalance`](examples/nodeautoscale/eks/2_basic_rebalance/) | Basic rebalance configuration | Simple cost optimization with rebalancing |
-| [`3_nodeclass_nodepool_rebalance`](examples/nodeautoscale/eks/3_nodeclass_nodepool_rebalance/) | Custom nodeclass and nodepool | Advanced node management with instance filtering and disruption controls |
+| [`0_minimal`](examples/eks/0_minimal/) | Minimal setup with Node Autoscaler and Workload Autoscaler | Quick start: installs both autoscalers, enables optimization for `cloudpilot` namespace, no rebalance |
+| [`1_details`](examples/eks/1_details/) | Full-featured reference with all options | Production setup with workload templates, nodeclasses, nodepools, Workload Autoscaler, and data sources |
+| [`2_read-only_access`](examples/eks/2_read-only_access/) | Agent-only installation | Testing or monitoring without any optimization changes |
+| [`3_basic_rebalance`](examples/eks/3_basic_rebalance/) | Basic rebalance configuration | Simple cost optimization with rebalancing |
+| [`4_nodeclass_nodepool_rebalance`](examples/eks/4_nodeclass_nodepool_rebalance/) | Custom nodeclass and nodepool | Advanced node management with instance filtering and disruption controls |
 
 Each example folder contains:
 - `main.tf` — resource definitions
-- `variables.tf` — variable declarations (including optimization toggles)
+- `variables.tf` — variable declarations
 - `terraform.tfvars.example` — sample variable values (copy to `terraform.tfvars` to use)
-- `README.md` — usage instructions with a two-step workflow (install → enable optimization)
+- `README.md` — usage instructions
 
 ---
 
