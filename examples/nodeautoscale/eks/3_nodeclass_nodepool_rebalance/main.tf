@@ -1,4 +1,3 @@
-
 terraform {
   required_providers {
     cloudpilotai = {
@@ -7,48 +6,30 @@ terraform {
   }
 }
 
-# variable "CLOUDPILOT_API_KEY" {
-#   description = "CloudPilot AI API key"
-#   type        = string
-#   sensitive   = true
-# }
-
+# Configure the CloudPilot AI Provider
 provider "cloudpilotai" {
-  # API key for CloudPilot AI - REQUIRED
-  # Can be provided in multiple ways (in order of priority):
-  # 1. Directly in provider block using 'api_key'
-  # 2. Via file path using 'api_key_profile'
-  # api_key_profile = ""       # Optional: Path to a file containing the API key
-  # 3. Via environment variable 'TF_VAR_CLOUDPILOT_API_KEY'
-  # api_key = var.CLOUDPILOT_API_KEY
-  # If none of these methods provide an API key, an error will occur
-  api_key = "sk-xxx" # Obtained via cloudpilot.ai console
+  api_endpoint = var.cloudpilot_api_endpoint
+  api_key      = var.cloudpilot_api_key
 }
 
 # Basic EKS cluster configuration with CloudPilot AI agent
 resource "cloudpilotai_eks_cluster" "example" {
-  # Name of the EKS cluster to be managed
-  # ⚠️ Required
-  cluster_name = "my-eks-cluster"
-  # AWS region where the EKS cluster is located
-  # ⚠️ Required
-  region = "us-west-2"
-  # Required node count when uninstalling CloudPilot AI after optimization is enabled.
-  # Please configure this manually. A simple approach is to check current node count with:
-  # kubectl get node --no-headers=true | wc -l
-  # Then set this value to your desired node count for cluster restoration.
-  # ⚠️ Required
-  restore_node_number = 2
+  cluster_name        = var.cluster_name
+  region              = var.region
+  restore_node_number = var.restore_node_number
 
-  #   --- Optional configurations with default values shown ---
+  # --- Node Autoscaler Optimization ---
+  # `only_install_agent` and `enable_rebalance` are controlled by variables in variables.tf.
+  # To enable optimization, modify them in terraform.tfvars and re-apply.
+
+  only_install_agent = var.only_install_agent
+  enable_rebalance   = var.enable_rebalance
+
+  # --- Optional configurations with default values shown ---
 
   # Disable automatic uploading of workload information to CloudPilot AI
   # Optional. Default is false.
   disable_workload_uploading = false
-
-  # Only install the CloudPilot AI agent without additional configuration
-  # Optional. Default is false.
-  only_install_agent = false
 
   # Enable upgrading the CloudPilot AI agent
   # Optional. Default is false.
@@ -57,9 +38,6 @@ resource "cloudpilotai_eks_cluster" "example" {
   # Optional. Default is false.
   enable_upgrade_rebalance_component = false
 
-  # Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
-  # Optional. Default is true.
-  enable_rebalance = true
   # Enable uploading of nodepool and nodeclass configuration to CloudPilot AI
   # Optional. Default is true.
   enable_upload_config = true
@@ -67,17 +45,17 @@ resource "cloudpilotai_eks_cluster" "example" {
   # Optional. Default is false.
   enable_diversity_instance_type = false
 
-
-
-  # Define custom nodeclasses for different workload types
+  # Define custom nodeclasses for different workload types.
+  # The default name used by CloudPilot AI is "cloudpilot".
   # Optional
   nodeclasses = [
     {
-      name = "cloudpilotai-nodeclass"
+      # Required. Must match the system default name "cloudpilot".
+      name = "cloudpilot"
 
-      # Each provisioned node will have the configured tags as key-value pairs. Defaults to `node.cloudpilot.ai/managed=true` if not specified.
-      # Optional. Default is {"node.cloudpilot.ai/managed" = "true"}.
-      instance_tags = { "node.cloudpilot.ai/managed" = "true" }
+      # Each provisioned node will have the configured tags as key-value pairs.
+      # Optional. Default is {"cloudpilot.ai/managed" = "true"}.
+      instance_tags = { "cloudpilot.ai/managed" = "true" }
       # Each provisioned node's system storage size, default to be 20 GiB.
       # Optional. Default is 20.
       system_disk_size_gib = 20
@@ -90,33 +68,37 @@ resource "cloudpilotai_eks_cluster" "example" {
     }
   ]
 
-  # Define custom nodepools for workload distribution
+  # Define custom nodepools for workload distribution.
+  # The default name used by CloudPilot AI is "cloudpilot-general".
   # Optional
   nodepools = [
     {
-      name = "cloudpilotai-nodepool"
+      # Required. Must match the system default name "cloudpilot-general".
+      name = "cloudpilot-general"
 
+      # Optional. Default is true.
       enable = true
-      # Select the nodeclass to use for this nodepool.
-      nodeclass = "cloudpilotai-nodeclass"
+      # Select the nodeclass to use for this nodepool. Must match a defined nodeclass name.
+      # Required.
+      nodeclass = "cloudpilot"
 
       # Enable GPU instances in this nodepool.
       # Optional, default is false.
       enable_gpu = false
 
       # The priority level of this nodepool. A larger number means a higher priority.
-      # Optional, default is 1.
-      provision_priority = 1
-      # "The target instance architecture, if the instance family is configured, this field will be ignored."
-      # Optional, default is amd64 and arm64.
-      instance_arch = ["amd64", "arm64"]
-      # The target instance family, like t3, m5 and so on, split by comma.
+      # Optional, default is 2.
+      provision_priority = 2
+      # The target instance architecture.
+      # Optional, default is amd64.
+      instance_arch = ["amd64"]
+      # The target instance family, like t3, m5 and so on.
       # Optional, default is all families.
       instance_family = []
       # The provisioned node's capacity type, on-demand or spot.
       # Optional, default is both on-demand and spot.
-      capacity_type = ["on-demand", "spot"]
-      # "Each provisioned node will located in the configured zone, formatted as us-west-1a,us-west-1b."
+      capacity_type = ["spot", "on-demand"]
+      # Each provisioned node will be located in the configured zone.
       # Optional, default is all zones in the region.
       zone = []
       # Minimum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.

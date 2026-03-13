@@ -153,9 +153,9 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		}
 	}
 
-	// 2. sync configurations
+	// 2. sync configurations (no previous state on Create, so pass nil — nothing to delete)
 	tflog.Info(ctx, "syncing cluster configuration")
-	if err := c.syncConfiguration(ctx, &data, clusterUID); err != nil {
+	if err := c.syncConfiguration(ctx, &data, clusterUID, nil, nil); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
 			err.Error(),
@@ -170,10 +170,23 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *resource.UpdateResponse) {
 	var data ClusterModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
-
 	if resp.Diagnostics.HasError() {
 		return
 	}
+
+	// Read previous state to know which nodeclasses/nodepools were previously tracked
+	var state ClusterModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	previousNCNames := extractResourceNames(ctx, state.NodeClasses, func(m api.EC2NodeClassModel) string {
+		return m.Name.ValueString()
+	})
+	previousNPNames := extractResourceNames(ctx, state.NodePools, func(m api.EC2NodePoolModel) string {
+		return m.Name.ValueString()
+	})
 
 	if err := c.fillMissingParameters(&data); err != nil {
 		resp.Diagnostics.AddError(
@@ -223,7 +236,8 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	}
 
 	upgradeRebalanceComponent := data.EnableUpgradeRebalanceComponent.ValueBool()
-	if !upgradeRebalanceComponent && data.EnableRebalance.ValueBool() {
+	if !upgradeRebalanceComponent &&
+		(!data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool()) {
 		rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -267,7 +281,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	}
 
 	tflog.Info(ctx, "syncing cluster configuration")
-	if err := c.syncConfiguration(ctx, &data, clusterUID); err != nil {
+	if err := c.syncConfiguration(ctx, &data, clusterUID, previousNCNames, previousNPNames); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
 			err.Error(),
@@ -339,20 +353,21 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return
 		}
 		workloadM := lo.SliceToMap(workloadConfiguration.Workloads, func(item api.Workload) (string, api.Workload) {
-			return item.Namespace + item.Type + item.Name, item
+			return item.Namespace + "/" + item.Type + "/" + item.Name, item
 		})
 
 		for wi := range workloadModels {
-			k := workloadConfiguration.Workloads[wi].Namespace + workloadConfiguration.Workloads[wi].Type + workloadConfiguration.Workloads[wi].Name
+			k := workloadModels[wi].Namespace.ValueString() + "/" + workloadModels[wi].Type.ValueString() + "/" + workloadModels[wi].Name.ValueString()
 			if v, ok := workloadM[k]; ok {
+				stateTemplateName := workloadModels[wi].TemplateName
 				workloadModels[wi] = *v.ToWorkloadModel()
+				workloadModels[wi].TemplateName = stateTemplateName
 			}
 		}
 		data.Workloads = customfield.NewObjectListMust(ctx, workloadModels)
 	}
 
 	if !data.NodeClasses.IsNullOrUnknown() {
-		// read nodeclass configuration
 		nodeClassList, err := c.client.ListNodeClasses(clusterUID)
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -362,24 +377,39 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return
 		}
 
-		nodeClassModels := make([]api.EC2NodeClassModel, 0, len(nodeClassList.EC2NodeClasses))
+		ncByName := make(map[string]api.EC2NodeClassModel, len(nodeClassList.EC2NodeClasses))
 		for ni := range nodeClassList.EC2NodeClasses {
-			nodeClassModel, err := nodeClassList.EC2NodeClasses[ni].ToEC2NodeClassModel(ctx)
+			ncModel, err := nodeClassList.EC2NodeClasses[ni].ToEC2NodeClassModel(ctx)
 			if err != nil {
-				resp.Diagnostics.AddError(
-					"failed to convert nodeclass",
-					err.Error(),
-				)
+				resp.Diagnostics.AddError("failed to convert nodeclass", err.Error())
 				return
 			}
-			if nodeClassModel == nil {
-				continue
+			if ncModel != nil {
+				ncByName[nodeClassList.EC2NodeClasses[ni].Name] = *ncModel
 			}
-
-			nodeClassModels = append(nodeClassModels, *nodeClassModel)
 		}
 
-		nodeClasses, diag := customfield.NewObjectList(ctx, nodeClassModels)
+		stateNCs, diags := data.NodeClasses.AsStructSliceT(ctx)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+
+		stateNCByName := make(map[string]api.EC2NodeClassModel, len(stateNCs))
+		for _, s := range stateNCs {
+			stateNCByName[s.Name.ValueString()] = s
+		}
+		for name, nc := range ncByName {
+			if stateNC, ok := stateNCByName[name]; ok {
+				nc.TemplateName = stateNC.TemplateName
+				ncByName[name] = nc
+			}
+		}
+
+		orderedNCs := orderByStateName(stateNCs, ncByName, func(m api.EC2NodeClassModel) string {
+			return m.Name.ValueString()
+		})
+		nodeClasses, diag := customfield.NewObjectList(ctx, orderedNCs)
 		if diag.HasError() {
 			resp.Diagnostics.Append(diag...)
 			return
@@ -388,7 +418,6 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	}
 
 	if !data.NodePools.IsNullOrUnknown() {
-		// read nodepool configuration
 		nodePoolList, err := c.client.ListNodePools(clusterUID)
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -398,24 +427,44 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return
 		}
 
-		nodePoolModels := make([]api.EC2NodePoolModel, 0, len(nodePoolList.EC2NodePools))
+		npByName := make(map[string]api.EC2NodePoolModel, len(nodePoolList.EC2NodePools))
 		for ni := range nodePoolList.EC2NodePools {
-			nodePoolModel, err := nodePoolList.EC2NodePools[ni].ToEC2NodePoolModel()
+			npModel, err := nodePoolList.EC2NodePools[ni].ToEC2NodePoolModel()
 			if err != nil {
-				resp.Diagnostics.AddError(
-					"failed to convert nodepool",
-					err.Error(),
-				)
+				resp.Diagnostics.AddError("failed to convert nodepool", err.Error())
 				return
 			}
-			if nodePoolModel == nil {
-				continue
+			if npModel != nil {
+				npByName[nodePoolList.EC2NodePools[ni].Name] = *npModel
 			}
-
-			nodePoolModels = append(nodePoolModels, *nodePoolModel)
 		}
 
-		nodePools, diag := customfield.NewObjectList(ctx, nodePoolModels)
+		stateNPs, diags := data.NodePools.AsStructSliceT(ctx)
+		if diags.HasError() {
+			resp.Diagnostics.Append(diags...)
+			return
+		}
+
+		stateNPByName := make(map[string]api.EC2NodePoolModel, len(stateNPs))
+		for _, s := range stateNPs {
+			stateNPByName[s.Name.ValueString()] = s
+		}
+		for name, np := range npByName {
+			if stateNP, ok := stateNPByName[name]; ok {
+				np.NodeDisruptionDelay = preserveSemanticDuration(stateNP.NodeDisruptionDelay, np.NodeDisruptionDelay)
+				np.TemplateName = stateNP.TemplateName
+				np.InstanceFamily = preserveEmptyList(stateNP.InstanceFamily, np.InstanceFamily)
+				np.InstanceArch = preserveEmptyList(stateNP.InstanceArch, np.InstanceArch)
+				np.CapacityType = preserveEmptyList(stateNP.CapacityType, np.CapacityType)
+				np.Zone = preserveEmptyList(stateNP.Zone, np.Zone)
+				npByName[name] = np
+			}
+		}
+
+		orderedNPs := orderByStateName(stateNPs, npByName, func(m api.EC2NodePoolModel) string {
+			return m.Name.ValueString()
+		})
+		nodePools, diag := customfield.NewObjectList(ctx, orderedNPs)
 		if diag.HasError() {
 			resp.Diagnostics.Append(diag...)
 			return
@@ -547,7 +596,9 @@ func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
 	return nil
 }
 
-func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clusterUID string) error {
+func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clusterUID string,
+	previousNCNames, previousNPNames map[string]struct{},
+) error {
 	// sync workload configurations
 	tflog.Info(ctx, "syncing workload configuration")
 	if err := helper.SyncWorkloadConfiguration(ctx, c.client, clusterUID, data.Workloads, data.WorkloadTemplates); err != nil {
@@ -557,14 +608,14 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 
 	// sync nodepool configurations
 	tflog.Info(ctx, "syncing nodepool configuration")
-	if err := helper.SyncEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates); err != nil {
+	if err := helper.SyncEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, previousNPNames); err != nil {
 		return fmt.Errorf("failed to sync nodepool configuration: %w", err)
 	}
 	tflog.Info(ctx, "synced nodepool configuration successfully")
 
 	// sync nodeclass configurations
 	tflog.Info(ctx, "syncing nodeclass configuration")
-	if err := helper.SyncEC2NodeClassConfiguration(ctx, c.client, clusterUID, data.ClusterName.ValueString(), data.NodeClasses, data.NodeClassTemplates); err != nil {
+	if err := helper.SyncEC2NodeClassConfiguration(ctx, c.client, clusterUID, data.ClusterName.ValueString(), data.NodeClasses, data.NodeClassTemplates, previousNCNames); err != nil {
 		return fmt.Errorf("failed to sync nodeclass configuration: %w", err)
 	}
 	tflog.Info(ctx, "synced nodeclass configuration successfully")
@@ -577,4 +628,61 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 	tflog.Info(ctx, "synced rebalance configuration successfully")
 
 	return nil
+}
+
+// orderByStateName returns server items that are tracked in state, preserving
+// state order. Items on the server but NOT in state are ignored — Terraform
+// only manages resources it declared.
+func orderByStateName[T any](stateItems []T, serverByName map[string]T, getName func(T) string) []T {
+	result := make([]T, 0, len(stateItems))
+	for _, stateItem := range stateItems {
+		name := getName(stateItem)
+		if serverItem, ok := serverByName[name]; ok {
+			result = append(result, serverItem)
+		}
+	}
+	return result
+}
+
+// extractResourceNames extracts the set of names from a NestedObjectList in
+// Terraform state. Returns nil if the list is null/unknown. This is used to
+// determine which resources were previously managed by Terraform so that only
+// those can be considered for deletion during sync.
+func extractResourceNames[T any](ctx context.Context, list customfield.NestedObjectList[T], getName func(T) string) map[string]struct{} {
+	if list.IsNullOrUnknown() {
+		return nil
+	}
+	items, diags := list.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return nil
+	}
+	names := make(map[string]struct{}, len(items))
+	for _, item := range items {
+		names[getName(item)] = struct{}{}
+	}
+	return names
+}
+
+// preserveEmptyList keeps an explicit empty slice from state when the server
+// returns nil, avoiding false Terraform diffs like `+ instance_family = []`.
+func preserveEmptyList(stateVal, serverVal *[]types.String) *[]types.String {
+	if serverVal == nil && stateVal != nil && len(*stateVal) == 0 {
+		return stateVal
+	}
+	return serverVal
+}
+
+// preserveSemanticDuration keeps the state value when the state and server
+// values represent the same duration (e.g. "60m" vs "1h"), avoiding false
+// Terraform diffs caused by different textual representations.
+func preserveSemanticDuration(stateVal, serverVal types.String) types.String {
+	if stateVal.IsNull() || stateVal.IsUnknown() || serverVal.IsNull() || serverVal.IsUnknown() {
+		return serverVal
+	}
+	stateD, err1 := time.ParseDuration(stateVal.ValueString())
+	serverD, err2 := time.ParseDuration(serverVal.ValueString())
+	if err1 == nil && err2 == nil && stateD == serverD {
+		return stateVal
+	}
+	return serverVal
 }

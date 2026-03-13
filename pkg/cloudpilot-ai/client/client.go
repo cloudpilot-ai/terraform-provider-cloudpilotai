@@ -44,6 +44,26 @@ type Interface interface {
 	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
 	ApplyNodeClass(clusterID string, rebalanceNodeClass api.RebalanceNodeClass) error
 	DeleteNodeClass(clusterID string, nodeClassName string) error
+
+	// workload autoscaler
+	GetWorkloadAutoscalerSH() (string, error)
+	GetWAConfiguration(clusterID string) (*api.WAConfiguration, error)
+	UpdateWAConfiguration(clusterID string, config *api.WAConfiguration) error
+
+	// recommendation policy
+	ListRecommendationPolicies(clusterID string) ([]api.RecommendationPolicyResource, error)
+	GetRecommendationPolicy(clusterID, name string) (*api.RecommendationPolicyResource, error)
+	ApplyRecommendationPolicy(clusterID string, rp *api.RecommendationPolicyResource) error
+	DeleteRecommendationPolicy(clusterID, name string) error
+
+	// autoscaling policy
+	ListAutoscalingPolicies(clusterID string) ([]api.AutoscalingPolicyResource, error)
+	GetAutoscalingPolicy(clusterID, name string) (*api.AutoscalingPolicyResource, error)
+	ApplyAutoscalingPolicy(clusterID string, ap *api.AutoscalingPolicyResource) error
+	DeleteAutoscalingPolicy(clusterID, name string) error
+
+	// workload proactive update
+	UpdateWorkloadProactiveUpdate(clusterID string, req *api.WAProactiveUpdateRequest) error
 }
 
 type Client struct {
@@ -219,4 +239,97 @@ func (c *Client) ApplyNodeClass(clusterID string, rebalanceNodeClass api.Rebalan
 func (c *Client) DeleteNodeClass(clusterID string, nodeClassName string) error {
 	url := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/nodeclasses/%s", c.Endpoint, clusterID, nodeClassName)
 	return doJSONNoData(c, http.MethodDelete, url, nil)
+}
+
+// Workload Autoscaler
+
+func (c *Client) GetWorkloadAutoscalerSH() (string, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/sh", c.Endpoint)
+	sh, err := doJSON[string](c, http.MethodGet, url, nil)
+	if err != nil {
+		klog.Errorf("GetWorkloadAutoscalerSH failed: %v", err)
+		return "", err
+	}
+	return sh, nil
+}
+
+func (c *Client) GetWAConfiguration(clusterID string) (*api.WAConfiguration, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/configuration", c.Endpoint, clusterID)
+	out, err := doJSON[api.WAConfiguration](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateWAConfiguration(clusterID string, config *api.WAConfiguration) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/configuration", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, config)
+}
+
+// Recommendation Policy
+
+func (c *Client) ListRecommendationPolicies(clusterID string) ([]api.RecommendationPolicyResource, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/recommendationpolicies", c.Endpoint, clusterID)
+	out, err := doJSON[[]api.RecommendationPolicyResource](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetRecommendationPolicy(clusterID, name string) (*api.RecommendationPolicyResource, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/recommendationpolicies/%s", c.Endpoint, clusterID, name)
+	out, err := doJSON[api.RecommendationPolicyResource](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ApplyRecommendationPolicy(clusterID string, rp *api.RecommendationPolicyResource) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/recommendationpolicies/%s", c.Endpoint, clusterID, rp.Name)
+	return doJSONNoData(c, http.MethodPost, url, rp)
+}
+
+func (c *Client) DeleteRecommendationPolicy(clusterID, name string) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/recommendationpolicies/%s", c.Endpoint, clusterID, name)
+	return doJSONNoData(c, http.MethodDelete, url, nil)
+}
+
+// Autoscaling Policy
+
+func (c *Client) ListAutoscalingPolicies(clusterID string) ([]api.AutoscalingPolicyResource, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/autoscalingpolicies", c.Endpoint, clusterID)
+	out, err := doJSON[[]api.AutoscalingPolicyResource](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *Client) GetAutoscalingPolicy(clusterID, name string) (*api.AutoscalingPolicyResource, error) {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/autoscalingpolicies/%s", c.Endpoint, clusterID, name)
+	out, err := doJSON[api.AutoscalingPolicyResource](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) ApplyAutoscalingPolicy(clusterID string, ap *api.AutoscalingPolicyResource) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/autoscalingpolicies/%s", c.Endpoint, clusterID, ap.Name)
+	return doJSONNoData(c, http.MethodPost, url, ap)
+}
+
+func (c *Client) DeleteAutoscalingPolicy(clusterID, name string) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/autoscalingpolicies/%s", c.Endpoint, clusterID, name)
+	return doJSONNoData(c, http.MethodDelete, url, nil)
+}
+
+// Workload Proactive Update
+
+func (c *Client) UpdateWorkloadProactiveUpdate(clusterID string, req *api.WAProactiveUpdateRequest) error {
+	url := fmt.Sprintf("%s/api/v1/workloadautoscaler/clusters/%s/workloads/configurations/proactiveupdate", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, req)
 }

@@ -1,0 +1,18 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is git-ignored and won't be committed.
+
+# Provider
+cloudpilot_api_key      = "sk-xxx"
+# cloudpilot_api_endpoint = "https://api.cloudpilot.ai"  # default
+
+# EKS Cluster
+cluster_name        = "my-eks-cluster"
+region              = "us-west-2"
+restore_node_number = 2
+
+# --- Node Autoscaler Optimization ---
+# By default, only the agent is installed without optimization.
+# Step 2: Set only_install_agent to false to install node autoscaler, then run `terraform apply`.
+# only_install_agent = false
+# Step 3: Set enable_rebalance to true to enable rebalancing, then run `terraform apply`.
+# enable_rebalance   = true

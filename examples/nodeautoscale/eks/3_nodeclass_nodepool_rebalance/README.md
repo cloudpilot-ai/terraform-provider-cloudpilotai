@@ -2,6 +2,8 @@
 
 This example demonstrates advanced EKS cluster management using custom nodeclasses and nodepools with CloudPilot AI's intelligent rebalancing and optimization features.
 
+**By default, optimization is not enabled.** You can enable optimization features by modifying the variables in `terraform.tfvars` and re-applying.
+
 ## Features
 
 - Custom nodeclass definitions with specific resource allocations
@@ -27,24 +29,45 @@ This example demonstrates advanced EKS cluster management using custom nodeclass
 
 ## Usage
 
-1. **Configure your API key** using one of these methods:
-   - Set in the provider block: `api_key = "sk-your-api-key"`
-   - Use a file: `api_key_profile = "/path/to/api-key-file"`
+### Step 1: Basic Installation
 
-2. **Review and customize configuration**:
+1. **Configure your variables**:
+   ```bash
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+   Edit `terraform.tfvars` with your values:
+   - `cloudpilot_api_key`: Your CloudPilot AI API key
    - `cluster_name`: Your EKS cluster name
    - `region`: AWS region where your cluster is located
    - `restore_node_number`: Node count for cluster restoration
+
+2. **Review and customize node configuration** in `main.tf`:
    - `nodeclasses`: Customize node specifications
    - `nodepools`: Adjust instance filtering and priorities
 
 3. **Apply the configuration**:
-
    ```bash
    terraform init
    terraform plan
    terraform apply
    ```
+
+   This installs the CloudPilot AI agent and configures nodeclasses/nodepools without enabling optimization.
+
+### Step 2: Enable Optimization (When Ready)
+
+When you're ready to enable optimization features, edit `terraform.tfvars`:
+
+```hcl
+enable_rebalance = true
+```
+
+Then re-apply:
+
+```bash
+terraform plan
+terraform apply
+```
 
 ## Key Configuration Options
 
@@ -65,15 +88,6 @@ This example demonstrates advanced EKS cluster management using custom nodeclass
 - `instance_memory_min/instance_memory_max`: Memory filtering
 - `node_disruption_limit`: Maximum concurrent node replacements
 - `node_disruption_delay`: Wait time before replacing underutilized nodes
-
-## What This Example Creates
-
-- CloudPilot AI agent with full optimization features
-- Custom nodeclass with specific resource allocations
-- Advanced nodepool with instance type filtering
-- Intelligent workload rebalancing across node types
-- Cost optimization through spot instance utilization
-- Configurable node disruption and replacement policies
 
 ## Use Cases
 

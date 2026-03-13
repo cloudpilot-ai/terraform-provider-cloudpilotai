@@ -2,10 +2,12 @@
 
 This example demonstrates enabling CloudPilot AI's workload rebalance feature for automatic cost optimization and resource efficiency on your EKS cluster.
 
+**By default, optimization is not enabled.** You can enable rebalance by modifying the variables in `terraform.tfvars` and re-applying.
+
 ## Features
 
 - CloudPilot AI agent installation
-- Automatic workload rebalancing enabled
+- Automatic workload rebalancing (when enabled)
 - Cost optimization through intelligent scheduling
 - Minimal configuration for quick setup
 
@@ -25,39 +27,45 @@ This example demonstrates enabling CloudPilot AI's workload rebalance feature fo
 
 ## Usage
 
-1. **Configure your API key** using one of these methods:
-   - Set in the provider block: `api_key = "sk-your-api-key"`
-   - Use a file: `api_key_profile = "/path/to/api-key-file"`
+### Step 1: Basic Installation
 
-2. **Update configuration**:
+1. **Configure your variables**:
+   ```bash
+   cp terraform.tfvars.example terraform.tfvars
+   ```
+   Edit `terraform.tfvars` with your values:
+   - `cloudpilot_api_key`: Your CloudPilot AI API key
    - `cluster_name`: Your EKS cluster name
    - `region`: AWS region where your cluster is located
    - `restore_node_number`: Current node count for restoration
 
-3. **Apply the configuration**:
-
+2. **Apply the configuration**:
    ```bash
    terraform init
    terraform plan
    terraform apply
    ```
 
-## Key Configuration
+   This installs the CloudPilot AI agent without enabling optimization.
 
-- `enable_rebalance = true`: Enables automatic workload rebalancing
-- Default settings for optimal performance
-- Outputs cluster information for monitoring
+### Step 2: Enable Rebalance (When Ready)
 
-## What This Example Creates
+When you're ready to enable workload rebalancing, edit `terraform.tfvars`:
 
-- CloudPilot AI agent pods in your cluster
-- Rebalance controller for workload optimization
-- Automatic workload scheduling optimization
-- Cost monitoring and recommendations
+```hcl
+enable_rebalance = true
+```
+
+Then re-apply:
+
+```bash
+terraform plan
+terraform apply
+```
 
 ## Monitoring
 
-After applying, you can:
+After enabling rebalance, you can:
 
 - View optimization results in the CloudPilot AI dashboard
 - Monitor cost savings and efficiency improvements

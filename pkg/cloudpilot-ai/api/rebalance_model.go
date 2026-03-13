@@ -39,39 +39,34 @@ type WorkloadModel struct {
 
 func (w *WorkloadModel) ToWorkload(workloadTemplate *WorkloadTemplateModel, replicas int) *Workload {
 	workload := Workload{
-		Name:      w.Name.ValueString(),
-		Type:      w.Type.ValueString(),
-		Namespace: w.Namespace.ValueString(),
-		Replicas:  replicas,
+		Name:               w.Name.ValueString(),
+		Type:               w.Type.ValueString(),
+		Namespace:          w.Namespace.ValueString(),
+		Replicas:           replicas,
+		RebalanceAble:      w.RebalanceAble.ValueBool(),
+		SpotFriendly:       w.SpotFriendly.ValueBool(),
+		MinNonSpotReplicas: int(w.MinNonSpotReplicas.ValueInt64()),
 	}
 
-	if workloadTemplate != nil {
-		workload.RebalanceAble = workloadTemplate.RebalanceAble.ValueBool()
-		workload.SpotFriendly = workloadTemplate.SpotFriendly.ValueBool()
-		workload.MinNonSpotReplicas = int(workloadTemplate.MinNonSpotReplicas.ValueInt64())
-	} else {
-		workload.RebalanceAble = w.RebalanceAble.ValueBool()
-		workload.SpotFriendly = w.SpotFriendly.ValueBool()
-		workload.MinNonSpotReplicas = int(w.MinNonSpotReplicas.ValueInt64())
-	}
-
-	return applyTemplate(applyTemplate(&workload, workloadTemplate), workloadTemplate)
+	return applyTemplate(&workload, workloadTemplate)
 }
 
+// applyTemplate overlays explicitly-set template fields onto the workload,
+// leaving workload's own values as defaults for any unset template fields.
 func applyTemplate(workload *Workload, workloadTemplate *WorkloadTemplateModel) *Workload {
 	if workloadTemplate == nil {
 		return workload
 	}
 
-	if workloadTemplate.RebalanceAble.IsNull() || workloadTemplate.RebalanceAble.IsUnknown() {
+	if !workloadTemplate.RebalanceAble.IsNull() && !workloadTemplate.RebalanceAble.IsUnknown() {
 		workload.RebalanceAble = workloadTemplate.RebalanceAble.ValueBool()
 	}
 
-	if workloadTemplate.SpotFriendly.IsNull() || workloadTemplate.SpotFriendly.IsUnknown() {
+	if !workloadTemplate.SpotFriendly.IsNull() && !workloadTemplate.SpotFriendly.IsUnknown() {
 		workload.SpotFriendly = workloadTemplate.SpotFriendly.ValueBool()
 	}
 
-	if workloadTemplate.MinNonSpotReplicas.IsNull() || workloadTemplate.MinNonSpotReplicas.IsUnknown() {
+	if !workloadTemplate.MinNonSpotReplicas.IsNull() && !workloadTemplate.MinNonSpotReplicas.IsUnknown() {
 		workload.MinNonSpotReplicas = int(workloadTemplate.MinNonSpotReplicas.ValueInt64())
 	}
 
@@ -147,7 +142,7 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 		}
 
 		nodeclass.NodeClassSpec.Tags = lo.MapValues(instanceTags, func(v types.String, key string) string {
-			return v.String()
+			return v.ValueString()
 		})
 	}
 
