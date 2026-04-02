@@ -1,0 +1,26 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: "Workload Autoscaler"
+description: |-
+  Manages the CloudPilot AI Workload Autoscaler with recommendation and autoscaling policies.
+---
+
+# {{.Name}} ({{.Type}})
+
+Manages the CloudPilot AI Workload Autoscaler on a Kubernetes cluster. This resource installs the autoscaler components, configures recommendation policies, and sets up autoscaling policies for workload right-sizing.
+
+## Example Usage
+
+{{ tffile "examples/resources/cloudpilotai_workload_autoscaler/resource.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Import
+
+Import only requires a valid CloudPilot AI API key — no AWS credentials or kubeconfig needed. All configuration (including recommendation and autoscaling policies) is fetched from the CloudPilot AI API.
+
+{{ codefile "shell" "examples/resources/cloudpilotai_workload_autoscaler/import.sh" }}
+
+After importing, the resource state will contain all recommendation and autoscaling policies fetched from the server. You can then manage them via `terraform apply`.
+
+~> **Note:** To perform create, update, or delete operations after import, you will need to set the `kubeconfig` attribute, as those operations require access to the actual Kubernetes cluster.

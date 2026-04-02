@@ -14,6 +14,9 @@ type WorkloadAutoscalerModel struct {
 	StorageClass    types.String `tfsdk:"storage_class"`
 	EnableNodeAgent types.Bool   `tfsdk:"enable_node_agent"`
 
+	// upgrade configuration
+	EnableUpgrade types.Bool `tfsdk:"enable_upgrade"`
+
 	RecommendationPolicies customfield.NestedObjectList[api.RecommendationPolicyModel] `tfsdk:"recommendation_policies"`
 	AutoscalingPolicies    customfield.NestedObjectList[api.AutoscalingPolicyModel]    `tfsdk:"autoscaling_policies"`
 	EnableProactive        customfield.NestedObjectList[api.EnableProactiveModel]      `tfsdk:"enable_proactive"`

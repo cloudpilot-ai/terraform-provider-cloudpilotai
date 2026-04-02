@@ -5,10 +5,12 @@ import (
 	"encoding/json"
 	"fmt"
 	"strconv"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
+	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -73,8 +75,27 @@ func applyTemplate(workload *Workload, workloadTemplate *WorkloadTemplateModel) 
 	return workload
 }
 
+// SubnetSelectorTermModel mirrors subnet selector term semantics (tags and/or id; id is mutually exclusive with tags).
+type SubnetSelectorTermModel struct {
+	Tags customfield.Map[types.String] `tfsdk:"tags"`
+	ID   types.String                  `tfsdk:"id"`
+}
+
+// SecurityGroupSelectorTermModel mirrors security group selector term semantics (exactly one of tags, id, or name per block).
+type SecurityGroupSelectorTermModel struct {
+	Tags customfield.Map[types.String] `tfsdk:"tags"`
+	ID   types.String                  `tfsdk:"id"`
+	Name types.String                  `tfsdk:"name"`
+}
+
 type EC2NodeClassTemplateModel struct {
 	TemplateName types.String `tfsdk:"template_name"`
+
+	Role                   types.String `tfsdk:"role"`
+	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
+
+	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
+	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
 
 	InstanceTags             customfield.Map[types.String] `tfsdk:"instance_tags"`
 	SystemDiskSizeGib        types.Int64                   `tfsdk:"system_disk_size_gib"`
@@ -86,6 +107,12 @@ type EC2NodeClassModel struct {
 	Name types.String `tfsdk:"name"`
 
 	TemplateName types.String `tfsdk:"template_name"`
+
+	Role                   types.String `tfsdk:"role"`
+	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
+
+	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
+	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
 
 	InstanceTags             customfield.Map[types.String] `tfsdk:"instance_tags"`
 	SystemDiskSizeGib        types.Int64                   `tfsdk:"system_disk_size_gib"`
@@ -100,10 +127,15 @@ func (e *EC2NodeClassModel) ToEC2NodeClassTemplateModel() *EC2NodeClassTemplateM
 	return &EC2NodeClassTemplateModel{
 		TemplateName: e.TemplateName,
 
-		InstanceTags:             e.InstanceTags,
-		SystemDiskSizeGib:        e.SystemDiskSizeGib,
-		ExtraCPUAllocationMCore:  e.ExtraCPUAllocationMCore,
-		ExtraMemoryAllocationMib: e.ExtraMemoryAllocationMib,
+		Role:                   e.Role,
+		EnableImageAccelerator: e.EnableImageAccelerator,
+
+		SubnetSelectorTerms:        e.SubnetSelectorTerms,
+		SecurityGroupSelectorTerms: e.SecurityGroupSelectorTerms,
+		InstanceTags:               e.InstanceTags,
+		SystemDiskSizeGib:          e.SystemDiskSizeGib,
+		ExtraCPUAllocationMCore:    e.ExtraCPUAllocationMCore,
+		ExtraMemoryAllocationMib:   e.ExtraMemoryAllocationMib,
 	}
 }
 
@@ -132,6 +164,52 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 
 	if ec2NodeClassTemplate == nil {
 		return nodeclass, nil
+	}
+
+	if !ec2NodeClassTemplate.Role.IsNull() && !ec2NodeClassTemplate.Role.IsUnknown() && ec2NodeClassTemplate.Role.ValueString() != "" {
+		nodeclass.NodeClassSpec.Role = ec2NodeClassTemplate.Role.ValueString()
+	}
+
+	if !ec2NodeClassTemplate.EnableImageAccelerator.IsNull() && !ec2NodeClassTemplate.EnableImageAccelerator.IsUnknown() {
+		nodeclass.EnableImageAccelerator = ec2NodeClassTemplate.EnableImageAccelerator.ValueBool()
+	}
+
+	if !ec2NodeClassTemplate.SubnetSelectorTerms.IsNull() && !ec2NodeClassTemplate.SubnetSelectorTerms.IsUnknown() {
+		slice, diagnostics := ec2NodeClassTemplate.SubnetSelectorTerms.AsStructSliceT(ctx)
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("subnet_selector_terms: %v", diagnostics)
+		}
+		if len(slice) == 0 {
+			return nil, fmt.Errorf("subnet_selector_terms cannot be empty; omit the attribute to use defaults")
+		}
+		terms := make([]awsproviderv1.SubnetSelectorTerm, 0, len(slice))
+		for i, m := range slice {
+			t, err := subnetSelectorTermModelToAWS(ctx, m, i)
+			if err != nil {
+				return nil, err
+			}
+			terms = append(terms, t)
+		}
+		nodeclass.NodeClassSpec.SubnetSelectorTerms = terms
+	}
+
+	if !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsNull() && !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsUnknown() {
+		slice, diagnostics := ec2NodeClassTemplate.SecurityGroupSelectorTerms.AsStructSliceT(ctx)
+		if diagnostics.HasError() {
+			return nil, fmt.Errorf("security_group_selector_terms: %v", diagnostics)
+		}
+		if len(slice) == 0 {
+			return nil, fmt.Errorf("security_group_selector_terms cannot be empty; omit the attribute to use defaults")
+		}
+		terms := make([]awsproviderv1.SecurityGroupSelectorTerm, 0, len(slice))
+		for i, m := range slice {
+			t, err := securityGroupSelectorTermModelToAWS(ctx, m, i)
+			if err != nil {
+				return nil, err
+			}
+			terms = append(terms, t)
+		}
+		nodeclass.NodeClassSpec.SecurityGroupSelectorTerms = terms
 	}
 
 	if !ec2NodeClassTemplate.InstanceTags.IsNull() && !ec2NodeClassTemplate.InstanceTags.IsUnknown() {
@@ -204,8 +282,9 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 type EC2NodePoolTemplateModel struct {
 	TemplateName types.String `tfsdk:"template_name"`
 
-	Enable    types.Bool   `tfsdk:"enable"`
-	NodeClass types.String `tfsdk:"nodeclass"`
+	Enable                 types.Bool   `tfsdk:"enable"`
+	NodeClass              types.String `tfsdk:"nodeclass"`
+	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
@@ -227,8 +306,9 @@ type EC2NodePoolModel struct {
 
 	TemplateName types.String `tfsdk:"template_name"`
 
-	Enable    types.Bool   `tfsdk:"enable"`
-	NodeClass types.String `tfsdk:"nodeclass"`
+	Enable                 types.Bool   `tfsdk:"enable"`
+	NodeClass              types.String `tfsdk:"nodeclass"`
+	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
@@ -252,8 +332,9 @@ func (e *EC2NodePoolModel) ToEC2NodePoolTemplateModel() *EC2NodePoolTemplateMode
 	return &EC2NodePoolTemplateModel{
 		TemplateName: e.TemplateName,
 
-		Enable:    e.Enable,
-		NodeClass: e.NodeClass,
+		Enable:                 e.Enable,
+		NodeClass:              e.NodeClass,
+		EnableImageAccelerator: e.EnableImageAccelerator,
 
 		EnableGPU: e.EnableGPU,
 
@@ -311,6 +392,10 @@ func applyEC2NodePoolTemplateModel(nodepool *EC2NodePool, ec2NodePoolTemplate *E
 
 	if !ec2NodePoolTemplate.Enable.IsNull() && !ec2NodePoolTemplate.Enable.IsUnknown() {
 		nodepool.Enable = ec2NodePoolTemplate.Enable.ValueBool()
+	}
+
+	if !ec2NodePoolTemplate.EnableImageAccelerator.IsNull() && !ec2NodePoolTemplate.EnableImageAccelerator.IsUnknown() {
+		nodepool.EnableImageAccelerator = ec2NodePoolTemplate.EnableImageAccelerator.ValueBool()
 	}
 
 	nodepool.NodePoolSpec.Template.Spec.NodeClassRef.Name = ec2NodePoolTemplate.NodeClass.ValueString()
@@ -399,4 +484,71 @@ func updateRequirements(key string, operator corev1.NodeSelectorOperator, values
 	})
 
 	return requirements
+}
+
+func subnetSelectorTermModelToAWS(ctx context.Context, m SubnetSelectorTermModel, index int) (awsproviderv1.SubnetSelectorTerm, error) {
+	hasID := !m.ID.IsNull() && !m.ID.IsUnknown() && strings.TrimSpace(m.ID.ValueString()) != ""
+	var tagMap map[string]types.String
+	hasTags := false
+	if !m.Tags.IsNull() && !m.Tags.IsUnknown() {
+		var diagnostics diag.Diagnostics
+		tagMap, diagnostics = m.Tags.Value(ctx)
+		if diagnostics.HasError() {
+			return awsproviderv1.SubnetSelectorTerm{}, fmt.Errorf("subnet_selector_terms[%d] tags: %v", index, diagnostics)
+		}
+		hasTags = len(tagMap) > 0
+	}
+	if !hasID && !hasTags {
+		return awsproviderv1.SubnetSelectorTerm{}, fmt.Errorf("subnet_selector_terms[%d]: set either id or non-empty tags", index)
+	}
+	if hasID && hasTags {
+		return awsproviderv1.SubnetSelectorTerm{}, fmt.Errorf("subnet_selector_terms[%d]: id and tags are mutually exclusive", index)
+	}
+	var term awsproviderv1.SubnetSelectorTerm
+	if hasID {
+		term.ID = strings.TrimSpace(m.ID.ValueString())
+	}
+	if hasTags {
+		term.Tags = lo.MapValues(tagMap, func(v types.String, _ string) string { return v.ValueString() })
+	}
+	return term, nil
+}
+
+func securityGroupSelectorTermModelToAWS(ctx context.Context, m SecurityGroupSelectorTermModel, index int) (awsproviderv1.SecurityGroupSelectorTerm, error) {
+	hasID := !m.ID.IsNull() && !m.ID.IsUnknown() && strings.TrimSpace(m.ID.ValueString()) != ""
+	hasName := !m.Name.IsNull() && !m.Name.IsUnknown() && strings.TrimSpace(m.Name.ValueString()) != ""
+	var tagMap map[string]types.String
+	hasTags := false
+	if !m.Tags.IsNull() && !m.Tags.IsUnknown() {
+		var diagnostics diag.Diagnostics
+		tagMap, diagnostics = m.Tags.Value(ctx)
+		if diagnostics.HasError() {
+			return awsproviderv1.SecurityGroupSelectorTerm{}, fmt.Errorf("security_group_selector_terms[%d] tags: %v", index, diagnostics)
+		}
+		hasTags = len(tagMap) > 0
+	}
+	n := 0
+	if hasID {
+		n++
+	}
+	if hasName {
+		n++
+	}
+	if hasTags {
+		n++
+	}
+	if n != 1 {
+		return awsproviderv1.SecurityGroupSelectorTerm{}, fmt.Errorf("security_group_selector_terms[%d]: exactly one of id, name, or non-empty tags must be set", index)
+	}
+	var term awsproviderv1.SecurityGroupSelectorTerm
+	if hasID {
+		term.ID = strings.TrimSpace(m.ID.ValueString())
+	}
+	if hasName {
+		term.Name = strings.TrimSpace(m.Name.ValueString())
+	}
+	if hasTags {
+		term.Tags = lo.MapValues(tagMap, func(v types.String, _ string) string { return v.ValueString() })
+	}
+	return term, nil
 }

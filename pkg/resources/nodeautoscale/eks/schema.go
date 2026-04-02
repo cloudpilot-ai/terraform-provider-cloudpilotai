@@ -28,6 +28,13 @@ func Schema(ctx context.Context) schema.Schema {
 				Computed:    true,
 			},
 
+			"aws_profile": schema.StringAttribute{
+				Description: "AWS CLI named profile to use for all AWS operations (sts, eks). If empty, the default profile or environment credentials are used.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(""),
+			},
+
 			"cluster_name": schema.StringAttribute{
 				Description: "Name of the EKS cluster to be managed",
 				Required:    true,
@@ -37,9 +44,17 @@ func Schema(ctx context.Context) schema.Schema {
 				Required:    true,
 			},
 
+			"skip_restore": schema.BoolAttribute{
+				Description: "When set to true, skip the node restore step during resource destruction. The cluster will be uninstalled without restoring original nodes first. Takes precedence over `restore_node_number`.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
+			},
 			"restore_node_number": schema.Int64Attribute{
-				Description: "When restoring a cluster, set this to the desired number of nodes to restore.",
-				Required:    true,
+				Description: "Number of nodes to provision from the original node group when destroying the CloudPilot AI resource. Set to 0 (the default) to leave the cluster in its current optimized state without restoring original nodes. Set to a positive integer to restore that many nodes before uninstalling. Only effective when `skip_restore` is false.",
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(0),
 			},
 
 			"cluster_id": schema.StringAttribute{
@@ -98,6 +113,11 @@ func Schema(ctx context.Context) schema.Schema {
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
+			},
+
+			"custom_node_role": schema.StringAttribute{
+				Description: "Custom IAM role name for EC2 instances. When set, this role will be added to the CloudPilot controller's PassNodeIAMRole policy during installation, allowing the controller to pass this role to EC2 instances.",
+				Optional:    true,
 			},
 
 			"workload_templates": commonschemas.WorkloadTemplateSchema(ctx),
@@ -184,6 +204,58 @@ func Schema(ctx context.Context) schema.Schema {
 
 func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
+		"role": schema.StringAttribute{
+			Description: "IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.",
+			Optional:    true,
+		},
+		"enable_image_accelerator": schema.BoolAttribute{
+			Description: "Enable image accelerator (for example Spegel) for this nodeclass.",
+			Optional:    true,
+			Computed:    true,
+			Default:     booldefault.StaticBool(false),
+		},
+		"subnet_selector_terms": schema.ListNestedAttribute{
+			Description: "Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{\"cluster.cloudpilot.ai/{cluster_name}\": \"true\"}`.",
+			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.SubnetSelectorTermModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"tags": schema.MapAttribute{
+						Description: "Tag key/value map to select subnets (AND within this block). Mutually exclusive with `id`.",
+						Optional:    true,
+						CustomType:  customfield.NewMapType[types.String](ctx),
+						ElementType: types.StringType,
+					},
+					"id": schema.StringAttribute{
+						Description: "EC2 subnet ID (for example `subnet-0123456789abcdef0`). Mutually exclusive with `tags`.",
+						Optional:    true,
+					},
+				},
+			},
+		},
+		"security_group_selector_terms": schema.ListNestedAttribute{
+			Description: "Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{\"cluster.cloudpilot.ai/{cluster_name}\": \"true\"}`.",
+			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.SecurityGroupSelectorTermModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"tags": schema.MapAttribute{
+						Description: "Tag key/value map to select security groups (AND within this block). Mutually exclusive with `id` and `name`.",
+						Optional:    true,
+						CustomType:  customfield.NewMapType[types.String](ctx),
+						ElementType: types.StringType,
+					},
+					"id": schema.StringAttribute{
+						Description: "EC2 security group ID (for example `sg-0123456789abcdef0`). Mutually exclusive with `tags` and `name`.",
+						Optional:    true,
+					},
+					"name": schema.StringAttribute{
+						Description: "Security group name (the EC2 name field, not the name tag). Mutually exclusive with `tags` and `id`.",
+						Optional:    true,
+					},
+				},
+			},
+		},
 		"instance_tags": schema.MapAttribute{
 			Description: "Each provisioned node will have the configured tags as key-value pairs. Defaults to `node.cloudpilot.ai/managed=true` if not specified.",
 			Optional:    true,
@@ -227,6 +299,12 @@ func nodePoolTemplateSchema() map[string]schema.Attribute {
 
 		"enable_gpu": schema.BoolAttribute{
 			Description: "Enable GPU instances in this nodepool.",
+			Optional:    true,
+			Computed:    true,
+			Default:     booldefault.StaticBool(false),
+		},
+		"enable_image_accelerator": schema.BoolAttribute{
+			Description: "Enable image accelerator (for example Spegel) in this nodepool.",
 			Optional:    true,
 			Computed:    true,
 			Default:     booldefault.StaticBool(false),

@@ -1,0 +1,26 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: "Node Autoscale"
+description: |-
+  Manages an EKS cluster with CloudPilot AI agent, rebalance components, and node configuration.
+---
+
+# {{.Name}} ({{.Type}})
+
+Manages an EKS cluster registered with CloudPilot AI. This resource handles the full lifecycle: installing the CloudPilot AI agent, configuring rebalance settings, and managing node pools and node classes.
+
+## Example Usage
+
+{{ tffile "examples/resources/cloudpilotai_eks_cluster/resource.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
+
+## Import
+
+Import only requires a valid CloudPilot AI API key — no AWS credentials, profile, or kubeconfig needed. All configuration is fetched from the CloudPilot AI API.
+
+{{ codefile "shell" "examples/resources/cloudpilotai_eks_cluster/import.sh" }}
+
+After importing, the resource state will contain the cluster's full configuration including rebalance settings, workloads, node classes, and node pools fetched from the server. You can then manage them via `terraform apply`.
+
+~> **Note:** To perform create, update, or delete operations after import, you will need to add `aws_profile` and/or `kubeconfig` to your configuration, as those operations require access to the actual AWS cluster.

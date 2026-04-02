@@ -1,7 +1,10 @@
 terraform {
+  required_version = ">= 1.0"
+
   required_providers {
     cloudpilotai = {
-      source = "cloudpilot-ai/cloudpilotai"
+      source  = "cloudpilot-ai/cloudpilotai"
+      version = ">= 0.2"
     }
   }
 }
@@ -16,6 +19,9 @@ provider "cloudpilotai" {
 resource "cloudpilotai_eks_cluster" "example" {
   cluster_name        = var.cluster_name
   region              = var.region
+  aws_profile         = var.aws_profile
+  custom_node_role    = var.custom_node_role
+  skip_restore        = var.skip_restore
   restore_node_number = var.restore_node_number
 
   # --- Node Autoscaler Optimization ---
@@ -97,6 +103,9 @@ resource "cloudpilotai_eks_cluster" "example" {
     {
       # Required
       template_name = "default-nodeclass-template"
+      # Enable image accelerator (for example Spegel) for this nodeclass.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # Each provisioned node will have the configured tags as key-value pairs.
       # Optional. Default is {"cloudpilot.ai/managed" = "true"}.
@@ -124,6 +133,9 @@ resource "cloudpilotai_eks_cluster" "example" {
       # NodeClass Template Name
       # Optional.
       template_name = "default-nodeclass-template"
+      # Enable image accelerator (for example Spegel) for this nodeclass.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # Each provisioned node will have the configured tags as key-value pairs.
       # Optional. Default is {"cloudpilot.ai/managed" = "true"}.
@@ -154,6 +166,9 @@ resource "cloudpilotai_eks_cluster" "example" {
       # Enable GPU instances in this nodepool.
       # Optional, default is false.
       enable_gpu = false
+      # Enable image accelerator (for example Spegel) in this nodepool.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # The priority level of this nodepool. A larger number means a higher priority.
       # Optional, default is 2.
@@ -212,6 +227,9 @@ resource "cloudpilotai_eks_cluster" "example" {
       # Enable GPU instances in this nodepool.
       # Optional, default is false.
       enable_gpu = false
+      # Enable image accelerator (for example Spegel) in this nodepool.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # The priority level of this nodepool. A larger number means a higher priority.
       # Optional, default is 2.
@@ -275,49 +293,49 @@ resource "cloudpilotai_workload_autoscaler" "example" {
   # You can modify values or add additional policies as needed.
   recommendation_policies = [
     {
-      name               = "balanced"
-      strategy_type      = "percentile"
-      percentile_cpu     = 95
-      percentile_memory  = 99
+      name                  = "balanced"
+      strategy_type         = "percentile"
+      percentile_cpu        = 95
+      percentile_memory     = 99
       history_window_cpu    = "24h"
       history_window_memory = "48h"
       evaluation_period     = "1m"
-      buffer_cpu         = "10%"
-      buffer_memory      = "20%"
-      request_min_cpu    = "25%"
-      request_min_memory = "30%"
-      request_max_cpu    = ""
-      request_max_memory = ""
+      buffer_cpu            = "10%"
+      buffer_memory         = "20%"
+      request_min_cpu       = "25%"
+      request_min_memory    = "30%"
+      request_max_cpu       = ""
+      request_max_memory    = ""
     },
     {
-      name               = "cost-savings"
-      strategy_type      = "percentile"
-      percentile_cpu     = 90
-      percentile_memory  = 95
+      name                  = "cost-savings"
+      strategy_type         = "percentile"
+      percentile_cpu        = 90
+      percentile_memory     = 95
       history_window_cpu    = "12h"
       history_window_memory = "24h"
       evaluation_period     = "1m"
-      buffer_cpu         = ""
-      buffer_memory      = ""
-      request_min_cpu    = "30m"
-      request_min_memory = "30Mi"
-      request_max_cpu    = ""
-      request_max_memory = ""
+      buffer_cpu            = ""
+      buffer_memory         = ""
+      request_min_cpu       = "30m"
+      request_min_memory    = "30Mi"
+      request_max_cpu       = ""
+      request_max_memory    = ""
     },
     {
-      name               = "burstable"
-      strategy_type      = "percentile"
-      percentile_cpu     = 90
-      percentile_memory  = 98
+      name                  = "burstable"
+      strategy_type         = "percentile"
+      percentile_cpu        = 90
+      percentile_memory     = 98
       history_window_cpu    = "6h"
       history_window_memory = "12h"
       evaluation_period     = "20s"
-      buffer_cpu         = "10%"
-      buffer_memory      = "20%"
-      request_min_cpu    = "25%"
-      request_min_memory = "30%"
-      request_max_cpu    = ""
-      request_max_memory = ""
+      buffer_cpu            = "10%"
+      buffer_memory         = "20%"
+      request_min_cpu       = "25%"
+      request_min_memory    = "30%"
+      request_max_cpu       = ""
+      request_max_memory    = ""
     }
   ]
 
@@ -378,11 +396,11 @@ resource "cloudpilotai_workload_autoscaler" "example" {
       ]
 
       startup_boost_enabled            = false
-      startup_boost_min_boost_duration  = ""
-      startup_boost_min_ready_duration  = ""
-      startup_boost_multiplier_cpu      = ""
-      startup_boost_multiplier_memory   = ""
-      in_place_fallback_default_policy  = ""
+      startup_boost_min_boost_duration = ""
+      startup_boost_min_ready_duration = ""
+      startup_boost_multiplier_cpu     = ""
+      startup_boost_multiplier_memory  = ""
+      in_place_fallback_default_policy = ""
     },
     {
       name                       = "readonly"
@@ -436,11 +454,11 @@ resource "cloudpilotai_workload_autoscaler" "example" {
       ]
 
       startup_boost_enabled            = false
-      startup_boost_min_boost_duration  = ""
-      startup_boost_min_ready_duration  = ""
-      startup_boost_multiplier_cpu      = ""
-      startup_boost_multiplier_memory   = ""
-      in_place_fallback_default_policy  = ""
+      startup_boost_min_boost_duration = ""
+      startup_boost_min_ready_duration = ""
+      startup_boost_multiplier_cpu     = ""
+      startup_boost_multiplier_memory  = ""
+      in_place_fallback_default_policy = ""
     }
   ]
 

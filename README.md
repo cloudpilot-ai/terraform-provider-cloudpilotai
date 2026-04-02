@@ -20,7 +20,7 @@ Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation 
 ### Prerequisites
 
 - **[Terraform](https://developer.hashicorp.com/terraform/install)** - Version 1.0 or later
-- **[AWS CLI](https://docs.aws.amazon.com/zh_cn/cli/latest/userguide/getting-started-install.html)** - Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as updating kubeconfig. If you haven't created an EKS cluster yet, see the example setup: [eks-ondemand](https://github.com/cloudpilot-ai/examples/tree/main/clusters/eks-ondemand)
+- **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** — Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as updating kubeconfig. If you haven't created an EKS cluster yet, see the example setup: [eks-ondemand](https://github.com/cloudpilot-ai/examples/tree/main/clusters/eks-ondemand)
   - **Important**: Even if you provide a `kubeconfig` path, AWS CLI permissions are still required. The kubeconfig parameter only prevents the provider from generating a new kubeconfig file; all kubectl operations still require proper AWS credentials.
   - **Multi-account setup**: If your AWS CLI is configured with multiple accounts/profiles, ensure you switch to the correct account that matches your EKS cluster before running Terraform commands.
 - **[Kubectl](https://kubernetes.io/docs/tasks/tools)** - For cluster operations and component management
@@ -39,6 +39,7 @@ See the [`examples/eks/`](examples/eks/) directory for EKS configurations, order
 | [`2_read-only_access`](examples/eks/2_read-only_access/) | Agent-only installation | Testing or monitoring without any optimization changes |
 | [`3_basic_rebalance`](examples/eks/3_basic_rebalance/) | Basic rebalance configuration | Simple cost optimization with rebalancing |
 | [`4_nodeclass_nodepool_rebalance`](examples/eks/4_nodeclass_nodepool_rebalance/) | Custom nodeclass and nodepool | Advanced node management with instance filtering and disruption controls |
+| [`5_import`](examples/eks/5_import_test/) | Import existing resources | Bring existing CloudPilot AI-managed clusters into Terraform state without recreating them |
 
 Each example folder contains:
 - `main.tf` — resource definitions

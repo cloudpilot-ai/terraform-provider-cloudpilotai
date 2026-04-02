@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
@@ -24,7 +25,10 @@ import (
 )
 
 // Ensure provider defined types fully satisfy framework interfaces.
-var _ resource.Resource = &Cluster{}
+var (
+	_ resource.Resource                = &Cluster{}
+	_ resource.ResourceWithImportState = &Cluster{}
+)
 
 type Cluster struct {
 	client cloudpilitaiclient.Interface
@@ -58,6 +62,29 @@ func (c *Cluster) Configure(ctx context.Context, req resource.ConfigureRequest, 
 	}
 
 	c.client = client
+}
+
+func (c *Cluster) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	clusterID := req.ID
+
+	clusterInfo, err := c.client.GetCluster(clusterID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to import cluster",
+			fmt.Sprintf("Could not retrieve cluster %q: %s", clusterID, err),
+		)
+		return
+	}
+
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_id"), clusterID)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("cluster_name"), clusterInfo.ClusterName)...)
+	resp.Diagnostics.Append(resp.State.SetAttribute(ctx, path.Root("region"), clusterInfo.Region)...)
+
+	// Mark this as an import so that Read fetches all remote resources
+	// (nodeclasses, nodepools, workloads) instead of only the ones already
+	// tracked in state. This enables terraform plan -generate-config-out=
+	// to produce a complete configuration file.
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, "is_import", []byte("true"))...)
 }
 
 func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
@@ -94,7 +121,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		// 1. install cloudpilot ai agent component
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -142,7 +169,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 			// 1.2. install cloudpilot ai rebalance component
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
 			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-				clusterUID, data.Kubeconfig.ValueString()); err != nil {
+				clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to install CloudPilot AI rebalance component",
 					err.Error(),
@@ -223,7 +250,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		// upgrade cloudpilot ai agent component
 		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade CloudPilot AI agent component",
 				err.Error(),
@@ -256,7 +283,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		// upgrade cloudpilot ai rebalance component
 		tflog.Info(ctx, "upgrading CloudPilot AI rebalance component")
 		if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-			clusterUID, data.Kubeconfig.ValueString()); err != nil {
+			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade CloudPilot AI rebalance component",
 				err.Error(),
@@ -270,7 +297,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		// upgrade cloudpilot ai agent component
 		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool()); err != nil {
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade CloudPilot AI agent component",
 				err.Error(),
@@ -301,16 +328,26 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		return
 	}
 
-	if err := c.fillMissingParameters(&data); err != nil {
-		resp.Diagnostics.AddError(
-			"failed to fill missing parameters",
-			err.Error(),
-		)
-		return
+	isImport := false
+	if importFlag, diags := req.Private.GetKey(ctx, "is_import"); !diags.HasError() && string(importFlag) == "true" {
+		isImport = true
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, "is_import", []byte("false"))...)
 	}
 
-	clusterUID := api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
-	data.ClusterID = types.StringValue(clusterUID)
+	clusterUID := data.ClusterID.ValueString()
+	if clusterUID == "" {
+		// cluster_id is not yet known (normal CRUD path); need AWS credentials
+		// to derive account_id and kubeconfig.
+		if err := c.fillMissingParameters(&data); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to fill missing parameters",
+				err.Error(),
+			)
+			return
+		}
+		clusterUID = api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
+		data.ClusterID = types.StringValue(clusterUID)
+	}
 
 	if _, err := c.client.GetCluster(clusterUID); err != nil {
 		resp.Diagnostics.AddError(
@@ -333,28 +370,29 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	data.EnableUploadConfig = types.BoolValue(rebalanceConfiguration.UploadConfig)
 	data.EnableDiversityInstanceType = types.BoolValue(rebalanceConfiguration.EnableDiversityInstanceType)
 
-	if !data.Workloads.IsNullOrUnknown() {
-		// read workload configuration
-		workloadConfiguration, err := c.client.GetWorkloadRebalanceConfiguration(clusterUID)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to get workload rebalance configuration",
-				err.Error(),
-			)
-			return
-		}
-		if workloadConfiguration == nil {
-			workloadConfiguration = &api.ClusterWorkloadSpec{}
-		}
+	// Always fetch workload configuration from server (supports both normal read and import)
+	workloadConfiguration, err := c.client.GetWorkloadRebalanceConfiguration(clusterUID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to get workload rebalance configuration",
+			err.Error(),
+		)
+		return
+	}
+	if workloadConfiguration == nil {
+		workloadConfiguration = &api.ClusterWorkloadSpec{}
+	}
 
+	workloadM := lo.SliceToMap(workloadConfiguration.Workloads, func(item api.Workload) (string, api.Workload) {
+		return item.Namespace + "/" + item.Type + "/" + item.Name, item
+	})
+
+	if !data.Workloads.IsNullOrUnknown() {
 		workloadModels, diagnostics := data.Workloads.AsStructSliceT(ctx)
 		if diagnostics.HasError() {
 			resp.Diagnostics.Append(diagnostics...)
 			return
 		}
-		workloadM := lo.SliceToMap(workloadConfiguration.Workloads, func(item api.Workload) (string, api.Workload) {
-			return item.Namespace + "/" + item.Type + "/" + item.Name, item
-		})
 
 		for wi := range workloadModels {
 			k := workloadModels[wi].Namespace.ValueString() + "/" + workloadModels[wi].Type.ValueString() + "/" + workloadModels[wi].Name.ValueString()
@@ -365,30 +403,39 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			}
 		}
 		data.Workloads = customfield.NewObjectListMust(ctx, workloadModels)
+	} else if isImport && len(workloadConfiguration.Workloads) > 0 {
+		allWorkloads := make([]api.WorkloadModel, 0, len(workloadConfiguration.Workloads))
+		for i := range workloadConfiguration.Workloads {
+			if m := workloadConfiguration.Workloads[i].ToWorkloadModel(); m != nil {
+				allWorkloads = append(allWorkloads, *m)
+			}
+		}
+		data.Workloads = customfield.NewObjectListMust(ctx, allWorkloads)
+	}
+
+	// Always fetch nodeclasses from server (supports both normal read and import)
+	nodeClassList, err := c.client.ListNodeClasses(clusterUID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to list nodeclasses",
+			err.Error(),
+		)
+		return
+	}
+
+	ncByName := make(map[string]api.EC2NodeClassModel, len(nodeClassList.EC2NodeClasses))
+	for ni := range nodeClassList.EC2NodeClasses {
+		ncModel, err := nodeClassList.EC2NodeClasses[ni].ToEC2NodeClassModel(ctx)
+		if err != nil {
+			resp.Diagnostics.AddError("failed to convert nodeclass", err.Error())
+			return
+		}
+		if ncModel != nil {
+			ncByName[nodeClassList.EC2NodeClasses[ni].Name] = *ncModel
+		}
 	}
 
 	if !data.NodeClasses.IsNullOrUnknown() {
-		nodeClassList, err := c.client.ListNodeClasses(clusterUID)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to list nodeclasses",
-				err.Error(),
-			)
-			return
-		}
-
-		ncByName := make(map[string]api.EC2NodeClassModel, len(nodeClassList.EC2NodeClasses))
-		for ni := range nodeClassList.EC2NodeClasses {
-			ncModel, err := nodeClassList.EC2NodeClasses[ni].ToEC2NodeClassModel(ctx)
-			if err != nil {
-				resp.Diagnostics.AddError("failed to convert nodeclass", err.Error())
-				return
-			}
-			if ncModel != nil {
-				ncByName[nodeClassList.EC2NodeClasses[ni].Name] = *ncModel
-			}
-		}
-
 		stateNCs, diags := data.NodeClasses.AsStructSliceT(ctx)
 		if diags.HasError() {
 			resp.Diagnostics.Append(diags...)
@@ -415,30 +462,42 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return
 		}
 		data.NodeClasses = nodeClasses
+	} else if isImport && len(ncByName) > 0 {
+		allNCs := make([]api.EC2NodeClassModel, 0, len(ncByName))
+		for _, nc := range ncByName {
+			allNCs = append(allNCs, nc)
+		}
+		nodeClasses, diag := customfield.NewObjectList(ctx, allNCs)
+		if diag.HasError() {
+			resp.Diagnostics.Append(diag...)
+			return
+		}
+		data.NodeClasses = nodeClasses
+	}
+
+	// Always fetch nodepools from server (supports both normal read and import)
+	nodePoolList, err := c.client.ListNodePools(clusterUID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to list nodepools",
+			err.Error(),
+		)
+		return
+	}
+
+	npByName := make(map[string]api.EC2NodePoolModel, len(nodePoolList.EC2NodePools))
+	for ni := range nodePoolList.EC2NodePools {
+		npModel, err := nodePoolList.EC2NodePools[ni].ToEC2NodePoolModel()
+		if err != nil {
+			resp.Diagnostics.AddError("failed to convert nodepool", err.Error())
+			return
+		}
+		if npModel != nil {
+			npByName[nodePoolList.EC2NodePools[ni].Name] = *npModel
+		}
 	}
 
 	if !data.NodePools.IsNullOrUnknown() {
-		nodePoolList, err := c.client.ListNodePools(clusterUID)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to list nodepools",
-				err.Error(),
-			)
-			return
-		}
-
-		npByName := make(map[string]api.EC2NodePoolModel, len(nodePoolList.EC2NodePools))
-		for ni := range nodePoolList.EC2NodePools {
-			npModel, err := nodePoolList.EC2NodePools[ni].ToEC2NodePoolModel()
-			if err != nil {
-				resp.Diagnostics.AddError("failed to convert nodepool", err.Error())
-				return
-			}
-			if npModel != nil {
-				npByName[nodePoolList.EC2NodePools[ni].Name] = *npModel
-			}
-		}
-
 		stateNPs, diags := data.NodePools.AsStructSliceT(ctx)
 		if diags.HasError() {
 			resp.Diagnostics.Append(diags...)
@@ -465,6 +524,17 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return m.Name.ValueString()
 		})
 		nodePools, diag := customfield.NewObjectList(ctx, orderedNPs)
+		if diag.HasError() {
+			resp.Diagnostics.Append(diag...)
+			return
+		}
+		data.NodePools = nodePools
+	} else if isImport && len(npByName) > 0 {
+		allNPs := make([]api.EC2NodePoolModel, 0, len(npByName))
+		for _, np := range npByName {
+			allNPs = append(allNPs, np)
+		}
+		nodePools, diag := customfield.NewObjectList(ctx, allNPs)
 		if diag.HasError() {
 			resp.Diagnostics.Append(diag...)
 			return
@@ -505,43 +575,55 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	opNodeNum, err := helper.GetCloudpilotAIOptimizedNodeNumber(ctx, data.Kubeconfig.ValueString())
-	if err != nil {
-		resp.Diagnostics.AddError(
-			"failed to get optimized node number",
-			err.Error(),
-		)
-		return
-	}
-	if opNodeNum > 0 {
-		if data.RestoreNodeNumber.ValueInt64() == 0 {
+	nodesRestored := false
+	if data.SkipRestore.ValueBool() {
+		tflog.Info(ctx, "skip_restore is true, skipping node restore step")
+	} else if data.RestoreNodeNumber.ValueInt64() > 0 {
+		opNodeNum, err := helper.GetCloudpilotAIOptimizedNodeNumber(ctx, data.Kubeconfig.ValueString(), data.AWSProfile.ValueString())
+		if err != nil {
 			resp.Diagnostics.AddError(
-				"restore_node_number is required",
-				"Please set restore_node_number to a positive integer to restore the original node number before deleting the cluster.",
-			)
-			return
-		}
-
-		if err := helper.RestoreCloudpilotAIComponent(ctx, c.client,
-			clusterUID, data.ClusterName.ValueString(), data.Region.ValueString(),
-			data.Kubeconfig.ValueString(),
-			data.RestoreNodeNumber.ValueInt64()); err != nil {
-			resp.Diagnostics.AddError(
-				"failed to restore CloudPilot AI component",
+				"failed to get optimized node number",
 				err.Error(),
 			)
 			return
 		}
+		if opNodeNum > 0 {
+			if err := helper.RestoreCloudpilotAIComponent(ctx, c.client,
+				clusterUID, data.ClusterName.ValueString(), data.Region.ValueString(),
+				data.Kubeconfig.ValueString(), data.AWSProfile.ValueString(),
+				data.RestoreNodeNumber.ValueInt64()); err != nil {
+				resp.Diagnostics.AddError(
+					"failed to restore CloudPilot AI component",
+					err.Error(),
+				)
+				return
+			}
+			nodesRestored = true
+		}
+	} else {
+		tflog.Info(ctx, "restore_node_number is 0, leaving cluster in current optimized state")
 	}
 
-	if err := helper.UninstallCloudpilotAIAgentComponent(ctx, c.client,
-		clusterUID, data.ClusterName.ValueString(), api.CloudProviderAWS, data.Region.ValueString(),
-		data.Kubeconfig.ValueString()); err != nil {
-		resp.Diagnostics.AddError(
-			"failed to uninstall cloudpilot agent component",
-			err.Error(),
-		)
-		return
+	if nodesRestored {
+		tflog.Info(ctx, "nodes were restored, running full uninstall flow")
+		if err := helper.UninstallCloudpilotAIAgentComponent(ctx, c.client,
+			clusterUID, data.ClusterName.ValueString(), api.CloudProviderAWS, data.Region.ValueString(),
+			data.Kubeconfig.ValueString(), data.AWSProfile.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to uninstall cloudpilot agent component",
+				err.Error(),
+			)
+			return
+		}
+	} else {
+		tflog.Info(ctx, "nodes were not restored, deleting cloudpilot namespace directly")
+		if err := helper.DeleteCloudpilotNamespace(ctx, data.Kubeconfig.ValueString(), data.AWSProfile.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to delete cloudpilot namespace",
+				err.Error(),
+			)
+			return
+		}
 	}
 
 	if err := c.client.DeleteCluster(clusterUID); err != nil {
@@ -557,8 +639,13 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 }
 
 func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
+	profile := ""
+	if !data.AWSProfile.IsNull() && !data.AWSProfile.IsUnknown() {
+		profile = data.AWSProfile.ValueString()
+	}
+
 	if data.AccountID.IsNull() || data.AccountID.IsUnknown() || data.AccountID.ValueString() == "" {
-		accountID, err := aws.GetAccountID()
+		accountID, err := aws.GetAccountID(profile)
 		if err != nil {
 			return err
 		}
@@ -581,7 +668,7 @@ func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
 
 	if kubeconfigPath == "" {
 		kubeconfigPath = strings.Join([]string{data.Region.ValueString(), data.ClusterName.ValueString(), "kubeconfig"}, "_")
-		if err := aws.UpdateKubeconfig(data.ClusterName.ValueString(), data.Region.ValueString(), kubeconfigPath); err != nil {
+		if err := aws.UpdateKubeconfig(data.ClusterName.ValueString(), data.Region.ValueString(), kubeconfigPath, profile); err != nil {
 			return err
 		}
 	}
@@ -606,19 +693,20 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 	}
 	tflog.Info(ctx, "synced workload configuration successfully")
 
+	// sync nodeclass configurations first, since nodepools may depend on
+	// nodeclass settings (e.g. enable_image_accelerator).
+	tflog.Info(ctx, "syncing nodeclass configuration")
+	if err := helper.SyncEC2NodeClassConfiguration(ctx, c.client, clusterUID, data.ClusterName.ValueString(), data.NodeClasses, data.NodeClassTemplates, previousNCNames); err != nil {
+		return fmt.Errorf("failed to sync nodeclass configuration: %w", err)
+	}
+	tflog.Info(ctx, "synced nodeclass configuration successfully")
+
 	// sync nodepool configurations
 	tflog.Info(ctx, "syncing nodepool configuration")
 	if err := helper.SyncEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, previousNPNames); err != nil {
 		return fmt.Errorf("failed to sync nodepool configuration: %w", err)
 	}
 	tflog.Info(ctx, "synced nodepool configuration successfully")
-
-	// sync nodeclass configurations
-	tflog.Info(ctx, "syncing nodeclass configuration")
-	if err := helper.SyncEC2NodeClassConfiguration(ctx, c.client, clusterUID, data.ClusterName.ValueString(), data.NodeClasses, data.NodeClassTemplates, previousNCNames); err != nil {
-		return fmt.Errorf("failed to sync nodeclass configuration: %w", err)
-	}
-	tflog.Info(ctx, "synced nodeclass configuration successfully")
 
 	// sync rebalance configuration
 	tflog.Info(ctx, "syncing rebalance configuration")

@@ -80,10 +80,11 @@ type RebalanceNodeClassList struct {
 }
 
 type EC2NodePool struct {
-	Name               string                  `json:"name"`
-	Enable             bool                    `json:"enable"`
-	NodePoolAnnotation map[string]string       `json:"nodePoolAnnotation"`
-	NodePoolSpec       *awscorev1.NodePoolSpec `json:"nodePoolSpec"`
+	Name                   string                  `json:"name"`
+	Enable                 bool                    `json:"enable"`
+	EnableImageAccelerator bool                    `json:"enableImageAccelerator"`
+	NodePoolAnnotation     map[string]string       `json:"nodePoolAnnotation"`
+	NodePoolSpec           *awscorev1.NodePoolSpec `json:"nodePoolSpec"`
 }
 
 type RebalanceNodePoolList struct {
@@ -92,9 +93,10 @@ type RebalanceNodePoolList struct {
 }
 
 type EC2NodeClass struct {
-	Name                string                          `json:"name"`
-	NodeClassAnnotation map[string]string               `json:"nodeClassAnnotation"`
-	NodeClassSpec       *awsproviderv1.EC2NodeClassSpec `json:"nodeClassSpec"`
+	Name                   string                          `json:"name"`
+	NodeClassAnnotation    map[string]string               `json:"nodeClassAnnotation"`
+	NodeClassSpec          *awsproviderv1.EC2NodeClassSpec `json:"nodeClassSpec"`
+	EnableImageAccelerator bool                            `json:"enableImageAccelerator"`
 }
 
 type ECSNodePool struct {
@@ -115,7 +117,80 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 
 	var nodeClassModel EC2NodeClassModel
 	nodeClassModel.Name = types.StringValue(e.Name)
+	nodeClassModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
 	nodeClassModel.OriginNodeClassJSON = types.StringValue("")
+
+	if e.NodeClassSpec.Role != "" {
+		nodeClassModel.Role = types.StringValue(e.NodeClassSpec.Role)
+	}
+
+	if len(e.NodeClassSpec.SubnetSelectorTerms) > 0 {
+		models := make([]SubnetSelectorTermModel, len(e.NodeClassSpec.SubnetSelectorTerms))
+		for i, t := range e.NodeClassSpec.SubnetSelectorTerms {
+			m := SubnetSelectorTermModel{
+				Tags: customfield.NullMap[types.String](ctx),
+				ID:   types.StringNull(),
+			}
+			if t.ID != "" {
+				m.ID = types.StringValue(t.ID)
+			}
+			if len(t.Tags) > 0 {
+				tagsMap := make(map[string]types.String, len(t.Tags))
+				for k, v := range t.Tags {
+					tagsMap[k] = types.StringValue(v)
+				}
+				subnetTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
+				if diags.HasError() {
+					return nil, fmt.Errorf("subnet_selector_terms: %v", diags)
+				}
+				m.Tags = subnetTags
+			}
+			models[i] = m
+		}
+		listVal, diags := customfield.NewObjectList(ctx, models)
+		if diags.HasError() {
+			return nil, fmt.Errorf("subnet_selector_terms: %v", diags)
+		}
+		nodeClassModel.SubnetSelectorTerms = listVal
+	} else {
+		nodeClassModel.SubnetSelectorTerms = customfield.NullObjectList[SubnetSelectorTermModel](ctx)
+	}
+
+	if len(e.NodeClassSpec.SecurityGroupSelectorTerms) > 0 {
+		models := make([]SecurityGroupSelectorTermModel, len(e.NodeClassSpec.SecurityGroupSelectorTerms))
+		for i, t := range e.NodeClassSpec.SecurityGroupSelectorTerms {
+			m := SecurityGroupSelectorTermModel{
+				Tags: customfield.NullMap[types.String](ctx),
+				ID:   types.StringNull(),
+				Name: types.StringNull(),
+			}
+			if t.ID != "" {
+				m.ID = types.StringValue(t.ID)
+			}
+			if t.Name != "" {
+				m.Name = types.StringValue(t.Name)
+			}
+			if len(t.Tags) > 0 {
+				tagsMap := make(map[string]types.String, len(t.Tags))
+				for k, v := range t.Tags {
+					tagsMap[k] = types.StringValue(v)
+				}
+				sgTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
+				if diags.HasError() {
+					return nil, fmt.Errorf("security_group_selector_terms: %v", diags)
+				}
+				m.Tags = sgTags
+			}
+			models[i] = m
+		}
+		listVal, diags := customfield.NewObjectList(ctx, models)
+		if diags.HasError() {
+			return nil, fmt.Errorf("security_group_selector_terms: %v", diags)
+		}
+		nodeClassModel.SecurityGroupSelectorTerms = listVal
+	} else {
+		nodeClassModel.SecurityGroupSelectorTerms = customfield.NullObjectList[SecurityGroupSelectorTermModel](ctx)
+	}
 
 	if e.NodeClassSpec.Tags != nil {
 		tagsMap := make(map[string]types.String)
@@ -181,6 +256,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 
 	nodePoolModel.Name = types.StringValue(e.Name)
 	nodePoolModel.Enable = types.BoolValue(e.Enable)
+	nodePoolModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
 	nodePoolModel.OriginNodePoolJSON = types.StringValue("")
 
 	if e.NodePoolSpec == nil {

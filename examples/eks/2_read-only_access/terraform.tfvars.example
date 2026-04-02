@@ -8,6 +8,9 @@ cloudpilot_api_key      = "sk-xxx"
 # EKS Cluster
 cluster_name        = "my-eks-cluster"
 region              = "us-west-2"
+# aws_profile          = ""   # default: non-empty uses this AWS CLI profile
+# custom_node_role     = ""   # default: optional custom EC2 instance role name
+# skip_restore         = true # default: skip node restore on destroy
 restore_node_number = 2
 
 # --- Node Autoscaler Optimization ---

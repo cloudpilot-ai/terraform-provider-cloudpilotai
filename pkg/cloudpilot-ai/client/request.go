@@ -188,6 +188,21 @@ func (c *Client) retryClient() *retryablehttp.Client {
 	}
 	rc := retryablehttp.NewClient()
 	rc.Logger = leveledlogger.NewKlogLeveledLogger()
+	rc.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
+		if resp != nil {
+			body, readErr := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			if readErr == nil {
+				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, body=%s", numTries, resp.StatusCode, string(body))
+			} else {
+				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, failed to read body: %v", numTries, resp.StatusCode, readErr)
+			}
+			resp.Body = io.NopCloser(bytes.NewReader(body))
+			return resp, fmt.Errorf("%s %s giving up after %d attempt(s): status %d, body: %s", resp.Request.Method, resp.Request.URL, numTries, resp.StatusCode, string(body))
+		}
+		klog.Errorf("Retry exhausted after %d attempt(s), no response, err: %v", numTries, err)
+		return nil, fmt.Errorf("giving up after %d attempt(s): %w", numTries, err)
+	}
 	c.rc = rc
 	return rc
 }

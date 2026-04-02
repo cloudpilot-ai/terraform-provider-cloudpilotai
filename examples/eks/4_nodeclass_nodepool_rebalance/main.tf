@@ -1,7 +1,10 @@
 terraform {
+  required_version = ">= 1.0"
+
   required_providers {
     cloudpilotai = {
-      source = "cloudpilot-ai/cloudpilotai"
+      source  = "cloudpilot-ai/cloudpilotai"
+      version = ">= 0.2"
     }
   }
 }
@@ -16,6 +19,9 @@ provider "cloudpilotai" {
 resource "cloudpilotai_eks_cluster" "example" {
   cluster_name        = var.cluster_name
   region              = var.region
+  aws_profile         = var.aws_profile
+  custom_node_role    = var.custom_node_role
+  skip_restore        = var.skip_restore
   restore_node_number = var.restore_node_number
 
   # --- Node Autoscaler Optimization ---
@@ -52,6 +58,9 @@ resource "cloudpilotai_eks_cluster" "example" {
     {
       # Required. Must match the system default name "cloudpilot".
       name = "cloudpilot"
+      # Enable image accelerator (for example Spegel) for this nodeclass.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # Each provisioned node will have the configured tags as key-value pairs.
       # Optional. Default is {"cloudpilot.ai/managed" = "true"}.
@@ -85,6 +94,9 @@ resource "cloudpilotai_eks_cluster" "example" {
       # Enable GPU instances in this nodepool.
       # Optional, default is false.
       enable_gpu = false
+      # Enable image accelerator (for example Spegel) in this nodepool.
+      # Optional, default is false.
+      enable_image_accelerator = false
 
       # The priority level of this nodepool. A larger number means a higher priority.
       # Optional, default is 2.

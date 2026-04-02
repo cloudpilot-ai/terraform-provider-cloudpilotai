@@ -56,7 +56,7 @@ func (d *ClusterDataSource) Read(ctx context.Context, req datasource.ReadRequest
 
 	accountID := data.AccountID.ValueString()
 	if accountID == "" {
-		detectedID, err := aws.GetAccountID()
+		detectedID, err := aws.GetAccountID("")
 		if err != nil {
 			resp.Diagnostics.AddError("failed to detect AWS account ID", err.Error())
 			return

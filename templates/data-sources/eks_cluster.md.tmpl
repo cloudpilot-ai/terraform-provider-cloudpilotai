@@ -1,0 +1,16 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: "Node Autoscale"
+description: |-
+  Retrieves information about an existing EKS cluster registered with CloudPilot AI.
+---
+
+# {{.Name}} ({{.Type}})
+
+Retrieves read-only information about an EKS cluster that is already registered with CloudPilot AI. Use this data source to query cluster status and agent information without making any changes.
+
+## Example Usage
+
+{{ tffile "examples/data-sources/cloudpilotai_eks_cluster/data-source.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
