@@ -9,6 +9,7 @@ import (
 
 type ClusterModel struct {
 	Kubeconfig  types.String `tfsdk:"kubeconfig"`
+	AWSProfile  types.String `tfsdk:"aws_profile"`
 	ClusterID   types.String `tfsdk:"cluster_id"`
 	ClusterName types.String `tfsdk:"cluster_name"`
 	Region      types.String `tfsdk:"region"`
@@ -28,7 +29,10 @@ type ClusterModel struct {
 	EnableUploadConfig          types.Bool `tfsdk:"enable_upload_config"`
 	EnableDiversityInstanceType types.Bool `tfsdk:"enable_diversity_instance_type"`
 
-	// restore configuration
+	CustomNodeRole types.String `tfsdk:"custom_node_role"`
+
+	// destroy configuration
+	SkipRestore       types.Bool  `tfsdk:"skip_restore"`
 	RestoreNodeNumber types.Int64 `tfsdk:"restore_node_number"`
 
 	// rebalance workload configuration

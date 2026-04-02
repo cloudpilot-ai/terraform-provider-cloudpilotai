@@ -22,8 +22,10 @@ func Schema(ctx context.Context) schema.Schema {
 				Required:    true,
 			},
 			"kubeconfig": schema.StringAttribute{
-				Description: "Path to the kubeconfig file for the target Kubernetes cluster.",
-				Required:    true,
+				Description: "Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString(""),
 			},
 			"storage_class": schema.StringAttribute{
 				Description: "StorageClass name for VictoriaMetrics persistent volume. If empty, the cluster default StorageClass is used.",
@@ -36,6 +38,12 @@ func Schema(ctx context.Context) schema.Schema {
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
+			},
+			"enable_upgrade": schema.BoolAttribute{
+				Description: "Enable upgrading the Workload Autoscaler component. When true, the component is always re-installed on every apply to pick up the latest version.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(false),
 			},
 
 			"recommendation_policies": schema.ListNestedAttribute{

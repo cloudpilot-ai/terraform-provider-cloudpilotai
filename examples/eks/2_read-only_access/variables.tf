@@ -24,10 +24,28 @@ variable "region" {
   type        = string
 }
 
+variable "aws_profile" {
+  description = "AWS CLI named profile for STS and EKS kubeconfig operations. Empty uses the default profile or environment credentials."
+  type        = string
+  default     = ""
+}
+
+variable "custom_node_role" {
+  description = "IAM role name for EC2 worker nodes; added to CloudPilot PassNodeIAMRole during rebalance install. Empty uses the CloudPilot default role."
+  type        = string
+  default     = ""
+}
+
+variable "skip_restore" {
+  description = "If true, skip restoring original node groups before destroy. When false and restore_node_number > 0, restores nodes when CloudPilot-managed nodes exist."
+  type        = bool
+  default     = true
+}
+
 variable "restore_node_number" {
-  description = "Node count for cluster restoration when uninstalling CloudPilot AI. Check current count with: kubectl get node --no-headers=true | wc -l"
+  description = "Number of nodes to restore from original node groups on destroy. Set to 0 to leave the cluster in its optimized state."
   type        = number
-  default     = 2
+  default     = 0
 }
 
 ## Node Autoscaler Optimization

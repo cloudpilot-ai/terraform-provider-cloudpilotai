@@ -5,6 +5,7 @@ tmp
 example.tf
 terraform.tfplan
 terraform.tfstate
+terraform.tfvars
 bin/
 dist/
 modules-dev/

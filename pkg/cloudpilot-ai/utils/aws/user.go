@@ -13,8 +13,12 @@ type GetCallerIdentityResponse struct {
 	Arn     string `json:"Arn"`
 }
 
-func GetAccountID() (string, error) {
-	cmd := exec.Command("aws", "sts", "get-caller-identity")
+func GetAccountID(profile string) (string, error) {
+	args := []string{"sts", "get-caller-identity"}
+	if profile != "" {
+		args = append(args, "--profile", profile)
+	}
+	cmd := exec.Command("aws", args...)
 	output, err := cmd.Output()
 	if err != nil {
 		return "", fmt.Errorf("failed to get account ID: %w, output: %s", err, string(output))

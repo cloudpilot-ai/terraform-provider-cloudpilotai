@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"k8s.io/apimachinery/pkg/util/wait"
@@ -16,7 +17,10 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
-var _ resource.Resource = &WorkloadAutoscaler{}
+var (
+	_ resource.Resource                = &WorkloadAutoscaler{}
+	_ resource.ResourceWithImportState = &WorkloadAutoscaler{}
+)
 
 type WorkloadAutoscaler struct {
 	client cloudpilotaiclient.Interface
@@ -51,6 +55,15 @@ func (w *WorkloadAutoscaler) Configure(_ context.Context, req resource.Configure
 	w.client = client
 }
 
+func (w *WorkloadAutoscaler) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	resource.ImportStatePassthroughID(ctx, path.Root("cluster_id"), req, resp)
+
+	// Mark as import so Read fetches all remote resources instead of only
+	// the ones tracked in state. This enables terraform plan
+	// -generate-config-out= to produce a complete configuration file.
+	resp.Diagnostics.Append(resp.Private.SetKey(ctx, "is_import", []byte("true"))...)
+}
+
 func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequest, resp *resource.CreateResponse) {
 	var data WorkloadAutoscalerModel
 	resp.Diagnostics.Append(req.Plan.Get(ctx, &data)...)
@@ -60,21 +73,43 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 
 	clusterID := data.ClusterID.ValueString()
 	kubeconfigPath := data.Kubeconfig.ValueString()
-
-	// 1. Install Workload Autoscaler via shell script
-	tflog.Info(ctx, "installing CloudPilot AI Workload Autoscaler")
-	if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
-		kubeconfigPath,
-		data.StorageClass.ValueString(),
-		data.EnableNodeAgent.ValueBool(),
-	); err != nil {
+	if kubeconfigPath == "" {
 		resp.Diagnostics.AddError(
-			"failed to install Workload Autoscaler",
-			err.Error(),
+			"kubeconfig is required",
+			"The kubeconfig attribute must be set for create operations.",
 		)
 		return
 	}
-	tflog.Info(ctx, "installed Workload Autoscaler successfully")
+	needInstall := data.EnableUpgrade.ValueBool()
+
+	if !needInstall {
+		waConfig, err := w.client.GetWAConfiguration(clusterID)
+		if err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("failed to get Workload Autoscaler configuration before installation, fallback to install path: %v", err))
+			needInstall = true
+		} else if waConfig == nil || waConfig.WorkloadAutoscalerInstalled == nil || !*waConfig.WorkloadAutoscalerInstalled {
+			needInstall = true
+		} else {
+			tflog.Info(ctx, "Workload Autoscaler is already installed, skipping installation script")
+		}
+	}
+
+	if needInstall {
+		// 1. Install Workload Autoscaler via shell script
+		tflog.Info(ctx, "installing CloudPilot AI Workload Autoscaler")
+		if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
+			kubeconfigPath,
+			data.StorageClass.ValueString(),
+			data.EnableNodeAgent.ValueBool(),
+		); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to install Workload Autoscaler",
+				err.Error(),
+			)
+			return
+		}
+		tflog.Info(ctx, "installed Workload Autoscaler successfully")
+	}
 
 	// 2. Enable WA configuration on the backend
 	tflog.Info(ctx, "enabling Workload Autoscaler configuration")
@@ -137,20 +172,44 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 
 	clusterID := data.ClusterID.ValueString()
 
-	// Re-install WA to pick up any configuration changes (storage_class, enable_node_agent)
-	tflog.Info(ctx, "upgrading CloudPilot AI Workload Autoscaler")
-	if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
-		data.Kubeconfig.ValueString(),
-		data.StorageClass.ValueString(),
-		data.EnableNodeAgent.ValueBool(),
-	); err != nil {
-		resp.Diagnostics.AddError(
-			"failed to upgrade Workload Autoscaler",
-			err.Error(),
-		)
-		return
+	needReinstall := data.EnableUpgrade.ValueBool()
+	if !needReinstall {
+		needReinstall = data.EnableNodeAgent.ValueBool() != state.EnableNodeAgent.ValueBool()
 	}
-	tflog.Info(ctx, "upgraded Workload Autoscaler successfully")
+	if !needReinstall {
+		waConfig, err := w.client.GetWAConfiguration(clusterID)
+		if err != nil {
+			tflog.Warn(ctx, fmt.Sprintf("failed to get Workload Autoscaler configuration before upgrade, fallback to reinstall path: %v", err))
+			needReinstall = true
+		} else if waConfig == nil || waConfig.WorkloadAutoscalerInstalled == nil || !*waConfig.WorkloadAutoscalerInstalled {
+			needReinstall = true
+		}
+	}
+
+	if needReinstall {
+		if data.Kubeconfig.ValueString() == "" {
+			resp.Diagnostics.AddError(
+				"kubeconfig is required",
+				"The kubeconfig attribute must be set when Workload Autoscaler installation is needed.",
+			)
+			return
+		}
+		tflog.Info(ctx, "upgrading CloudPilot AI Workload Autoscaler")
+		if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
+			data.Kubeconfig.ValueString(),
+			data.StorageClass.ValueString(),
+			data.EnableNodeAgent.ValueBool(),
+		); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to upgrade Workload Autoscaler",
+				err.Error(),
+			)
+			return
+		}
+		tflog.Info(ctx, "upgraded Workload Autoscaler successfully")
+	} else {
+		tflog.Info(ctx, "Workload Autoscaler install settings unchanged and component already installed, skipping upgrade")
+	}
 
 	// Sync policies, passing previous state names so only removed policies are deleted
 	if err := w.syncPolicies(ctx, &data, clusterID, previousRPNames, previousAPNames); err != nil {
@@ -172,19 +231,25 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 		return
 	}
 
+	isImport := false
+	if importFlag, diags := req.Private.GetKey(ctx, "is_import"); !diags.HasError() && string(importFlag) == "true" {
+		isImport = true
+		resp.Diagnostics.Append(resp.Private.SetKey(ctx, "is_import", []byte("false"))...)
+	}
+
 	clusterID := data.ClusterID.ValueString()
 
 	// Read recommendation policies
-	if !data.RecommendationPolicies.IsNullOrUnknown() {
-		rps, err := w.client.ListRecommendationPolicies(clusterID)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to list recommendation policies",
-				err.Error(),
-			)
-			return
-		}
+	rps, err := w.client.ListRecommendationPolicies(clusterID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to list recommendation policies",
+			err.Error(),
+		)
+		return
+	}
 
+	if !data.RecommendationPolicies.IsNullOrUnknown() {
 		rpByName := make(map[string]api.RecommendationPolicyModel, len(rps))
 		for i := range rps {
 			m := api.RecommendationPolicyModelFromResource(&rps[i])
@@ -207,19 +272,25 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 			return
 		}
 		data.RecommendationPolicies = rpList
+	} else if isImport && len(rps) > 0 {
+		allRPs := make([]api.RecommendationPolicyModel, 0, len(rps))
+		for i := range rps {
+			allRPs = append(allRPs, api.RecommendationPolicyModelFromResource(&rps[i]))
+		}
+		data.RecommendationPolicies = customfield.NewObjectListMust(ctx, allRPs)
 	}
 
 	// Read autoscaling policies
-	if !data.AutoscalingPolicies.IsNullOrUnknown() {
-		aps, err := w.client.ListAutoscalingPolicies(clusterID)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to list autoscaling policies",
-				err.Error(),
-			)
-			return
-		}
+	aps, err := w.client.ListAutoscalingPolicies(clusterID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to list autoscaling policies",
+			err.Error(),
+		)
+		return
+	}
 
+	if !data.AutoscalingPolicies.IsNullOrUnknown() {
 		apByName := make(map[string]api.AutoscalingPolicyModel, len(aps))
 		for i := range aps {
 			m := api.AutoscalingPolicyModelFromResource(ctx, &aps[i])
@@ -242,6 +313,12 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 			return
 		}
 		data.AutoscalingPolicies = apList
+	} else if isImport && len(aps) > 0 {
+		allAPs := make([]api.AutoscalingPolicyModel, 0, len(aps))
+		for i := range aps {
+			allAPs = append(allAPs, api.AutoscalingPolicyModelFromResource(ctx, &aps[i]))
+		}
+		data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, allAPs)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -324,6 +401,13 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 	}
 
 	// 3. Disable Workload Autoscaler, wait for resources cleanup, then helm uninstall
+	if data.Kubeconfig.ValueString() == "" {
+		resp.Diagnostics.AddError(
+			"kubeconfig is required",
+			"The kubeconfig attribute must be set for delete operations.",
+		)
+		return
+	}
 	tflog.Info(ctx, "uninstalling Workload Autoscaler")
 	if err := helper.UninstallWorkloadAutoscaler(ctx, w.client, clusterID, data.Kubeconfig.ValueString()); err != nil {
 		resp.Diagnostics.AddError(

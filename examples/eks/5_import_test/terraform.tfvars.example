@@ -1,0 +1,6 @@
+# Copy this file to terraform.tfvars and fill in your values.
+# terraform.tfvars is git-ignored and won't be committed.
+
+# Provider
+cloudpilot_api_key      = "sk-xxx"
+# cloudpilot_api_endpoint = "https://api.cloudpilot.ai"  # default

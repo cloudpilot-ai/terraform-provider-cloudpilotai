@@ -1,0 +1,16 @@
+---
+page_title: "{{.Name}} {{.Type}} - {{.ProviderName}}"
+subcategory: "Workload Autoscaler"
+description: |-
+  Retrieves the Workload Autoscaler configuration for a given cluster.
+---
+
+# {{.Name}} ({{.Type}})
+
+Retrieves read-only information about the Workload Autoscaler configuration on a cluster registered with CloudPilot AI. Use this data source to check whether the autoscaler is enabled and installed without making any changes.
+
+## Example Usage
+
+{{ tffile "examples/data-sources/cloudpilotai_workload_autoscaler/data-source.tf" }}
+
+{{ .SchemaMarkdown | trimspace }}
