@@ -2,7 +2,6 @@ package client
 
 import (
 	"bytes"
-	"compress/gzip"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -116,61 +115,6 @@ func (c *Client) request(method string, url string, reqBody any) (*http.Response
 	return resp, nil
 }
 
-// requestData sends gzipped []byte and transparently ungzips response if needed.
-func (c *Client) requestData(method string, url string, data []byte) (*http.Response, error) {
-	if len(data) == 0 {
-		return nil, fmt.Errorf("data is empty")
-	}
-
-	var compressed bytes.Buffer
-	gz := gzip.NewWriter(&compressed)
-	if _, err := gz.Write(data); err != nil {
-		klog.Errorf("Failed to compress request body, method(%s) url(%s): %v", method, url, err)
-		return nil, err
-	}
-	if err := gz.Close(); err != nil {
-		klog.Errorf("Failed to close gzip writer, method(%s) url(%s): %v", method, url, err)
-		return nil, err
-	}
-
-	httpReq, err := c.newHTTPReq(method, url, compressed.Bytes())
-	if err != nil {
-		klog.Errorf("Failed to create http request, method(%s) url(%s): %v", method, url, err)
-		return nil, err
-	}
-	httpReq.Header.Set("Content-Encoding", "gzip")
-	httpReq.Header.Set("Content-Type", "application/json")
-	httpReq.Header.Set("Accept-Encoding", "gzip, identity")
-
-	client := c.retryClient()
-	resp, err := client.Do(httpReq)
-	if err != nil {
-		klog.Errorf("Failed to send http request, method(%s) url(%s): %v", method, url, err)
-		return nil, err
-	}
-
-	// transparently unwrap gzipped response body to a new ReadCloser
-	if resp.Header.Get("Content-Encoding") == "gzip" && resp.Body != nil {
-		gr, err := gzip.NewReader(resp.Body)
-		if err != nil {
-			klog.Errorf("Failed to create gzip reader, method(%s) url(%s): %v", method, url, err)
-			_ = resp.Body.Close()
-			return nil, err
-		}
-		// read all & replace body, ensure closing original body
-		body, readErr := io.ReadAll(gr)
-		_ = gr.Close()
-		_ = resp.Body.Close()
-		if readErr != nil {
-			klog.Errorf("Failed to read gzipped response body, method(%s) url(%s): %v", method, url, readErr)
-			return nil, readErr
-		}
-		resp.Body = io.NopCloser(bytes.NewReader(body))
-	}
-
-	return resp, nil
-}
-
 // Build the request with common headers
 func (c *Client) newHTTPReq(method, url string, body []byte) (*retryablehttp.Request, error) {
 	httpReq, err := retryablehttp.NewRequest(method, url, body)
@@ -182,7 +126,19 @@ func (c *Client) newHTTPReq(method, url string, body []byte) (*retryablehttp.Req
 	return httpReq, nil
 }
 
+const maxBodyLogBytes = 512
+
+func truncateBody(body []byte) string {
+	if len(body) <= maxBodyLogBytes {
+		return string(body)
+	}
+	return string(body[:maxBodyLogBytes]) + "...(truncated)"
+}
+
 func (c *Client) retryClient() *retryablehttp.Client {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+
 	if c.rc != nil {
 		return c.rc
 	}
@@ -193,12 +149,12 @@ func (c *Client) retryClient() *retryablehttp.Client {
 			body, readErr := io.ReadAll(resp.Body)
 			resp.Body.Close()
 			if readErr == nil {
-				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, body=%s", numTries, resp.StatusCode, string(body))
+				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, body=%s", numTries, resp.StatusCode, truncateBody(body))
 			} else {
 				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, failed to read body: %v", numTries, resp.StatusCode, readErr)
 			}
 			resp.Body = io.NopCloser(bytes.NewReader(body))
-			return resp, fmt.Errorf("%s %s giving up after %d attempt(s): status %d, body: %s", resp.Request.Method, resp.Request.URL, numTries, resp.StatusCode, string(body))
+			return resp, fmt.Errorf("%s %s giving up after %d attempt(s): status %d", resp.Request.Method, resp.Request.URL, numTries, resp.StatusCode)
 		}
 		klog.Errorf("Retry exhausted after %d attempt(s), no response, err: %v", numTries, err)
 		return nil, fmt.Errorf("giving up after %d attempt(s): %w", numTries, err)
