@@ -8,7 +8,6 @@ import (
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
-	v1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
 )
 
@@ -212,29 +211,29 @@ func DefaultGPUEC2NodePoolSpec() *awscorev1.NodePoolSpec {
 			Spec: awscorev1.NodeClaimTemplateSpec{
 				Requirements: []awscorev1.NodeSelectorRequirementWithMinValues{
 					{
-						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
 							Key:      awsproviderv1.LabelInstanceGPUCount,
-							Operator: v1.NodeSelectorOpExists,
+							Operator: corev1.NodeSelectorOpExists,
 						},
 					},
 					{
-						NodeSelectorRequirement: v1.NodeSelectorRequirement{
-							Key:      v1.LabelArchStable,
-							Operator: v1.NodeSelectorOpIn,
+						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+							Key:      corev1.LabelArchStable,
+							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"amd64"},
 						},
 					},
 					{
-						NodeSelectorRequirement: v1.NodeSelectorRequirement{
-							Key:      v1.LabelOSStable,
-							Operator: v1.NodeSelectorOpIn,
+						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
+							Key:      corev1.LabelOSStable,
+							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"linux"},
 						},
 					},
 					{
-						NodeSelectorRequirement: v1.NodeSelectorRequirement{
+						NodeSelectorRequirement: corev1.NodeSelectorRequirement{
 							Key:      awscorev1.CapacityTypeLabelKey,
-							Operator: v1.NodeSelectorOpIn,
+							Operator: corev1.NodeSelectorOpIn,
 							Values:   []string{"spot", "on-demand"},
 						},
 					},

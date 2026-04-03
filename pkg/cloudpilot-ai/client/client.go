@@ -5,7 +5,9 @@ package client
 import (
 	"fmt"
 	"net/http"
+	"net/url"
 	"strconv"
+	"sync"
 
 	"github.com/hashicorp/go-retryablehttp"
 	"k8s.io/klog/v2"
@@ -70,6 +72,7 @@ type Client struct {
 	Endpoint string
 	APIKEY   string
 
+	mu sync.Mutex
 	rc *retryablehttp.Client
 }
 
@@ -132,8 +135,10 @@ func (c *Client) GetClusterUpgradeSH(clusterID string) (string, error) {
 }
 
 func (c *Client) GetClusterUninstallSH(clusterID, clusterName, provider, region string) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/clusters/%s/uninstall/sh?cluster_name=%s&provider=%s&region=%s", c.Endpoint, clusterID, clusterName, provider, region)
-	out, err := doJSON[string](c, http.MethodGet, url, nil)
+	reqURL := fmt.Sprintf("%s/api/v1/clusters/%s/uninstall/sh?cluster_name=%s&provider=%s&region=%s",
+		c.Endpoint, clusterID,
+		url.QueryEscape(clusterName), url.QueryEscape(provider), url.QueryEscape(region))
+	out, err := doJSON[string](c, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err
 	}

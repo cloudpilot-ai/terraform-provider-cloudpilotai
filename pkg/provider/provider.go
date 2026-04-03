@@ -3,7 +3,9 @@ package provider
 
 import (
 	"context"
+	"net/url"
 	"os"
+	"strings"
 
 	"github.com/hashicorp/terraform-plugin-framework/datasource"
 	"github.com/hashicorp/terraform-plugin-framework/provider"
@@ -43,6 +45,23 @@ func (p *CloudpilotaiProvider) Configure(ctx context.Context, req provider.Confi
 
 	if data.APIEndpoint.IsNull() || data.APIEndpoint.IsUnknown() {
 		data.APIEndpoint = types.StringValue(consts.DefaultAPIEndpoint)
+	}
+
+	endpoint := data.APIEndpoint.ValueString()
+	parsedURL, err := url.Parse(endpoint)
+	if err != nil || parsedURL.Host == "" {
+		resp.Diagnostics.AddError(
+			"Invalid API endpoint",
+			"The API endpoint must be a valid URL: "+endpoint,
+		)
+		return
+	}
+	if !strings.EqualFold(parsedURL.Scheme, "https") {
+		resp.Diagnostics.AddError(
+			"Insecure API endpoint",
+			"The API endpoint must use HTTPS: "+endpoint,
+		)
+		return
 	}
 
 	var apikey string

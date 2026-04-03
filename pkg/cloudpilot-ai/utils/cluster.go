@@ -2,7 +2,7 @@
 package utils
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -30,7 +30,7 @@ func GenerateClusterUID(para api.RegisterClusterRequest) string {
 		return ""
 	}
 
-	hash := md5.New()
+	hash := sha256.New()
 	hash.Write([]byte(data))
 	hashed := hash.Sum(nil)
 	return uuid.NewSHA1(uuid.Nil, hashed).String()

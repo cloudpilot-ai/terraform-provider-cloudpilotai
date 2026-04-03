@@ -1,7 +1,7 @@
 package api
 
 import (
-	"crypto/md5"
+	"crypto/sha256"
 	"fmt"
 
 	"github.com/google/uuid"
@@ -61,7 +61,7 @@ func GenerateClusterUID(cloudProvider, clusterName, region, accountID string) st
 		return ""
 	}
 
-	hash := md5.New()
+	hash := sha256.New()
 	hash.Write([]byte(data))
 	hashed := hash.Sum(nil)
 	return uuid.NewSHA1(uuid.Nil, hashed).String()
