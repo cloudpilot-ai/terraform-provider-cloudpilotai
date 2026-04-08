@@ -1,6 +1,6 @@
 module github.com/cloudpilot-ai/terraform-provider-cloudpilotai
 
-go 1.25.8
+go 1.25.9
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.0
