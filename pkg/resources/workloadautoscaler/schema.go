@@ -5,6 +5,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
@@ -97,17 +98,17 @@ func recommendationPolicyAttributes() map[string]schema.Attribute {
 			Computed:    true,
 			Default:     stringdefault.StaticString("percentile"),
 		},
-		"percentile_cpu": schema.Int64Attribute{
+		"percentile_cpu": schema.Int32Attribute{
 			Description: "Target CPU percentile (50-100) when strategy_type is 'percentile'.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(95),
+			Default:     int32default.StaticInt32(95),
 		},
-		"percentile_memory": schema.Int64Attribute{
+		"percentile_memory": schema.Int32Attribute{
 			Description: "Target Memory percentile (50-100) when strategy_type is 'percentile'.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(95),
+			Default:     int32default.StaticInt32(95),
 		},
 		"history_window_cpu": schema.StringAttribute{
 			Description: "Duration of the CPU history window (e.g. '168h').",
