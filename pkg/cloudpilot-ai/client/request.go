@@ -147,7 +147,7 @@ func (c *Client) retryClient() *retryablehttp.Client {
 	rc.ErrorHandler = func(resp *http.Response, err error, numTries int) (*http.Response, error) {
 		if resp != nil {
 			body, readErr := io.ReadAll(resp.Body)
-			resp.Body.Close()
+			_ = resp.Body.Close()
 			if readErr == nil {
 				klog.Errorf("Retry exhausted after %d attempt(s), status=%d, body=%s", numTries, resp.StatusCode, truncateBody(body))
 			} else {

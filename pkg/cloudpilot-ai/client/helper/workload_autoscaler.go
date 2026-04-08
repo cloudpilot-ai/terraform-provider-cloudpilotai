@@ -85,7 +85,10 @@ func ApplyRecommendationPolicies(ctx context.Context, client cloudpilotaiclient.
 	desiredNames = make(map[string]struct{}, len(rpModels))
 	for i := range rpModels {
 		desiredNames[rpModels[i].Name.ValueString()] = struct{}{}
-		rp := rpModels[i].ToResource()
+		rp, convErr := rpModels[i].ToResource()
+		if convErr != nil {
+			return nil, fmt.Errorf("failed to convert recommendation policy %s: %w", rpModels[i].Name.ValueString(), convErr)
+		}
 		tflog.Info(ctx, fmt.Sprintf("applying recommendation policy: %s", rp.Name))
 		if err := client.ApplyRecommendationPolicy(clusterID, rp); err != nil {
 			return nil, fmt.Errorf("failed to apply recommendation policy %s: %w", rp.Name, err)

@@ -3,12 +3,20 @@ package api
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
+
+func safeInt64ToInt32(v int64) (int32, error) {
+	if v < math.MinInt32 || v > math.MaxInt32 {
+		return 0, fmt.Errorf("value %d overflows int32", v)
+	}
+	return int32(v), nil
+}
 
 // EnableProactiveModel is the Terraform model for enabling proactive update on filtered workloads.
 type EnableProactiveModel struct {
@@ -137,7 +145,7 @@ type RecommendationPolicyModel struct {
 	RequestMaxMemory types.String `tfsdk:"request_max_memory"`
 }
 
-func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
+func (m *RecommendationPolicyModel) ToResource() (*RecommendationPolicyResource, error) {
 	rp := &RecommendationPolicyResource{
 		Name: m.Name.ValueString(),
 		Spec: RecommendationPolicySpec{
@@ -151,9 +159,17 @@ func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
 	}
 
 	if !m.PercentileCPU.IsNull() && !m.PercentileMemory.IsNull() {
+		cpuVal, err := safeInt64ToInt32(m.PercentileCPU.ValueInt64())
+		if err != nil {
+			return nil, fmt.Errorf("percentile_cpu: %w", err)
+		}
+		memVal, err := safeInt64ToInt32(m.PercentileMemory.ValueInt64())
+		if err != nil {
+			return nil, fmt.Errorf("percentile_memory: %w", err)
+		}
 		rp.Spec.StrategyPercentile = &StrategyPercentileConfiguration{
-			CPU:    int32(m.PercentileCPU.ValueInt64()),
-			Memory: int32(m.PercentileMemory.ValueInt64()),
+			CPU:    cpuVal,
+			Memory: memVal,
 		}
 	}
 
@@ -197,7 +213,7 @@ func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
 		rp.Spec.Limits = limits
 	}
 
-	return rp
+	return rp, nil
 }
 
 func RecommendationPolicyModelFromResource(rp *RecommendationPolicyResource) RecommendationPolicyModel {
@@ -304,11 +320,16 @@ type AutoscalingPolicyModel struct {
 }
 
 func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPolicyResource, error) {
+	priority, err := safeInt64ToInt32(m.Priority.ValueInt64())
+	if err != nil {
+		return nil, fmt.Errorf("priority: %w", err)
+	}
+
 	ap := &AutoscalingPolicyResource{
 		Name:   m.Name.ValueString(),
 		Enable: m.Enable.ValueBool(),
 		Spec: AutoscalingPolicySpec{
-			Priority:                 int32(m.Priority.ValueInt64()),
+			Priority:                 priority,
 			RecommendationPolicyName: m.RecommendationPolicyName.ValueString(),
 			OnPolicyRemoval:          m.OnPolicyRemoval.ValueString(),
 		},
