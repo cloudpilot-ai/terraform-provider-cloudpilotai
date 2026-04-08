@@ -121,8 +121,8 @@ type RecommendationPolicyModel struct {
 	Name types.String `tfsdk:"name"`
 
 	StrategyType     types.String `tfsdk:"strategy_type"`
-	PercentileCPU    types.Int64  `tfsdk:"percentile_cpu"`
-	PercentileMemory types.Int64  `tfsdk:"percentile_memory"`
+	PercentileCPU    types.Int32  `tfsdk:"percentile_cpu"`
+	PercentileMemory types.Int32  `tfsdk:"percentile_memory"`
 
 	HistoryWindowCPU    types.String `tfsdk:"history_window_cpu"`
 	HistoryWindowMemory types.String `tfsdk:"history_window_memory"`
@@ -152,8 +152,8 @@ func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
 
 	if !m.PercentileCPU.IsNull() && !m.PercentileMemory.IsNull() {
 		rp.Spec.StrategyPercentile = &StrategyPercentileConfiguration{
-			CPU:    int32(m.PercentileCPU.ValueInt64()),
-			Memory: int32(m.PercentileMemory.ValueInt64()),
+			CPU:    m.PercentileCPU.ValueInt32(),
+			Memory: m.PercentileMemory.ValueInt32(),
 		}
 	}
 
@@ -210,11 +210,11 @@ func RecommendationPolicyModelFromResource(rp *RecommendationPolicyResource) Rec
 	}
 
 	if rp.Spec.StrategyPercentile != nil {
-		m.PercentileCPU = types.Int64Value(int64(rp.Spec.StrategyPercentile.CPU))
-		m.PercentileMemory = types.Int64Value(int64(rp.Spec.StrategyPercentile.Memory))
+		m.PercentileCPU = types.Int32Value(rp.Spec.StrategyPercentile.CPU)
+		m.PercentileMemory = types.Int32Value(rp.Spec.StrategyPercentile.Memory)
 	} else {
-		m.PercentileCPU = types.Int64Value(95)
-		m.PercentileMemory = types.Int64Value(95)
+		m.PercentileCPU = types.Int32Value(95)
+		m.PercentileMemory = types.Int32Value(95)
 	}
 
 	if v, ok := rp.Spec.Buffer["cpu"]; ok {
