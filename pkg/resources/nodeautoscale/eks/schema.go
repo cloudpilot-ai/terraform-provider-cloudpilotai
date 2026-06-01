@@ -58,7 +58,8 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"cluster_id": schema.StringAttribute{
-				Description: "Unique identifier of the EKS cluster (computed)",
+				Description: "Unique identifier of the EKS cluster. Optional override for existing clusters when the caller already knows the server-side cluster ID.",
+				Optional:    true,
 				Computed:    true,
 			},
 			"account_id": schema.StringAttribute{
