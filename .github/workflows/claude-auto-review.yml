@@ -1,0 +1,73 @@
+name: Claude Auto Review
+
+# Automatically review every pull request with Claude, leaving line-anchored
+# inline comments plus a short top-level summary. No @claude mention needed.
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+jobs:
+  review:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+      id-token: write
+      actions: read # Required for Claude to read CI results on PRs
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Run Claude PR Review
+        uses: anthropics/claude-code-action@v1
+        with:
+          claude_code_oauth_token: ${{ secrets.CLAUDE_CODE_OAUTH_TOKEN }}
+
+          additional_permissions: |
+            actions: read
+
+          # Buffer inline comments so test/probe comments are filtered before posting.
+          classify_inline_comments: true
+
+          # A custom prompt overrides the default "tag" mode (which funnels everything
+          # into one top-level sticky comment). This drives line-anchored inline review.
+          prompt: |
+            REPO: ${{ github.repository }}
+            PR NUMBER: ${{ github.event.pull_request.number }}
+
+            Perform a thorough code review of this pull request. Prioritize depth
+            and correctness over speed. Focus on:
+            - Correctness and bugs, including edge cases and error paths
+            - Security implications
+            - Performance considerations
+            - Code quality and maintainability
+
+            Gather the context you need to review well:
+            - Start with `gh pr diff` for the full changeset and `gh pr view` for
+              PR metadata.
+            - Use Read / Grep / Glob to open files the diff TOUCHES, CALLS, or
+              DEPENDS ON even when those files are not part of the diff. Cross-file
+              impact (broken callers, violated invariants, inconsistent assumptions
+              elsewhere in the repo) is exactly what a good review must catch, so do
+              not restrict yourself to the diff hunks alone.
+
+            How to post the review:
+            - Put EVERY specific finding as an INLINE comment anchored to the
+              exact line it concerns, using
+              mcp__github_inline_comment__create_inline_comment with
+              `confirmed: true`. One comment per finding.
+            - Post ONE short top-level summary (overall verdict only, a few
+              sentences) with `gh pr comment`. Do NOT put specific findings in
+              the top-level comment.
+            - Communicate only through GitHub comments; do not return review
+              text as a chat message.
+
+          # Allow repo-wide reads (Read/Grep/Glob) so the review can follow the diff
+          # into related files for cross-file impact analysis. No --max-turns cap:
+          # a deep review legitimately needs many turns and must not be truncated.
+          claude_args: |
+            --model claude-opus-4-7
+            --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Grep,Glob"
