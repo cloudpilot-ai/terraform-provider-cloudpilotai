@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"time"
 
@@ -463,10 +464,9 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		data.NodeClasses = nodeClasses
 	} else if isImport && len(ncByName) > 0 {
-		allNCs := make([]api.EC2NodeClassModel, 0, len(ncByName))
-		for _, nc := range ncByName {
-			allNCs = append(allNCs, nc)
-		}
+		allNCs := sortedValuesByName(ncByName, func(m api.EC2NodeClassModel) string {
+			return m.Name.ValueString()
+		})
 		nodeClasses, diag := customfield.NewObjectList(ctx, allNCs)
 		if diag.HasError() {
 			resp.Diagnostics.Append(diag...)
@@ -530,10 +530,9 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		data.NodePools = nodePools
 	} else if isImport && len(npByName) > 0 {
-		allNPs := make([]api.EC2NodePoolModel, 0, len(npByName))
-		for _, np := range npByName {
-			allNPs = append(allNPs, np)
-		}
+		allNPs := sortedValuesByName(npByName, func(m api.EC2NodePoolModel) string {
+			return m.Name.ValueString()
+		})
 		nodePools, diag := customfield.NewObjectList(ctx, allNPs)
 		if diag.HasError() {
 			resp.Diagnostics.Append(diag...)
@@ -749,6 +748,19 @@ func extractResourceNames[T any](ctx context.Context, list customfield.NestedObj
 		names[getName(item)] = struct{}{}
 	}
 	return names
+}
+
+func sortedValuesByName[T any](values map[string]T, getName func(T) string) []T {
+	result := make([]T, 0, len(values))
+	for _, value := range values {
+		result = append(result, value)
+	}
+
+	sort.SliceStable(result, func(i, j int) bool {
+		return getName(result[i]) < getName(result[j])
+	})
+
+	return result
 }
 
 // preserveEmptyList keeps an explicit empty slice from state when the server
