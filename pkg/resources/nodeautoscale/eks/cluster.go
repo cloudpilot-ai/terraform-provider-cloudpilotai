@@ -104,7 +104,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	clusterUID := api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
+	clusterUID := resolveClusterUID(data.ClusterID, data.ClusterID, data.ClusterName, data.Region, data.AccountID)
 	data.ClusterID = types.StringValue(clusterUID)
 
 	agentInstalled := false
@@ -224,7 +224,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return
 	}
 
-	clusterUID := api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
+	clusterUID := resolveClusterUID(data.ClusterID, state.ClusterID, data.ClusterName, data.Region, data.AccountID)
 	data.ClusterID = types.StringValue(clusterUID)
 
 	upgradeAgentComponent := data.EnableUpgradeAgent.ValueBool()
@@ -560,7 +560,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	clusterUID := api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
+	clusterUID := resolveDeleteClusterUID(data.ClusterID, data.ClusterName, data.Region, data.AccountID)
 
 	rebalanceConfig := &api.RebalanceConfig{
 		Enable: false,
@@ -761,6 +761,20 @@ func sortedValuesByName[T any](values map[string]T, getName func(T) string) []T 
 	})
 
 	return result
+}
+
+func resolveClusterUID(preferred, fallback, clusterName, region, accountID types.String) string {
+	if !preferred.IsNull() && !preferred.IsUnknown() && preferred.ValueString() != "" {
+		return preferred.ValueString()
+	}
+	if !fallback.IsNull() && !fallback.IsUnknown() && fallback.ValueString() != "" {
+		return fallback.ValueString()
+	}
+	return api.GenerateClusterUID(api.CloudProviderAWS, clusterName.ValueString(), region.ValueString(), accountID.ValueString())
+}
+
+func resolveDeleteClusterUID(clusterID, clusterName, region, accountID types.String) string {
+	return resolveClusterUID(clusterID, clusterID, clusterName, region, accountID)
 }
 
 // preserveEmptyList keeps an explicit empty slice from state when the server
