@@ -7,6 +7,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
+	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
@@ -258,7 +259,7 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"instance_tags": schema.MapAttribute{
-			Description: "Each provisioned node will have the configured tags as key-value pairs. Defaults to `node.cloudpilot.ai/managed=true` if not specified.",
+			Description: "Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.",
 			Optional:    true,
 			CustomType:  customfield.NewMapType[types.String](ctx),
 			ElementType: types.StringType,
@@ -273,13 +274,17 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			Description: "Each provisioned node will have extra CPU allocation, used only for burstable pods.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(0),
+			PlanModifiers: []planmodifier.Int64{
+				useStateForUnknownInt64(),
+			},
 		},
 		"extra_memory_allocation_mib": schema.Int64Attribute{
 			Description: "Each provisioned node will have extra Memory allocation, used only for burstable pods.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(0),
+			PlanModifiers: []planmodifier.Int64{
+				useStateForUnknownInt64(),
+			},
 		},
 	}
 }
@@ -347,7 +352,9 @@ func nodePoolTemplateSchema() map[string]schema.Attribute {
 			Description: "Minimum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(0),
+			PlanModifiers: []planmodifier.Int64{
+				useStateForUnknownInt64(),
+			},
 		},
 		"instance_cpu_max": schema.Int64Attribute{
 			Description: "Maximum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
@@ -359,7 +366,9 @@ func nodePoolTemplateSchema() map[string]schema.Attribute {
 			Description: "Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(0),
+			PlanModifiers: []planmodifier.Int64{
+				useStateForUnknownInt64(),
+			},
 		},
 		"instance_memory_max": schema.Int64Attribute{
 			Description: "Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
