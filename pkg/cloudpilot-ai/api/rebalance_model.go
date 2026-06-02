@@ -224,15 +224,6 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 		})
 	}
 
-	// TODO: Force add CloudPilot management label to prevent anomalies during automated processing
-	{
-		if nodeclass.NodeClassSpec.Tags == nil {
-			nodeclass.NodeClassSpec.Tags = make(map[string]string)
-		}
-
-		nodeclass.NodeClassSpec.Tags[CloudPilotManagedNodeLabelKey] = "true"
-	}
-
 	if !ec2NodeClassTemplate.SystemDiskSizeGib.IsNull() && !ec2NodeClassTemplate.SystemDiskSizeGib.IsUnknown() {
 		if len(nodeclass.NodeClassSpec.BlockDeviceMappings) == 0 {
 			nodeclass.NodeClassSpec.BlockDeviceMappings = []*awsproviderv1.BlockDeviceMapping{

@@ -100,7 +100,7 @@ Optional:
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `extra_cpu_allocation_mcore` (Number) Each provisioned node will have extra CPU allocation, used only for burstable pods.
 - `extra_memory_allocation_mib` (Number) Each provisioned node will have extra Memory allocation, used only for burstable pods.
-- `instance_tags` (Map of String) Each provisioned node will have the configured tags as key-value pairs. Defaults to `node.cloudpilot.ai/managed=true` if not specified.
+- `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--subnet_selector_terms))
@@ -138,7 +138,7 @@ Optional:
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `extra_cpu_allocation_mcore` (Number) Each provisioned node will have extra CPU allocation, used only for burstable pods.
 - `extra_memory_allocation_mib` (Number) Each provisioned node will have extra Memory allocation, used only for burstable pods.
-- `instance_tags` (Map of String) Each provisioned node will have the configured tags as key-value pairs. Defaults to `node.cloudpilot.ai/managed=true` if not specified.
+- `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
 - `origin_nodeclass_json` (String) The origin node class json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--security_group_selector_terms))

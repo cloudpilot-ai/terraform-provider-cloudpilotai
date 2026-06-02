@@ -225,8 +225,6 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 				return nil, fmt.Errorf("failed to parse extra_cpu_allocation_mcore from kubeReserved cpu: %w", err)
 			}
 			nodeClassModel.ExtraCPUAllocationMCore = types.Int64Value(cpuMilliCore)
-		} else {
-			nodeClassModel.ExtraCPUAllocationMCore = types.Int64Value(0)
 		}
 
 		if memoryStr, ok := e.NodeClassSpec.Kubelet.KubeReserved["memory"]; ok {
@@ -236,8 +234,6 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 				return nil, fmt.Errorf("failed to parse extra_memory_allocation_mib from kubeReserved memory: %w", err)
 			}
 			nodeClassModel.ExtraMemoryAllocationMib = types.Int64Value(memoryMiB)
-		} else {
-			nodeClassModel.ExtraMemoryAllocationMib = types.Int64Value(0)
 		}
 	}
 
@@ -278,7 +274,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodePoolModel.InstanceCPUMIN, err = requirementsToInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpGt)
+	nodePoolModel.InstanceCPUMIN, err = requirementsToOptionalInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpGt)
 	if err != nil {
 		return nil, err
 	}
@@ -286,7 +282,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodePoolModel.InstanceMemoryMIN, err = requirementsToInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt)
+	nodePoolModel.InstanceMemoryMIN, err = requirementsToOptionalInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt)
 	if err != nil {
 		return nil, err
 	}
@@ -337,6 +333,26 @@ func requirementsToInt64(requirements []awscorev1.NodeSelectorRequirementWithMin
 	intValue, err := strconv.ParseInt(v.Values[0], 10, 64)
 	if err != nil {
 		return types.Int64Value(0), err
+	}
+
+	return types.Int64Value(intValue), nil
+}
+
+func requirementsToOptionalInt64(requirements []awscorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) (types.Int64, error) {
+	v, found := lo.Find(requirements, func(r awscorev1.NodeSelectorRequirementWithMinValues) bool {
+		if r.Key == key && r.Operator == operator {
+			return true
+		}
+
+		return false
+	})
+	if !found || len(v.Values) == 0 {
+		return types.Int64Null(), nil
+	}
+
+	intValue, err := strconv.ParseInt(v.Values[0], 10, 64)
+	if err != nil {
+		return types.Int64Null(), err
 	}
 
 	return types.Int64Value(intValue), nil
