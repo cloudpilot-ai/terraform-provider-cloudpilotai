@@ -1,14 +1,21 @@
-name: Claude Auto Review
+name: Claude PR Review (manual)
 
-# Automatically review every pull request with Claude, leaving line-anchored
-# inline comments plus a short top-level summary. No @claude mention needed.
+# Manually triggered code review. Comment `@claude review` on a pull request to
+# have Claude perform a deep, line-anchored inline review plus a short top-level
+# summary. This does NOT run automatically on every PR — it only fires when a
+# comment containing `@claude review` is posted on a PR.
 
 on:
-  pull_request:
-    types: [opened, synchronize, reopened]
+  issue_comment:
+    types: [created]
 
 jobs:
   review:
+    # Only run on pull request comments that contain the `@claude review` command.
+    # `issue.pull_request` is set only when the comment is on a PR (not an issue).
+    if: |
+      github.event.issue.pull_request &&
+      contains(github.event.comment.body, '@claude review')
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -36,7 +43,7 @@ jobs:
           # into one top-level sticky comment). This drives line-anchored inline review.
           prompt: |
             REPO: ${{ github.repository }}
-            PR NUMBER: ${{ github.event.pull_request.number }}
+            PR NUMBER: ${{ github.event.issue.number }}
 
             Perform a thorough code review of this pull request. Prioritize depth
             and correctness over speed. Focus on:
