@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/samber/lo"
+	k8sresource "k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
@@ -183,6 +184,10 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 
 	// 2. sync configurations (no previous state on Create, so pass nil — nothing to delete)
 	tflog.Info(ctx, "syncing cluster configuration")
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
 	if err := c.syncConfiguration(ctx, &data, clusterUID, nil, nil); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
@@ -309,6 +314,10 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	}
 
 	tflog.Info(ctx, "syncing cluster configuration")
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
 	if err := c.syncConfiguration(ctx, &data, clusterUID, previousNCNames, previousNPNames); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
@@ -449,7 +458,12 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		for name, nc := range ncByName {
 			if stateNC, ok := stateNCByName[name]; ok {
-				nc.TemplateName = stateNC.TemplateName
+				var err error
+				nc, err = preserveNodeClassStateRepresentation(ctx, nc, stateNC)
+				if err != nil {
+					resp.Diagnostics.AddError("failed to preserve nodeclass state", err.Error())
+					return
+				}
 				ncByName[name] = nc
 			}
 		}
@@ -715,6 +729,93 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 	tflog.Info(ctx, "synced rebalance configuration successfully")
 
 	return nil
+}
+
+func validateNodeClassDiskFields(ctx context.Context, data *ClusterModel) error {
+	if err := validateNodeClassDiskFieldsForClasses(ctx, data.NodeClasses); err != nil {
+		return err
+	}
+	return validateNodeClassDiskFieldsForTemplates(ctx, data.NodeClassTemplates)
+}
+
+func validateNodeClassDiskFieldsForClasses(ctx context.Context, list customfield.NestedObjectList[api.EC2NodeClassModel]) error {
+	if list.IsNullOrUnknown() {
+		return nil
+	}
+	items, diags := list.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("nodeclasses: %v", diags)
+	}
+	for _, item := range items {
+		if hasSystemDiskSize(item.SystemDiskSizeGib) && !item.BlockDeviceMappings.IsNullOrUnknown() {
+			return fmt.Errorf("nodeclass %q configures both system_disk_size_gib and block_device_mappings; choose one disk representation", item.Name.ValueString())
+		}
+	}
+	return nil
+}
+
+func validateNodeClassDiskFieldsForTemplates(ctx context.Context, list customfield.NestedObjectList[api.EC2NodeClassTemplateModel]) error {
+	if list.IsNullOrUnknown() {
+		return nil
+	}
+	items, diags := list.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("nodeclass_templates: %v", diags)
+	}
+	for _, item := range items {
+		if hasSystemDiskSize(item.SystemDiskSizeGib) && !item.BlockDeviceMappings.IsNullOrUnknown() {
+			return fmt.Errorf("nodeclass template %q configures both system_disk_size_gib and block_device_mappings; choose one disk representation", item.TemplateName.ValueString())
+		}
+	}
+	return nil
+}
+
+func hasSystemDiskSize(value types.Int64) bool {
+	return !value.IsNull() && !value.IsUnknown()
+}
+
+func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api.EC2NodeClassModel) (api.EC2NodeClassModel, error) {
+	remote.TemplateName = state.TemplateName
+	if !hasSystemDiskSize(state.SystemDiskSizeGib) {
+		return remote, nil
+	}
+
+	size, ok, err := systemDiskSizeFromBlockDeviceMappings(ctx, remote.BlockDeviceMappings)
+	if err != nil {
+		return remote, err
+	}
+	if ok {
+		remote.SystemDiskSizeGib = size
+	} else {
+		remote.SystemDiskSizeGib = types.Int64Null()
+	}
+	remote.BlockDeviceMappings = customfield.NullObjectList[api.BlockDeviceMappingModel](ctx)
+	return remote, nil
+}
+
+func systemDiskSizeFromBlockDeviceMappings(ctx context.Context, mappings customfield.NestedObjectList[api.BlockDeviceMappingModel]) (types.Int64, bool, error) {
+	if mappings.IsNullOrUnknown() {
+		return types.Int64Null(), false, nil
+	}
+	items, diags := mappings.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings: %v", diags)
+	}
+	if len(items) == 0 || items[0].EBS.IsNull() || items[0].EBS.IsUnknown() {
+		return types.Int64Null(), false, nil
+	}
+	ebs, ebsDiags := items[0].EBS.Value(ctx)
+	if ebsDiags.HasError() {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings.ebs: %v", ebsDiags)
+	}
+	if ebs == nil || ebs.VolumeSize.IsNull() || ebs.VolumeSize.IsUnknown() || ebs.VolumeSize.ValueString() == "" {
+		return types.Int64Null(), false, nil
+	}
+	quantity, err := k8sresource.ParseQuantity(ebs.VolumeSize.ValueString())
+	if err != nil {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings.ebs.volume_size: %w", err)
+	}
+	return types.Int64Value(quantity.Value() / int64(api.BytesToGiB)), true, nil
 }
 
 // orderByStateName returns server items that are tracked in state, preserving

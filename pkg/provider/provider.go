@@ -17,6 +17,7 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/consts"
 	eksds "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/nodeautoscale/eks"
 	wads "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/workloadautoscaler"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/clustersetting"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/nodeautoscale/eks"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/workloadautoscaler"
 )
@@ -109,6 +110,7 @@ func (p *CloudpilotaiProvider) Resources(ctx context.Context) []func() resource.
 	return []func() resource.Resource{
 		eks.NewCluster,
 		workloadautoscaler.NewWorkloadAutoscaler,
+		clustersetting.NewClusterSetting,
 	}
 }
 

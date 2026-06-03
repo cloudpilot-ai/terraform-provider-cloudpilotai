@@ -88,19 +88,39 @@ type SecurityGroupSelectorTermModel struct {
 	Name types.String                  `tfsdk:"name"`
 }
 
+type BlockDeviceModel struct {
+	DeleteOnTermination types.Bool   `tfsdk:"delete_on_termination"`
+	Encrypted           types.Bool   `tfsdk:"encrypted"`
+	IOPS                types.Int64  `tfsdk:"iops"`
+	KMSKeyID            types.String `tfsdk:"kms_key_id"`
+	SnapshotID          types.String `tfsdk:"snapshot_id"`
+	Throughput          types.Int64  `tfsdk:"throughput"`
+	VolumeSize          types.String `tfsdk:"volume_size"`
+	VolumeType          types.String `tfsdk:"volume_type"`
+}
+
+type BlockDeviceMappingModel struct {
+	DeviceName types.String                               `tfsdk:"device_name"`
+	RootVolume types.Bool                                 `tfsdk:"root_volume"`
+	EBS        customfield.NestedObject[BlockDeviceModel] `tfsdk:"ebs"`
+}
+
 type EC2NodeClassTemplateModel struct {
 	TemplateName types.String `tfsdk:"template_name"`
 
 	Role                   types.String `tfsdk:"role"`
 	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
+	AmiAlias               types.String `tfsdk:"ami_alias"`
+	UserData               types.String `tfsdk:"user_data"`
 
 	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
 	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
 
-	InstanceTags             customfield.Map[types.String] `tfsdk:"instance_tags"`
-	SystemDiskSizeGib        types.Int64                   `tfsdk:"system_disk_size_gib"`
-	ExtraCPUAllocationMCore  types.Int64                   `tfsdk:"extra_cpu_allocation_mcore"`
-	ExtraMemoryAllocationMib types.Int64                   `tfsdk:"extra_memory_allocation_mib"`
+	InstanceTags             customfield.Map[types.String]                         `tfsdk:"instance_tags"`
+	SystemDiskSizeGib        types.Int64                                           `tfsdk:"system_disk_size_gib"`
+	BlockDeviceMappings      customfield.NestedObjectList[BlockDeviceMappingModel] `tfsdk:"block_device_mappings"`
+	ExtraCPUAllocationMCore  types.Int64                                           `tfsdk:"extra_cpu_allocation_mcore"`
+	ExtraMemoryAllocationMib types.Int64                                           `tfsdk:"extra_memory_allocation_mib"`
 }
 
 type EC2NodeClassModel struct {
@@ -110,14 +130,17 @@ type EC2NodeClassModel struct {
 
 	Role                   types.String `tfsdk:"role"`
 	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
+	AmiAlias               types.String `tfsdk:"ami_alias"`
+	UserData               types.String `tfsdk:"user_data"`
 
 	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
 	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
 
-	InstanceTags             customfield.Map[types.String] `tfsdk:"instance_tags"`
-	SystemDiskSizeGib        types.Int64                   `tfsdk:"system_disk_size_gib"`
-	ExtraCPUAllocationMCore  types.Int64                   `tfsdk:"extra_cpu_allocation_mcore"`
-	ExtraMemoryAllocationMib types.Int64                   `tfsdk:"extra_memory_allocation_mib"`
+	InstanceTags             customfield.Map[types.String]                         `tfsdk:"instance_tags"`
+	SystemDiskSizeGib        types.Int64                                           `tfsdk:"system_disk_size_gib"`
+	BlockDeviceMappings      customfield.NestedObjectList[BlockDeviceMappingModel] `tfsdk:"block_device_mappings"`
+	ExtraCPUAllocationMCore  types.Int64                                           `tfsdk:"extra_cpu_allocation_mcore"`
+	ExtraMemoryAllocationMib types.Int64                                           `tfsdk:"extra_memory_allocation_mib"`
 
 	// TODO: When the origin_nodeclass_json is configured, the other configuration items are invalid.
 	OriginNodeClassJSON types.String `tfsdk:"origin_nodeclass_json"`
@@ -129,11 +152,14 @@ func (e *EC2NodeClassModel) ToEC2NodeClassTemplateModel() *EC2NodeClassTemplateM
 
 		Role:                   e.Role,
 		EnableImageAccelerator: e.EnableImageAccelerator,
+		AmiAlias:               e.AmiAlias,
+		UserData:               e.UserData,
 
 		SubnetSelectorTerms:        e.SubnetSelectorTerms,
 		SecurityGroupSelectorTerms: e.SecurityGroupSelectorTerms,
 		InstanceTags:               e.InstanceTags,
 		SystemDiskSizeGib:          e.SystemDiskSizeGib,
+		BlockDeviceMappings:        e.BlockDeviceMappings,
 		ExtraCPUAllocationMCore:    e.ExtraCPUAllocationMCore,
 		ExtraMemoryAllocationMib:   e.ExtraMemoryAllocationMib,
 	}
@@ -267,7 +293,119 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 		nodeclass.NodeClassSpec.Kubelet.KubeReserved["memory"] = fmt.Sprintf("%dMi", ec2NodeClassTemplate.ExtraMemoryAllocationMib.ValueInt64())
 	}
 
+	applyAmiAlias(nodeclass, ec2NodeClassTemplate.AmiAlias)
+	applyUserData(nodeclass, ec2NodeClassTemplate.UserData)
+	if err := applyBlockDeviceMappings(ctx, nodeclass, ec2NodeClassTemplate.BlockDeviceMappings); err != nil {
+		return nil, err
+	}
+
 	return nodeclass, nil
+}
+
+func applyAmiAlias(nodeclass *EC2NodeClass, alias types.String) {
+	if alias.IsNull() || alias.IsUnknown() {
+		return
+	}
+	value := strings.TrimSpace(alias.ValueString())
+	terms := nodeclass.NodeClassSpec.AMISelectorTerms[:0]
+	for _, term := range nodeclass.NodeClassSpec.AMISelectorTerms {
+		if term.Alias == "" {
+			terms = append(terms, term)
+		}
+	}
+	if value != "" {
+		terms = append(terms, awsproviderv1.AMISelectorTerm{Alias: value})
+	}
+	nodeclass.NodeClassSpec.AMISelectorTerms = terms
+}
+
+func applyUserData(nodeclass *EC2NodeClass, userData types.String) {
+	if userData.IsNull() || userData.IsUnknown() {
+		return
+	}
+	value := userData.ValueString()
+	if value == "" {
+		nodeclass.NodeClassSpec.UserData = nil
+		return
+	}
+	nodeclass.NodeClassSpec.UserData = &value
+}
+
+func applyBlockDeviceMappings(ctx context.Context, nodeclass *EC2NodeClass, mappings customfield.NestedObjectList[BlockDeviceMappingModel]) error {
+	if mappings.IsNullOrUnknown() {
+		return nil
+	}
+	models, diags := mappings.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("block_device_mappings: %v", diags)
+	}
+	out := make([]*awsproviderv1.BlockDeviceMapping, 0, len(models))
+	for _, m := range models {
+		mapping := &awsproviderv1.BlockDeviceMapping{}
+		if !m.DeviceName.IsNull() && !m.DeviceName.IsUnknown() && m.DeviceName.ValueString() != "" {
+			v := m.DeviceName.ValueString()
+			mapping.DeviceName = &v
+		}
+		if !m.RootVolume.IsNull() && !m.RootVolume.IsUnknown() {
+			mapping.RootVolume = m.RootVolume.ValueBool()
+		}
+		if !m.EBS.IsNull() && !m.EBS.IsUnknown() {
+			ebsModel, ebsDiags := m.EBS.Value(ctx)
+			if ebsDiags.HasError() {
+				return fmt.Errorf("block_device_mappings.ebs: %v", ebsDiags)
+			}
+			if ebsModel != nil {
+				ebs, err := blockDeviceModelToAWS(*ebsModel)
+				if err != nil {
+					return err
+				}
+				mapping.EBS = ebs
+			}
+		}
+		out = append(out, mapping)
+	}
+	nodeclass.NodeClassSpec.BlockDeviceMappings = out
+	return nil
+}
+
+func blockDeviceModelToAWS(m BlockDeviceModel) (*awsproviderv1.BlockDevice, error) {
+	out := &awsproviderv1.BlockDevice{}
+	if !m.DeleteOnTermination.IsNull() && !m.DeleteOnTermination.IsUnknown() {
+		v := m.DeleteOnTermination.ValueBool()
+		out.DeleteOnTermination = &v
+	}
+	if !m.Encrypted.IsNull() && !m.Encrypted.IsUnknown() {
+		v := m.Encrypted.ValueBool()
+		out.Encrypted = &v
+	}
+	if !m.IOPS.IsNull() && !m.IOPS.IsUnknown() {
+		v := m.IOPS.ValueInt64()
+		out.IOPS = &v
+	}
+	if !m.KMSKeyID.IsNull() && !m.KMSKeyID.IsUnknown() && m.KMSKeyID.ValueString() != "" {
+		v := m.KMSKeyID.ValueString()
+		out.KMSKeyID = &v
+	}
+	if !m.SnapshotID.IsNull() && !m.SnapshotID.IsUnknown() && m.SnapshotID.ValueString() != "" {
+		v := m.SnapshotID.ValueString()
+		out.SnapshotID = &v
+	}
+	if !m.Throughput.IsNull() && !m.Throughput.IsUnknown() {
+		v := m.Throughput.ValueInt64()
+		out.Throughput = &v
+	}
+	if !m.VolumeSize.IsNull() && !m.VolumeSize.IsUnknown() && m.VolumeSize.ValueString() != "" {
+		q, err := resource.ParseQuantity(m.VolumeSize.ValueString())
+		if err != nil {
+			return nil, fmt.Errorf("block_device_mappings.ebs.volume_size: %w", err)
+		}
+		out.VolumeSize = &q
+	}
+	if !m.VolumeType.IsNull() && !m.VolumeType.IsUnknown() && m.VolumeType.ValueString() != "" {
+		v := m.VolumeType.ValueString()
+		out.VolumeType = &v
+	}
+	return out, nil
 }
 
 type EC2NodePoolTemplateModel struct {
@@ -279,17 +417,25 @@ type EC2NodePoolTemplateModel struct {
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
-	ProvisionPriority   types.Int32     `tfsdk:"provision_priority"`
-	InstanceFamily      *[]types.String `tfsdk:"instance_family"`
-	InstanceArch        *[]types.String `tfsdk:"instance_arch"`
-	CapacityType        *[]types.String `tfsdk:"capacity_type"`
-	Zone                *[]types.String `tfsdk:"zone"`
-	InstanceCPUMAX      types.Int64     `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN      types.Int64     `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX   types.Int64     `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN   types.Int64     `tfsdk:"instance_memory_min"`
-	NodeDisruptionLimit types.String    `tfsdk:"node_disruption_limit"`
-	NodeDisruptionDelay types.String    `tfsdk:"node_disruption_delay"`
+	ProvisionPriority   types.Int32                              `tfsdk:"provision_priority"`
+	InstanceFamily      *[]types.String                          `tfsdk:"instance_family"`
+	InstanceArch        *[]types.String                          `tfsdk:"instance_arch"`
+	CapacityType        *[]types.String                          `tfsdk:"capacity_type"`
+	Zone                *[]types.String                          `tfsdk:"zone"`
+	InstanceCPUMAX      types.Int64                              `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN      types.Int64                              `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX   types.Int64                              `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN   types.Int64                              `tfsdk:"instance_memory_min"`
+	NodeDisruptionLimit types.String                             `tfsdk:"node_disruption_limit"`
+	NodeDisruptionDelay types.String                             `tfsdk:"node_disruption_delay"`
+	Labels              customfield.Map[types.String]            `tfsdk:"labels"`
+	Taints              customfield.NestedObjectList[TaintModel] `tfsdk:"taints"`
+}
+
+type TaintModel struct {
+	Key    types.String `tfsdk:"key"`
+	Value  types.String `tfsdk:"value"`
+	Effect types.String `tfsdk:"effect"`
 }
 
 type EC2NodePoolModel struct {
@@ -303,17 +449,19 @@ type EC2NodePoolModel struct {
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
-	ProvisionPriority   types.Int32     `tfsdk:"provision_priority"`
-	InstanceFamily      *[]types.String `tfsdk:"instance_family"`
-	InstanceArch        *[]types.String `tfsdk:"instance_arch"`
-	CapacityType        *[]types.String `tfsdk:"capacity_type"`
-	Zone                *[]types.String `tfsdk:"zone"`
-	InstanceCPUMAX      types.Int64     `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN      types.Int64     `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX   types.Int64     `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN   types.Int64     `tfsdk:"instance_memory_min"`
-	NodeDisruptionLimit types.String    `tfsdk:"node_disruption_limit"`
-	NodeDisruptionDelay types.String    `tfsdk:"node_disruption_delay"`
+	ProvisionPriority   types.Int32                              `tfsdk:"provision_priority"`
+	InstanceFamily      *[]types.String                          `tfsdk:"instance_family"`
+	InstanceArch        *[]types.String                          `tfsdk:"instance_arch"`
+	CapacityType        *[]types.String                          `tfsdk:"capacity_type"`
+	Zone                *[]types.String                          `tfsdk:"zone"`
+	InstanceCPUMAX      types.Int64                              `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN      types.Int64                              `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX   types.Int64                              `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN   types.Int64                              `tfsdk:"instance_memory_min"`
+	NodeDisruptionLimit types.String                             `tfsdk:"node_disruption_limit"`
+	NodeDisruptionDelay types.String                             `tfsdk:"node_disruption_delay"`
+	Labels              customfield.Map[types.String]            `tfsdk:"labels"`
+	Taints              customfield.NestedObjectList[TaintModel] `tfsdk:"taints"`
 
 	// TODO: When the origin_nodepool_json is configured, the other configuration items are invalid.
 	OriginNodePoolJSON types.String `tfsdk:"origin_nodepool_json"`
@@ -340,6 +488,8 @@ func (e *EC2NodePoolModel) ToEC2NodePoolTemplateModel() *EC2NodePoolTemplateMode
 		InstanceMemoryMIN:   e.InstanceMemoryMIN,
 		NodeDisruptionLimit: e.NodeDisruptionLimit,
 		NodeDisruptionDelay: e.NodeDisruptionDelay,
+		Labels:              e.Labels,
+		Taints:              e.Taints,
 	}
 }
 
@@ -368,13 +518,17 @@ func (e *EC2NodePoolModel) ToEC2NodePool(ctx context.Context, nodepool EC2NodePo
 		nodepool.NodePoolSpec = EnableGPUEC2NodePoolSpec(nil, enableGPU)
 	}
 
-	return applyEC2NodePoolTemplateModel(applyEC2NodePoolTemplateModel(&nodepool, ec2NodePoolTemplate),
-		e.ToEC2NodePoolTemplateModel()), nil
+	nodepoolPtr := &nodepool
+	var err error
+	if nodepoolPtr, err = applyEC2NodePoolTemplateModel(ctx, nodepoolPtr, ec2NodePoolTemplate); err != nil {
+		return nil, err
+	}
+	return applyEC2NodePoolTemplateModel(ctx, nodepoolPtr, e.ToEC2NodePoolTemplateModel())
 }
 
-func applyEC2NodePoolTemplateModel(nodepool *EC2NodePool, ec2NodePoolTemplate *EC2NodePoolTemplateModel) *EC2NodePool {
+func applyEC2NodePoolTemplateModel(ctx context.Context, nodepool *EC2NodePool, ec2NodePoolTemplate *EC2NodePoolTemplateModel) (*EC2NodePool, error) {
 	if ec2NodePoolTemplate == nil {
-		return nodepool
+		return nodepool, nil
 	}
 
 	if nodepool.NodePoolSpec == nil {
@@ -433,18 +587,63 @@ func applyEC2NodePoolTemplateModel(nodepool *EC2NodePool, ec2NodePoolTemplate *E
 	}
 
 	if !ec2NodePoolTemplate.NodeDisruptionLimit.IsNull() && !ec2NodePoolTemplate.NodeDisruptionLimit.IsUnknown() {
-		if len(nodepool.NodePoolSpec.Disruption.Budgets) == 0 {
-			nodepool.NodePoolSpec.Disruption.Budgets = []awscorev1.Budget{}
-		}
-
-		nodepool.NodePoolSpec.Disruption.Budgets[0].Nodes = ec2NodePoolTemplate.NodeDisruptionLimit.ValueString()
+		ensureFirstDisruptionBudget(nodepool).Nodes = ec2NodePoolTemplate.NodeDisruptionLimit.ValueString()
 	}
 
 	if !ec2NodePoolTemplate.NodeDisruptionDelay.IsNull() && !ec2NodePoolTemplate.NodeDisruptionDelay.IsUnknown() {
 		nodepool.NodePoolSpec.Disruption.ConsolidateAfter = awscorev1.MustParseNillableDuration(ec2NodePoolTemplate.NodeDisruptionDelay.ValueString())
 	}
 
-	return nodepool
+	if err := applyNodePoolLabels(ctx, nodepool, ec2NodePoolTemplate.Labels); err != nil {
+		return nodepool, err
+	}
+	if err := applyNodePoolTaints(ctx, nodepool, ec2NodePoolTemplate.Taints); err != nil {
+		return nodepool, err
+	}
+
+	return nodepool, nil
+}
+
+func applyNodePoolLabels(ctx context.Context, nodepool *EC2NodePool, labels customfield.Map[types.String]) error {
+	if labels.IsNull() || labels.IsUnknown() {
+		return nil
+	}
+	values, diags := labels.Value(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("labels: %v", diags)
+	}
+	nodepool.NodePoolSpec.Template.ObjectMeta.Labels = map[string]string{}
+	for k, v := range values {
+		nodepool.NodePoolSpec.Template.ObjectMeta.Labels[k] = v.ValueString()
+	}
+	return nil
+}
+
+func applyNodePoolTaints(ctx context.Context, nodepool *EC2NodePool, taints customfield.NestedObjectList[TaintModel]) error {
+	if taints.IsNullOrUnknown() {
+		return nil
+	}
+	values, diags := taints.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("taints: %v", diags)
+	}
+	out := make([]corev1.Taint, 0, len(values))
+	for _, t := range values {
+		out = append(out, corev1.Taint{
+			Key:    t.Key.ValueString(),
+			Value:  t.Value.ValueString(),
+			Effect: corev1.TaintEffect(t.Effect.ValueString()),
+		})
+	}
+	nodepool.NodePoolSpec.Template.Spec.Taints = out
+	return nil
+}
+
+func ensureFirstDisruptionBudget(nodepool *EC2NodePool) *awscorev1.Budget {
+	if len(nodepool.NodePoolSpec.Disruption.Budgets) == 0 {
+		nodepool.NodePoolSpec.Disruption.Budgets = []awscorev1.Budget{{}}
+	}
+	return &nodepool.NodePoolSpec.Disruption.Budgets[0]
 }
 
 func updateRequirements(key string, operator corev1.NodeSelectorOperator, values []string, requirements []awscorev1.NodeSelectorRequirementWithMinValues) []awscorev1.NodeSelectorRequirementWithMinValues {

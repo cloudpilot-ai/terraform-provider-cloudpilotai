@@ -9,6 +9,9 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
+
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 type namedItem struct {
@@ -162,5 +165,77 @@ func TestUseStateForUnknownInt64PreservesNullState(t *testing.T) {
 
 	if !resp.PlanValue.IsNull() {
 		t.Fatalf("plan value should remain null, got %v", resp.PlanValue)
+	}
+}
+
+func TestNodeClassSchemaIncludesFrontendFields(t *testing.T) {
+	s := Schema(context.Background())
+	nodeClassesAttr := s.Attributes["nodeclasses"].(schema.ListNestedAttribute)
+	attrs := nodeClassesAttr.NestedObject.Attributes
+	for _, name := range []string{"ami_alias", "user_data", "block_device_mappings"} {
+		if _, ok := attrs[name]; !ok {
+			t.Fatalf("nodeclasses schema missing %s", name)
+		}
+	}
+}
+
+func TestNodeClassFrontendStringFieldsHaveNoDefault(t *testing.T) {
+	s := Schema(context.Background())
+	nodeClassesAttr := s.Attributes["nodeclasses"].(schema.ListNestedAttribute)
+	attrs := nodeClassesAttr.NestedObject.Attributes
+
+	amiAlias, ok := attrs["ami_alias"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("ami_alias attribute has unexpected type %T", attrs["ami_alias"])
+	}
+	if amiAlias.StringDefaultValue() != nil {
+		t.Fatalf("ami_alias should not have a schema default")
+	}
+
+	userData, ok := attrs["user_data"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("user_data attribute has unexpected type %T", attrs["user_data"])
+	}
+	if userData.StringDefaultValue() != nil {
+		t.Fatalf("user_data should not have a schema default")
+	}
+}
+
+func TestPreserveNodeClassStateRepresentationKeepsSystemDiskConvenience(t *testing.T) {
+	ctx := context.Background()
+	remote := api.EC2NodeClassModel{
+		Name: types.StringValue("cloudpilot"),
+		BlockDeviceMappings: customfield.NewObjectListMust(ctx, []api.BlockDeviceMappingModel{{
+			DeviceName: types.StringValue("/dev/xvda"),
+			EBS: customfield.NewObjectMust(ctx, &api.BlockDeviceModel{
+				VolumeSize: types.StringValue("64Gi"),
+			}),
+		}}),
+	}
+	state := api.EC2NodeClassModel{
+		Name:              types.StringValue("cloudpilot"),
+		SystemDiskSizeGib: types.Int64Value(20),
+	}
+
+	got, err := preserveNodeClassStateRepresentation(ctx, remote, state)
+	if err != nil {
+		t.Fatalf("preserveNodeClassStateRepresentation() error = %v", err)
+	}
+	if got.SystemDiskSizeGib.ValueInt64() != 64 {
+		t.Fatalf("SystemDiskSizeGib = %d, want 64", got.SystemDiskSizeGib.ValueInt64())
+	}
+	if !got.BlockDeviceMappings.IsNull() {
+		t.Fatalf("BlockDeviceMappings should stay null for system_disk_size_gib representation")
+	}
+}
+
+func TestNodePoolSchemaIncludesLabelsAndTaints(t *testing.T) {
+	s := Schema(context.Background())
+	nodePoolsAttr := s.Attributes["nodepools"].(schema.ListNestedAttribute)
+	attrs := nodePoolsAttr.NestedObject.Attributes
+	for _, name := range []string{"labels", "taints"} {
+		if _, ok := attrs[name]; !ok {
+			t.Fatalf("nodepools schema missing %s", name)
+		}
 	}
 }

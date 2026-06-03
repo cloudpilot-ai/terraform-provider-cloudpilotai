@@ -210,11 +210,21 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 		nodeClassModel.InstanceTags = customfield.NullMap[types.String](ctx)
 	}
 
-	if len(e.NodeClassSpec.BlockDeviceMappings) > 0 &&
-		e.NodeClassSpec.BlockDeviceMappings[0] != nil &&
-		e.NodeClassSpec.BlockDeviceMappings[0].EBS != nil {
-		nodeClassModel.SystemDiskSizeGib = types.Int64Value(e.NodeClassSpec.BlockDeviceMappings[0].EBS.VolumeSize.Value() / BytesToGiB)
+	for _, term := range e.NodeClassSpec.AMISelectorTerms {
+		if term.Alias != "" {
+			nodeClassModel.AmiAlias = types.StringValue(term.Alias)
+			break
+		}
 	}
+	if nodeClassModel.AmiAlias.IsNull() {
+		nodeClassModel.AmiAlias = types.StringValue("")
+	}
+	if e.NodeClassSpec.UserData != nil {
+		nodeClassModel.UserData = types.StringValue(*e.NodeClassSpec.UserData)
+	} else {
+		nodeClassModel.UserData = types.StringValue("")
+	}
+	nodeClassModel.BlockDeviceMappings = customfield.NewObjectListMust(ctx, blockDeviceMappingModelsFromAWS(ctx, e.NodeClassSpec.BlockDeviceMappings))
 
 	if e.NodeClassSpec.Kubelet != nil &&
 		e.NodeClassSpec.Kubelet.KubeReserved != nil {
@@ -238,6 +248,58 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	}
 
 	return &nodeClassModel, nil
+}
+
+func blockDeviceMappingModelsFromAWS(ctx context.Context, in []*awsproviderv1.BlockDeviceMapping) []BlockDeviceMappingModel {
+	out := make([]BlockDeviceMappingModel, 0, len(in))
+	for _, m := range in {
+		if m == nil {
+			continue
+		}
+		model := BlockDeviceMappingModel{
+			RootVolume: types.BoolValue(m.RootVolume),
+			EBS:        customfield.NullObject[BlockDeviceModel](ctx),
+		}
+		if m.DeviceName != nil {
+			model.DeviceName = types.StringValue(*m.DeviceName)
+		} else {
+			model.DeviceName = types.StringValue("")
+		}
+		if m.EBS != nil {
+			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(m.EBS))
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
+	model := &BlockDeviceModel{}
+	if in.DeleteOnTermination != nil {
+		model.DeleteOnTermination = types.BoolValue(*in.DeleteOnTermination)
+	}
+	if in.Encrypted != nil {
+		model.Encrypted = types.BoolValue(*in.Encrypted)
+	}
+	if in.IOPS != nil {
+		model.IOPS = types.Int64Value(*in.IOPS)
+	}
+	if in.KMSKeyID != nil {
+		model.KMSKeyID = types.StringValue(*in.KMSKeyID)
+	}
+	if in.SnapshotID != nil {
+		model.SnapshotID = types.StringValue(*in.SnapshotID)
+	}
+	if in.Throughput != nil {
+		model.Throughput = types.Int64Value(*in.Throughput)
+	}
+	if in.VolumeSize != nil {
+		model.VolumeSize = types.StringValue(in.VolumeSize.String())
+	}
+	if in.VolumeType != nil {
+		model.VolumeType = types.StringValue(*in.VolumeType)
+	}
+	return model
 }
 
 func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
@@ -286,6 +348,22 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	if err != nil {
 		return nil, err
 	}
+
+	labelModels := map[string]types.String{}
+	for k, v := range e.NodePoolSpec.Template.ObjectMeta.Labels {
+		labelModels[k] = types.StringValue(v)
+	}
+	nodePoolModel.Labels = customfield.NewMapMust[types.String](context.Background(), labelModels)
+
+	taintModels := make([]TaintModel, 0, len(e.NodePoolSpec.Template.Spec.Taints))
+	for _, taint := range e.NodePoolSpec.Template.Spec.Taints {
+		taintModels = append(taintModels, TaintModel{
+			Key:    types.StringValue(taint.Key),
+			Value:  types.StringValue(taint.Value),
+			Effect: types.StringValue(string(taint.Effect)),
+		})
+	}
+	nodePoolModel.Taints = customfield.NewObjectListMust(context.Background(), taintModels)
 
 	if len(e.NodePoolSpec.Disruption.Budgets) != 0 {
 		nodePoolModel.NodeDisruptionLimit = types.StringValue(e.NodePoolSpec.Disruption.Budgets[0].Nodes)

@@ -135,6 +135,11 @@ type RecommendationPolicyModel struct {
 	RequestMinMemory types.String `tfsdk:"request_min_memory"`
 	RequestMaxCPU    types.String `tfsdk:"request_max_cpu"`
 	RequestMaxMemory types.String `tfsdk:"request_max_memory"`
+
+	JVMHeapBuffer              types.String `tfsdk:"jvm_heap_buffer"`
+	JVMMinHeapXmsRatioOfMemory types.String `tfsdk:"jvm_min_heap_xms_ratio_of_memory"`
+	JVMRecentNonHeapWindow     types.String `tfsdk:"jvm_recent_non_heap_window"`
+	JVMHeapUsedPercentile      types.Int32  `tfsdk:"jvm_heap_used_percentile"`
 }
 
 func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
@@ -197,6 +202,32 @@ func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
 		rp.Spec.Limits = limits
 	}
 
+	jvm := &JVMRecommendationConfiguration{}
+	hasJVM := false
+	if !m.JVMHeapBuffer.IsNull() && !m.JVMHeapBuffer.IsUnknown() && m.JVMHeapBuffer.ValueString() != "" {
+		v := m.JVMHeapBuffer.ValueString()
+		jvm.HeapBuffer = &v
+		hasJVM = true
+	}
+	if !m.JVMMinHeapXmsRatioOfMemory.IsNull() && !m.JVMMinHeapXmsRatioOfMemory.IsUnknown() && m.JVMMinHeapXmsRatioOfMemory.ValueString() != "" {
+		v := m.JVMMinHeapXmsRatioOfMemory.ValueString()
+		jvm.MinHeapXmsRatioOfMemory = &v
+		hasJVM = true
+	}
+	if !m.JVMRecentNonHeapWindow.IsNull() && !m.JVMRecentNonHeapWindow.IsUnknown() && m.JVMRecentNonHeapWindow.ValueString() != "" {
+		v := m.JVMRecentNonHeapWindow.ValueString()
+		jvm.RecentNonHeapWindow = &v
+		hasJVM = true
+	}
+	if !m.JVMHeapUsedPercentile.IsNull() && !m.JVMHeapUsedPercentile.IsUnknown() {
+		v := m.JVMHeapUsedPercentile.ValueInt32()
+		jvm.HeapUsedPercentile = &v
+		hasJVM = true
+	}
+	if hasJVM {
+		rp.Spec.JVM = jvm
+	}
+
 	return rp
 }
 
@@ -249,15 +280,52 @@ func RecommendationPolicyModelFromResource(rp *RecommendationPolicyResource) Rec
 		m.RequestMaxMemory = types.StringValue("")
 	}
 
+	if rp.Spec.JVM != nil {
+		if rp.Spec.JVM.HeapBuffer != nil {
+			m.JVMHeapBuffer = types.StringValue(*rp.Spec.JVM.HeapBuffer)
+		} else {
+			m.JVMHeapBuffer = types.StringValue("")
+		}
+		if rp.Spec.JVM.MinHeapXmsRatioOfMemory != nil {
+			m.JVMMinHeapXmsRatioOfMemory = types.StringValue(*rp.Spec.JVM.MinHeapXmsRatioOfMemory)
+		} else {
+			m.JVMMinHeapXmsRatioOfMemory = types.StringValue("")
+		}
+		if rp.Spec.JVM.RecentNonHeapWindow != nil {
+			m.JVMRecentNonHeapWindow = types.StringValue(NormalizeDuration(*rp.Spec.JVM.RecentNonHeapWindow))
+		} else {
+			m.JVMRecentNonHeapWindow = types.StringValue("")
+		}
+		if rp.Spec.JVM.HeapUsedPercentile != nil {
+			m.JVMHeapUsedPercentile = types.Int32Value(*rp.Spec.JVM.HeapUsedPercentile)
+		}
+	} else {
+		m.JVMHeapBuffer = types.StringValue("")
+		m.JVMMinHeapXmsRatioOfMemory = types.StringValue("")
+		m.JVMRecentNonHeapWindow = types.StringValue("")
+	}
+
 	return m
 }
 
 // TargetRefModel is the Terraform model for a target workload reference.
 type TargetRefModel struct {
-	APIVersion types.String `tfsdk:"api_version"`
-	Kind       types.String `tfsdk:"kind"`
-	Name       types.String `tfsdk:"name"`
-	Namespace  types.String `tfsdk:"namespace"`
+	APIVersion    types.String                                 `tfsdk:"api_version"`
+	Kind          types.String                                 `tfsdk:"kind"`
+	Name          types.String                                 `tfsdk:"name"`
+	Namespace     types.String                                 `tfsdk:"namespace"`
+	LabelSelector customfield.NestedObject[LabelSelectorModel] `tfsdk:"label_selector"`
+}
+
+type LabelSelectorRequirementModel struct {
+	Key      types.String    `tfsdk:"key"`
+	Operator types.String    `tfsdk:"operator"`
+	Values   *[]types.String `tfsdk:"values"`
+}
+
+type LabelSelectorModel struct {
+	MatchLabels      customfield.Map[types.String]                               `tfsdk:"match_labels"`
+	MatchExpressions customfield.NestedObjectList[LabelSelectorRequirementModel] `tfsdk:"match_expressions"`
 }
 
 // UpdateScheduleModel is the Terraform model for an update schedule item.
@@ -282,8 +350,9 @@ type AutoscalingPolicyModel struct {
 	Name   types.String `tfsdk:"name"`
 	Enable types.Bool   `tfsdk:"enable"`
 
-	RecommendationPolicyName types.String `tfsdk:"recommendation_policy_name"`
-	Priority                 types.Int64  `tfsdk:"priority"`
+	RecommendationPolicyName   types.String `tfsdk:"recommendation_policy_name"`
+	Priority                   types.Int64  `tfsdk:"priority"`
+	DisableRuntimeOptimization types.Bool   `tfsdk:"disable_runtime_optimization"`
 
 	UpdateResources      *[]types.String `tfsdk:"update_resources"`
 	DriftThresholdCPU    types.String    `tfsdk:"drift_threshold_cpu"`
@@ -300,7 +369,8 @@ type AutoscalingPolicyModel struct {
 	StartupBoostMultiplierCPU    types.String `tfsdk:"startup_boost_multiplier_cpu"`
 	StartupBoostMultiplierMemory types.String `tfsdk:"startup_boost_multiplier_memory"`
 
-	InPlaceFallbackDefaultPolicy types.String `tfsdk:"in_place_fallback_default_policy"`
+	InPlaceFallbackDefaultPolicy  types.String                  `tfsdk:"in_place_fallback_default_policy"`
+	InPlaceFallbackReasonPolicies customfield.Map[types.String] `tfsdk:"in_place_fallback_reason_policies"`
 }
 
 func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPolicyResource, error) {
@@ -312,6 +382,10 @@ func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPo
 			RecommendationPolicyName: m.RecommendationPolicyName.ValueString(),
 			OnPolicyRemoval:          m.OnPolicyRemoval.ValueString(),
 		},
+	}
+
+	if !m.DisableRuntimeOptimization.IsNull() && !m.DisableRuntimeOptimization.IsUnknown() {
+		ap.Spec.DisableRuntimeOptimization = m.DisableRuntimeOptimization.ValueBool()
 	}
 
 	if m.UpdateResources != nil {
@@ -339,11 +413,16 @@ func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPo
 			return nil, fmt.Errorf("failed to parse target_refs: %v", diags)
 		}
 		for _, tr := range targetRefs {
+			selector, err := labelSelectorModelToAPI(ctx, tr.LabelSelector)
+			if err != nil {
+				return nil, err
+			}
 			ap.Spec.TargetRefs = append(ap.Spec.TargetRefs, TypedObjectReference{
-				APIVersion: tr.APIVersion.ValueString(),
-				Kind:       tr.Kind.ValueString(),
-				Name:       tr.Name.ValueString(),
-				Namespace:  tr.Namespace.ValueString(),
+				APIVersion:    tr.APIVersion.ValueString(),
+				Kind:          tr.Kind.ValueString(),
+				Name:          tr.Name.ValueString(),
+				Namespace:     tr.Namespace.ValueString(),
+				LabelSelector: selector,
 			})
 		}
 	}
@@ -414,22 +493,113 @@ func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPo
 		ap.Spec.ResourceStartupBoost = boost
 	}
 
+	fallback := &InPlaceFallback{}
+	hasFallback := false
 	if !m.InPlaceFallbackDefaultPolicy.IsNull() && !m.InPlaceFallbackDefaultPolicy.IsUnknown() && m.InPlaceFallbackDefaultPolicy.ValueString() != "" {
-		ap.Spec.InPlaceFallback = &InPlaceFallback{
-			DefaultPolicy: m.InPlaceFallbackDefaultPolicy.ValueString(),
+		fallback.DefaultPolicy = m.InPlaceFallbackDefaultPolicy.ValueString()
+		hasFallback = true
+	}
+	if !m.InPlaceFallbackReasonPolicies.IsNull() && !m.InPlaceFallbackReasonPolicies.IsUnknown() {
+		values, diags := m.InPlaceFallbackReasonPolicies.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("in_place_fallback_reason_policies: %v", diags)
 		}
+		fallback.ReasonPolicies = map[string]string{}
+		for k, v := range values {
+			fallback.ReasonPolicies[k] = v.ValueString()
+		}
+		if len(fallback.ReasonPolicies) > 0 {
+			hasFallback = true
+		}
+	}
+	if hasFallback {
+		ap.Spec.InPlaceFallback = fallback
 	}
 
 	return ap, nil
 }
 
+func labelSelectorModelToAPI(ctx context.Context, model customfield.NestedObject[LabelSelectorModel]) (*LabelSelector, error) {
+	if model.IsNull() || model.IsUnknown() {
+		return nil, nil
+	}
+	value, diags := model.Value(ctx)
+	if diags.HasError() {
+		return nil, fmt.Errorf("label_selector: %v", diags)
+	}
+	if value == nil {
+		return nil, nil
+	}
+	out := &LabelSelector{}
+	if !value.MatchLabels.IsNull() && !value.MatchLabels.IsUnknown() {
+		labels, labelDiags := value.MatchLabels.Value(ctx)
+		if labelDiags.HasError() {
+			return nil, fmt.Errorf("label_selector.match_labels: %v", labelDiags)
+		}
+		out.MatchLabels = map[string]string{}
+		for k, v := range labels {
+			out.MatchLabels[k] = v.ValueString()
+		}
+	}
+	if !value.MatchExpressions.IsNullOrUnknown() {
+		expressions, exprDiags := value.MatchExpressions.AsStructSliceT(ctx)
+		if exprDiags.HasError() {
+			return nil, fmt.Errorf("label_selector.match_expressions: %v", exprDiags)
+		}
+		for _, expr := range expressions {
+			item := LabelSelectorRequirement{
+				Key:      expr.Key.ValueString(),
+				Operator: expr.Operator.ValueString(),
+			}
+			if expr.Values != nil {
+				item.Values = make([]string, 0, len(*expr.Values))
+				for _, v := range *expr.Values {
+					item.Values = append(item.Values, v.ValueString())
+				}
+			}
+			out.MatchExpressions = append(out.MatchExpressions, item)
+		}
+	}
+	if len(out.MatchLabels) == 0 && len(out.MatchExpressions) == 0 {
+		return nil, nil
+	}
+	return out, nil
+}
+
+func labelSelectorModelFromAPI(ctx context.Context, in *LabelSelector) customfield.NestedObject[LabelSelectorModel] {
+	if in == nil {
+		return customfield.NullObject[LabelSelectorModel](ctx)
+	}
+	labels := map[string]types.String{}
+	for k, v := range in.MatchLabels {
+		labels[k] = types.StringValue(v)
+	}
+	expressions := make([]LabelSelectorRequirementModel, 0, len(in.MatchExpressions))
+	for _, expr := range in.MatchExpressions {
+		values := make([]types.String, 0, len(expr.Values))
+		for _, v := range expr.Values {
+			values = append(values, types.StringValue(v))
+		}
+		expressions = append(expressions, LabelSelectorRequirementModel{
+			Key:      types.StringValue(expr.Key),
+			Operator: types.StringValue(expr.Operator),
+			Values:   &values,
+		})
+	}
+	return customfield.NewObjectMust(ctx, &LabelSelectorModel{
+		MatchLabels:      customfield.NewMapMust[types.String](ctx, labels),
+		MatchExpressions: customfield.NewObjectListMust(ctx, expressions),
+	})
+}
+
 func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPolicyResource) AutoscalingPolicyModel {
 	m := AutoscalingPolicyModel{
-		Name:                     types.StringValue(ap.Name),
-		Enable:                   types.BoolValue(ap.Enable),
-		RecommendationPolicyName: types.StringValue(ap.Spec.RecommendationPolicyName),
-		Priority:                 types.Int64Value(int64(ap.Spec.Priority)),
-		OnPolicyRemoval:          types.StringValue(ap.Spec.OnPolicyRemoval),
+		Name:                       types.StringValue(ap.Name),
+		Enable:                     types.BoolValue(ap.Enable),
+		RecommendationPolicyName:   types.StringValue(ap.Spec.RecommendationPolicyName),
+		Priority:                   types.Int64Value(int64(ap.Spec.Priority)),
+		DisableRuntimeOptimization: types.BoolValue(ap.Spec.DisableRuntimeOptimization),
+		OnPolicyRemoval:            types.StringValue(ap.Spec.OnPolicyRemoval),
 	}
 
 	if len(ap.Spec.UpdateResources) > 0 {
@@ -455,10 +625,11 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 	targetRefModels := make([]TargetRefModel, 0, len(ap.Spec.TargetRefs))
 	for _, tr := range ap.Spec.TargetRefs {
 		targetRefModels = append(targetRefModels, TargetRefModel{
-			APIVersion: types.StringValue(tr.APIVersion),
-			Kind:       types.StringValue(tr.Kind),
-			Name:       types.StringValue(tr.Name),
-			Namespace:  types.StringValue(tr.Namespace),
+			APIVersion:    types.StringValue(tr.APIVersion),
+			Kind:          types.StringValue(tr.Kind),
+			Name:          types.StringValue(tr.Name),
+			Namespace:     types.StringValue(tr.Namespace),
+			LabelSelector: labelSelectorModelFromAPI(ctx, tr.LabelSelector),
 		})
 	}
 	m.TargetRefs = customfield.NewObjectListMust(ctx, targetRefModels)
@@ -536,8 +707,14 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 
 	if ap.Spec.InPlaceFallback != nil {
 		m.InPlaceFallbackDefaultPolicy = types.StringValue(ap.Spec.InPlaceFallback.DefaultPolicy)
+		reasonPolicies := map[string]types.String{}
+		for k, v := range ap.Spec.InPlaceFallback.ReasonPolicies {
+			reasonPolicies[k] = types.StringValue(v)
+		}
+		m.InPlaceFallbackReasonPolicies = customfield.NewMapMust[types.String](ctx, reasonPolicies)
 	} else {
 		m.InPlaceFallbackDefaultPolicy = types.StringValue("")
+		m.InPlaceFallbackReasonPolicies = customfield.NewMapMust[types.String](ctx, map[string]types.String{})
 	}
 
 	return m

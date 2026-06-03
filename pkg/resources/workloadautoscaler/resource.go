@@ -113,11 +113,9 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 
 	// 2. Enable WA configuration on the backend
 	tflog.Info(ctx, "enabling Workload Autoscaler configuration")
-	enableTrue := true
-	if err := w.client.UpdateWAConfiguration(clusterID, &api.WAConfiguration{
-		EnableWorkloadAutoscaler: &enableTrue,
-	}); err != nil {
-		tflog.Warn(ctx, fmt.Sprintf("failed to update WA configuration (non-fatal): %v", err))
+	if err := w.updateWAConfiguration(ctx, clusterID, &data); err != nil {
+		resp.Diagnostics.AddError("failed to update Workload Autoscaler configuration", err.Error())
+		return
 	}
 
 	// 3. Wait for the WA to be ready by polling for configuration
@@ -211,6 +209,11 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		tflog.Info(ctx, "Workload Autoscaler install settings unchanged and component already installed, skipping upgrade")
 	}
 
+	if err := w.updateWAConfiguration(ctx, clusterID, &data); err != nil {
+		resp.Diagnostics.AddError("failed to update Workload Autoscaler configuration", err.Error())
+		return
+	}
+
 	// Sync policies, passing previous state names so only removed policies are deleted
 	if err := w.syncPolicies(ctx, &data, clusterID, previousRPNames, previousAPNames); err != nil {
 		resp.Diagnostics.AddError(
@@ -238,6 +241,12 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 	}
 
 	clusterID := data.ClusterID.ValueString()
+
+	if conf, err := w.client.GetWAConfiguration(clusterID); err != nil {
+		tflog.Warn(ctx, fmt.Sprintf("failed to read Workload Autoscaler configuration: %v", err))
+	} else {
+		data.ApplyWAConfiguration(conf)
+	}
 
 	// Read recommendation policies
 	rps, err := w.client.ListRecommendationPolicies(clusterID)
@@ -468,6 +477,13 @@ func (w *WorkloadAutoscaler) syncPolicies(ctx context.Context, data *WorkloadAut
 
 	tflog.Info(ctx, "synced all policies successfully")
 	return nil
+}
+
+func (w *WorkloadAutoscaler) updateWAConfiguration(ctx context.Context, clusterID string, data *WorkloadAutoscalerModel) error {
+	enableTrue := true
+	conf := data.ToWAConfiguration()
+	conf.EnableWorkloadAutoscaler = &enableTrue
+	return w.client.UpdateWAConfiguration(clusterID, conf)
 }
 
 // extractPolicyNames extracts the set of names from a NestedObjectList in

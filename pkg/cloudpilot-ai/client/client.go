@@ -18,6 +18,9 @@ import (
 type Interface interface {
 	// cluster
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
+	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
+	UpdateClusterSetting(clusterID string, setting *api.ClusterSetting) error
+	UpdateClusterMaintenanceStatus(clusterID string, status *api.ClusterMaintenanceStatus) error
 	DeleteCluster(clusterID string) error
 
 	// sh
@@ -90,6 +93,25 @@ func (c *Client) GetCluster(clusterID string) (*api.ClusterCostsSummary, error) 
 		return nil, err
 	}
 	return &out, err
+}
+
+func (c *Client) GetClusterSetting(clusterID string) (*api.ClusterSetting, error) {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/setting", c.Endpoint, clusterID)
+	out, err := doJSON[api.ClusterSetting](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateClusterSetting(clusterID string, setting *api.ClusterSetting) error {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/setting", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, setting)
+}
+
+func (c *Client) UpdateClusterMaintenanceStatus(clusterID string, status *api.ClusterMaintenanceStatus) error {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/maintenance/status", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, status)
 }
 
 func (c *Client) DeleteCluster(clusterID string) error {

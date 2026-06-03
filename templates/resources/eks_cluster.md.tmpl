@@ -13,6 +13,40 @@ Manages an EKS cluster registered with CloudPilot AI. This resource handles the 
 
 {{ tffile "examples/resources/cloudpilotai_eks_cluster/resource.tf" }}
 
+### AWS/EKS Node Config Fields
+
+```terraform
+nodeclasses = [
+  {
+    name      = "cloudpilot"
+    ami_alias = "al2023@latest"
+    user_data = "#!/bin/bash\necho cloudpilot"
+    block_device_mappings = [
+      {
+        device_name = "/dev/xvda"
+        root_volume = true
+        ebs = {
+          volume_size           = "80Gi"
+          volume_type           = "gp3"
+          iops                  = 3000
+          throughput            = 125
+          encrypted             = true
+          delete_on_termination = true
+        }
+      }
+    ]
+  }
+]
+
+nodepools = [
+  {
+    name   = "cloudpilot-general"
+    labels = { team = "platform" }
+    taints = [{ key = "dedicated", value = "wa", effect = "NoSchedule" }]
+  }
+]
+```
+
 {{ .SchemaMarkdown | trimspace }}
 
 ## Import
