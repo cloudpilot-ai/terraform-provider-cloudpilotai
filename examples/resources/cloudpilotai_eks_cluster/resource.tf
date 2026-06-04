@@ -11,6 +11,25 @@ resource "cloudpilotai_eks_cluster" "rebalance" {
   region              = "us-west-2"
   restore_node_number = 3
   enable_rebalance    = true
+
+  cluster_setting = {
+    enable_node_repair  = true
+    enable_disk_monitor = true
+    discount            = 0.15
+    pre_run_command     = <<-EOT
+      set -euo pipefail
+
+      echo "pre run start"
+      aws sts get-caller-identity
+      kubectl get nodes
+    EOT
+    post_run_command    = <<-EOT
+      set -euo pipefail
+
+      echo "post run start"
+      kubectl get pods -A
+    EOT
+  }
 }
 
 # Full configuration with node classes and node pools

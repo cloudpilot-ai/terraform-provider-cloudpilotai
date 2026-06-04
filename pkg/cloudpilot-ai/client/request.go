@@ -14,6 +14,9 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/leveledlogger"
 )
 
+const terraformProviderClientHeader = "terraform-provider-cloudpilotai"
+const browserLikeUserAgent = "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/137.0.0.0 Safari/537.36"
+
 // doJSONNoData calls doJSON[struct{}] when you don't care about Data.
 func doJSONNoData(c *Client, method, url string, payload any) error {
 	_, err := doJSON[struct{}](c, method, url, payload)
@@ -78,6 +81,10 @@ func doJSON[T any](c *Client, method, url string, payload any) (T, error) {
 // If reqBody is []byte or json.RawMessage, it is sent as-is (no re-marshal).
 // Otherwise, reqBody is JSON-marshaled.
 func (c *Client) request(method string, url string, reqBody any) (*http.Response, error) {
+	return c.requestWithHeaders(method, url, reqBody, nil)
+}
+
+func (c *Client) requestWithHeaders(method string, url string, reqBody any, extraHeaders map[string]string) (*http.Response, error) {
 	var (
 		httpReq *retryablehttp.Request
 		err     error
@@ -105,6 +112,9 @@ func (c *Client) request(method string, url string, reqBody any) (*http.Response
 		klog.Errorf("Failed to create http request, method(%s) url(%s): %v", method, url, err)
 		return nil, err
 	}
+	for key, value := range extraHeaders {
+		httpReq.Header.Set(key, value)
+	}
 
 	client := c.retryClient()
 	resp, err := client.Do(httpReq)
@@ -123,6 +133,7 @@ func (c *Client) newHTTPReq(method, url string, body []byte) (*retryablehttp.Req
 		return nil, err
 	}
 	httpReq.Header.Set("X-API-KEY", c.APIKEY)
+	httpReq.Header.Set("X-CloudPilot-Client", terraformProviderClientHeader)
 	return httpReq, nil
 }
 

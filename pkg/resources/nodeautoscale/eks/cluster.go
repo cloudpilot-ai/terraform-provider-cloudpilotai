@@ -16,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"github.com/samber/lo"
+	k8sresource "k8s.io/apimachinery/pkg/api/resource"
 	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
@@ -34,6 +35,13 @@ var (
 type Cluster struct {
 	client cloudpilitaiclient.Interface
 }
+
+type postWriteStateHydratorClient interface {
+	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
+	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
+}
+
+const clusterReadyPollTimeout = 5 * time.Minute
 
 func NewCluster() resource.Resource {
 	return &Cluster{}
@@ -132,19 +140,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		tflog.Info(ctx, "installed CloudPilot AI agent component successfully")
 	}
 
-	tflog.Info(ctx, "waiting for cloudpilot ai agent component to be ready")
-	if err := wait.PollUntilContextTimeout(ctx, 10*time.Second, 5*time.Minute, true, func(ctx context.Context) (done bool, err error) {
-		_, err = c.client.GetCluster(clusterUID)
-		if err != nil {
-			if errors.Is(err, cloudpilitaiclient.ErrNotFound) {
-				tflog.Info(ctx, "waiting for cloudpilot ai agent component to be ready")
-				return false, nil
-			}
-
-			return false, err
-		}
-		return true, nil
-	}); err != nil {
+	if err := c.waitForClusterReady(ctx, clusterUID); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to wait for cloudpilot ai agent component to be ready",
 			err.Error(),
@@ -163,9 +159,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 
 	rebalanceComponentInstalled := !rebalanceConfig.LastComponentsActiveTime.IsZero()
 
-	if !data.OnlyInstallAgent.ValueBool() ||
-		data.EnableRebalance.ValueBool() ||
-		data.EnableUpgradeRebalanceComponent.ValueBool() {
+	if !data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool() {
 		if !rebalanceComponentInstalled {
 			// 1.2. install cloudpilot ai rebalance component
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
@@ -181,11 +175,39 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		}
 	}
 
+	if data.EnableUpgrade.ValueBool() {
+		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
+			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"failed to upgrade CloudPilot AI components",
+				err.Error(),
+			)
+			return
+		}
+		if upgraded {
+			tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
+		} else {
+			tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
+		}
+	}
+
 	// 2. sync configurations (no previous state on Create, so pass nil — nothing to delete)
 	tflog.Info(ctx, "syncing cluster configuration")
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
 	if err := c.syncConfiguration(ctx, &data, clusterUID, nil, nil); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
+			err.Error(),
+		)
+		return
+	}
+	if err := hydratePostWriteState(ctx, c.client, clusterUID, &data); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to hydrate cluster state after sync",
 			err.Error(),
 		)
 		return
@@ -227,45 +249,39 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	clusterUID := resolveClusterUID(data.ClusterID, state.ClusterID, data.ClusterName, data.Region, data.AccountID)
 	data.ClusterID = types.StringValue(clusterUID)
 
-	upgradeAgentComponent := data.EnableUpgradeAgent.ValueBool()
 	agentExist := true
-	if !upgradeAgentComponent {
-		_, err := c.client.GetCluster(clusterUID)
-		if err != nil {
-			if !errors.Is(err, cloudpilitaiclient.ErrNotFound) {
-				resp.Diagnostics.AddError(
-					"failed to get cluster",
-					err.Error(),
-				)
-				return
-			}
-			upgradeAgentComponent = true
-			agentExist = false
-		}
-	}
-
-	upgradedAgent := false
-	// If the agent does not exist when upgrading, install the agent first,
-	// otherwise you should upgrade the rebalance component first, then the agent component.
-	if upgradeAgentComponent && !agentExist {
-		// upgrade cloudpilot ai agent component
-		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
-		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
+	if _, err := c.client.GetCluster(clusterUID); err != nil {
+		if !errors.Is(err, cloudpilitaiclient.ErrNotFound) {
 			resp.Diagnostics.AddError(
-				"failed to upgrade CloudPilot AI agent component",
+				"failed to get cluster",
 				err.Error(),
 			)
 			return
 		}
-
-		upgradedAgent = true
-		tflog.Info(ctx, "upgraded CloudPilot AI agent component successfully")
+		agentExist = false
 	}
 
-	upgradeRebalanceComponent := data.EnableUpgradeRebalanceComponent.ValueBool()
-	if !upgradeRebalanceComponent &&
-		(!data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool()) {
+	if !agentExist {
+		tflog.Info(ctx, "installing CloudPilot AI agent component")
+		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
+			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to install CloudPilot AI agent component",
+				err.Error(),
+			)
+			return
+		}
+		tflog.Info(ctx, "installed CloudPilot AI agent component successfully")
+		if err := c.waitForClusterReady(ctx, clusterUID); err != nil {
+			resp.Diagnostics.AddError(
+				"failed to wait for cloudpilot ai agent component to be ready",
+				err.Error(),
+			)
+			return
+		}
+	}
+
+	if !data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool() {
 		rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -276,39 +292,41 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		}
 
 		if rebalanceConfig != nil && rebalanceConfig.LastComponentsActiveTime.IsZero() {
-			upgradeRebalanceComponent = true
+			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
+			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
+				clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
+				resp.Diagnostics.AddError(
+					"failed to install CloudPilot AI rebalance component",
+					err.Error(),
+				)
+				return
+			}
+			tflog.Info(ctx, "installed CloudPilot AI rebalance component successfully")
 		}
 	}
 
-	if upgradeRebalanceComponent {
-		// upgrade cloudpilot ai rebalance component
-		tflog.Info(ctx, "upgrading CloudPilot AI rebalance component")
-		if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
+	if data.EnableUpgrade.ValueBool() {
+		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
+			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
+		if err != nil {
 			resp.Diagnostics.AddError(
-				"failed to upgrade CloudPilot AI rebalance component",
+				"failed to upgrade CloudPilot AI components",
 				err.Error(),
 			)
 			return
 		}
-		tflog.Info(ctx, "upgraded CloudPilot AI rebalance component successfully")
-	}
-
-	if !upgradedAgent && agentExist {
-		// upgrade cloudpilot ai agent component
-		tflog.Info(ctx, "upgrading CloudPilot AI agent component")
-		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
-			resp.Diagnostics.AddError(
-				"failed to upgrade CloudPilot AI agent component",
-				err.Error(),
-			)
-			return
+		if upgraded {
+			tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
+		} else {
+			tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
 		}
-		tflog.Info(ctx, "upgraded CloudPilot AI agent component successfully")
 	}
 
 	tflog.Info(ctx, "syncing cluster configuration")
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
 	if err := c.syncConfiguration(ctx, &data, clusterUID, previousNCNames, previousNPNames); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
@@ -316,9 +334,32 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		)
 		return
 	}
+	if err := hydratePostWriteState(ctx, c.client, clusterUID, &data); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to hydrate cluster state after sync",
+			err.Error(),
+		)
+		return
+	}
 
 	tflog.Trace(ctx, "upgraded cluster successfully")
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func (c *Cluster) waitForClusterReady(ctx context.Context, clusterUID string) error {
+	tflog.Info(ctx, "waiting for cloudpilot ai agent component to be ready")
+	return wait.PollUntilContextTimeout(ctx, 10*time.Second, clusterReadyPollTimeout, true, func(ctx context.Context) (done bool, err error) {
+		_, err = c.client.GetCluster(clusterUID)
+		if err != nil {
+			if errors.Is(err, cloudpilitaiclient.ErrNotFound) {
+				tflog.Info(ctx, "waiting for cloudpilot ai agent component to be ready")
+				return false, nil
+			}
+
+			return false, err
+		}
+		return true, nil
+	})
 }
 
 func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *resource.ReadResponse) {
@@ -358,6 +399,15 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		return
 	}
 
+	clusterSetting, err := c.client.GetClusterSetting(clusterUID)
+	if err != nil {
+		resp.Diagnostics.AddError(
+			"failed to get cluster setting",
+			err.Error(),
+		)
+		return
+	}
+
 	rebalanceConfiguration, err := c.client.GetRebalanceConfiguration(clusterUID)
 	if err != nil {
 		resp.Diagnostics.AddError(
@@ -368,8 +418,12 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	}
 
 	data.EnableRebalance = types.BoolValue(rebalanceConfiguration.Enable)
-	data.EnableUploadConfig = types.BoolValue(rebalanceConfiguration.UploadConfig)
-	data.EnableDiversityInstanceType = types.BoolValue(rebalanceConfiguration.EnableDiversityInstanceType)
+
+	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
+		data.ClusterSetting = clusterSettingObjectFromAPI(ctx, clusterSetting)
+	} else if isImport {
+		data.ClusterSetting = clusterSettingObjectFromAPI(ctx, clusterSetting)
+	}
 
 	// Always fetch workload configuration from server (supports both normal read and import)
 	workloadConfiguration, err := c.client.GetWorkloadRebalanceConfiguration(clusterUID)
@@ -449,7 +503,12 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		for name, nc := range ncByName {
 			if stateNC, ok := stateNCByName[name]; ok {
-				nc.TemplateName = stateNC.TemplateName
+				var err error
+				nc, err = preserveNodeClassStateRepresentation(ctx, nc, stateNC)
+				if err != nil {
+					resp.Diagnostics.AddError("failed to preserve nodeclass state", err.Error())
+					return
+				}
 				ncByName[name] = nc
 			}
 		}
@@ -510,12 +569,7 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		for name, np := range npByName {
 			if stateNP, ok := stateNPByName[name]; ok {
-				np.NodeDisruptionDelay = preserveSemanticDuration(stateNP.NodeDisruptionDelay, np.NodeDisruptionDelay)
-				np.TemplateName = stateNP.TemplateName
-				np.InstanceFamily = preserveEmptyList(stateNP.InstanceFamily, np.InstanceFamily)
-				np.InstanceArch = preserveEmptyList(stateNP.InstanceArch, np.InstanceArch)
-				np.CapacityType = preserveEmptyList(stateNP.CapacityType, np.CapacityType)
-				np.Zone = preserveEmptyList(stateNP.Zone, np.Zone)
+				np = preserveNodePoolStateRepresentation(ctx, np, stateNP)
 				npByName[name] = np
 			}
 		}
@@ -709,12 +763,300 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 
 	// sync rebalance configuration
 	tflog.Info(ctx, "syncing rebalance configuration")
-	if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterUID, data.EnableRebalance.ValueBool(), data.EnableUploadConfig.ValueBool(), data.EnableDiversityInstanceType.ValueBool()); err != nil {
+	if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterUID, data.EnableRebalance.ValueBool()); err != nil {
 		return fmt.Errorf("failed to sync rebalance configuration: %w", err)
 	}
 	tflog.Info(ctx, "synced rebalance configuration successfully")
 
+	// sync cluster setting only when it is configured on the Terraform resource.
+	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
+		tflog.Info(ctx, "syncing cluster setting")
+		setting, diags := data.ClusterSetting.Value(ctx)
+		if diags.HasError() {
+			return fmt.Errorf("failed to parse cluster_setting: %v", diags)
+		}
+		if setting != nil {
+			if err := c.client.UpdateClusterSetting(clusterUID, setting.ToAPI()); err != nil {
+				return fmt.Errorf("failed to update cluster setting: %w", err)
+			}
+		}
+		tflog.Info(ctx, "synced cluster setting successfully")
+	}
+
 	return nil
+}
+
+func hydratePostWriteState(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, data *ClusterModel) error {
+	var err error
+	data.ClusterSetting, err = hydrateClusterSettingPostWrite(ctx, client, clusterUID, data.ClusterSetting)
+	if err != nil {
+		return err
+	}
+	data.NodeClasses, err = hydrateNodeClassesPostWrite(ctx, client, clusterUID, data.NodeClasses)
+	if err != nil {
+		return err
+	}
+	data.NodeClassTemplates, err = normalizeNodeClassTemplatesPostWrite(ctx, data.NodeClassTemplates)
+	if err != nil {
+		return err
+	}
+	return nil
+}
+
+func hydrateClusterSettingPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObject[ClusterSettingModel]) (customfield.NestedObject[ClusterSettingModel], error) {
+	if current.IsNull() || current.IsUnknown() {
+		return current, nil
+	}
+
+	value, diags := current.Value(ctx)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to parse cluster_setting: %v", diags)
+	}
+
+	hydrated := ClusterSettingModel{}
+	if value != nil {
+		hydrated = *value
+		normalizeClusterSettingUnknowns(&hydrated)
+	}
+
+	remote, err := client.GetClusterSetting(clusterUID)
+	if err != nil {
+		return current, fmt.Errorf("failed to get cluster setting: %w", err)
+	}
+	mergeClusterSettingFromAPI(&hydrated, remote)
+
+	object, diags := customfield.NewObject(ctx, &hydrated)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to build cluster_setting state: %v", diags)
+	}
+	return object, nil
+}
+
+func normalizeClusterSettingUnknowns(setting *ClusterSettingModel) {
+	if setting.EnableNodeRepair.IsUnknown() {
+		setting.EnableNodeRepair = types.BoolNull()
+	}
+	if setting.EnableDiskMonitor.IsUnknown() {
+		setting.EnableDiskMonitor = types.BoolNull()
+	}
+	if setting.Discount.IsUnknown() {
+		setting.Discount = types.Float64Null()
+	}
+	if setting.PreRunCommand.IsUnknown() {
+		setting.PreRunCommand = types.StringNull()
+	}
+	if setting.PostRunCommand.IsUnknown() {
+		setting.PostRunCommand = types.StringNull()
+	}
+}
+
+func mergeClusterSettingFromAPI(setting *ClusterSettingModel, remote *api.ClusterSetting) {
+	if remote == nil {
+		return
+	}
+	if remote.EnableNodeRepair != nil {
+		setting.EnableNodeRepair = types.BoolValue(*remote.EnableNodeRepair)
+	}
+	if remote.EnableDiskMonitor != nil {
+		setting.EnableDiskMonitor = types.BoolValue(*remote.EnableDiskMonitor)
+	}
+	if remote.Discount != nil {
+		setting.Discount = types.Float64Value(*remote.Discount)
+	}
+	if remote.PreRunCommand != nil {
+		setting.PreRunCommand = types.StringValue(*remote.PreRunCommand)
+	}
+	if remote.PostRunCommand != nil {
+		setting.PostRunCommand = types.StringValue(*remote.PostRunCommand)
+	}
+}
+
+func hydrateNodeClassesPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.EC2NodeClassModel]) (customfield.NestedObjectList[api.EC2NodeClassModel], error) {
+	if current.IsNullOrUnknown() {
+		return current, nil
+	}
+
+	stateNodeClasses, diags := current.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to parse nodeclasses: %v", diags)
+	}
+
+	remoteList, err := client.ListNodeClasses(clusterUID)
+	if err != nil {
+		return current, fmt.Errorf("failed to list nodeclasses: %w", err)
+	}
+
+	remoteByName := make(map[string]api.EC2NodeClassModel, len(remoteList.EC2NodeClasses))
+	for i := range remoteList.EC2NodeClasses {
+		model, err := remoteList.EC2NodeClasses[i].ToEC2NodeClassModel(ctx)
+		if err != nil {
+			return current, fmt.Errorf("failed to convert nodeclass %q: %w", remoteList.EC2NodeClasses[i].Name, err)
+		}
+		if model != nil {
+			remoteByName[remoteList.EC2NodeClasses[i].Name] = *model
+		}
+	}
+
+	hydrated := make([]api.EC2NodeClassModel, 0, len(stateNodeClasses))
+	for _, stateNodeClass := range stateNodeClasses {
+		if remote, ok := remoteByName[stateNodeClass.Name.ValueString()]; ok {
+			preserved, err := preserveNodeClassStateRepresentation(ctx, remote, stateNodeClass)
+			if err != nil {
+				return current, fmt.Errorf("failed to preserve nodeclass state for %q: %w", stateNodeClass.Name.ValueString(), err)
+			}
+			hydrated = append(hydrated, preserved)
+			continue
+		}
+
+		hydrated = append(hydrated, normalizeNodeClassComputedUnknowns(stateNodeClass))
+	}
+
+	list, diags := customfield.NewObjectList(ctx, hydrated)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to build nodeclasses state: %v", diags)
+	}
+	return list, nil
+}
+
+func normalizeNodeClassComputedUnknowns(model api.EC2NodeClassModel) api.EC2NodeClassModel {
+	if model.AmiAlias.IsUnknown() {
+		model.AmiAlias = types.StringNull()
+	}
+	if model.UserData.IsUnknown() {
+		model.UserData = types.StringNull()
+	}
+	return model
+}
+
+func normalizeNodeClassTemplatesPostWrite(ctx context.Context, current customfield.NestedObjectList[api.EC2NodeClassTemplateModel]) (customfield.NestedObjectList[api.EC2NodeClassTemplateModel], error) {
+	if current.IsNullOrUnknown() {
+		return current, nil
+	}
+
+	templates, diags := current.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to parse nodeclass_templates: %v", diags)
+	}
+	for i := range templates {
+		if templates[i].AmiAlias.IsUnknown() {
+			templates[i].AmiAlias = types.StringNull()
+		}
+		if templates[i].UserData.IsUnknown() {
+			templates[i].UserData = types.StringNull()
+		}
+	}
+
+	list, diags := customfield.NewObjectList(ctx, templates)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to build nodeclass_templates state: %v", diags)
+	}
+	return list, nil
+}
+
+func validateNodeClassDiskFields(ctx context.Context, data *ClusterModel) error {
+	if err := validateNodeClassDiskFieldsForClasses(ctx, data.NodeClasses); err != nil {
+		return err
+	}
+	return validateNodeClassDiskFieldsForTemplates(ctx, data.NodeClassTemplates)
+}
+
+func validateNodeClassDiskFieldsForClasses(ctx context.Context, list customfield.NestedObjectList[api.EC2NodeClassModel]) error {
+	if list.IsNullOrUnknown() {
+		return nil
+	}
+	items, diags := list.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("nodeclasses: %v", diags)
+	}
+	for _, item := range items {
+		if hasSystemDiskSize(item.SystemDiskSizeGib) && !item.BlockDeviceMappings.IsNullOrUnknown() {
+			return fmt.Errorf("nodeclass %q configures both system_disk_size_gib and block_device_mappings; choose one disk representation", item.Name.ValueString())
+		}
+	}
+	return nil
+}
+
+func validateNodeClassDiskFieldsForTemplates(ctx context.Context, list customfield.NestedObjectList[api.EC2NodeClassTemplateModel]) error {
+	if list.IsNullOrUnknown() {
+		return nil
+	}
+	items, diags := list.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("nodeclass_templates: %v", diags)
+	}
+	for _, item := range items {
+		if hasSystemDiskSize(item.SystemDiskSizeGib) && !item.BlockDeviceMappings.IsNullOrUnknown() {
+			return fmt.Errorf("nodeclass template %q configures both system_disk_size_gib and block_device_mappings; choose one disk representation", item.TemplateName.ValueString())
+		}
+	}
+	return nil
+}
+
+func hasSystemDiskSize(value types.Int64) bool {
+	return !value.IsNull() && !value.IsUnknown()
+}
+
+func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api.EC2NodeClassModel) (api.EC2NodeClassModel, error) {
+	remote.TemplateName = state.TemplateName
+	if !hasSystemDiskSize(state.SystemDiskSizeGib) {
+		if state.BlockDeviceMappings.IsNullOrUnknown() {
+			remote.BlockDeviceMappings = customfield.NullObjectList[api.BlockDeviceMappingModel](ctx)
+		}
+		return remote, nil
+	}
+
+	size, ok, err := systemDiskSizeFromBlockDeviceMappings(ctx, remote.BlockDeviceMappings)
+	if err != nil {
+		return remote, err
+	}
+	if ok {
+		remote.SystemDiskSizeGib = size
+	} else {
+		remote.SystemDiskSizeGib = types.Int64Null()
+	}
+	remote.BlockDeviceMappings = customfield.NullObjectList[api.BlockDeviceMappingModel](ctx)
+	return remote, nil
+}
+
+func preserveNodePoolStateRepresentation(ctx context.Context, remote, state api.EC2NodePoolModel) api.EC2NodePoolModel {
+	remote.NodeDisruptionDelay = preserveSemanticDuration(state.NodeDisruptionDelay, remote.NodeDisruptionDelay)
+	remote.TemplateName = state.TemplateName
+	remote.InstanceFamily = preserveEmptyList(state.InstanceFamily, remote.InstanceFamily)
+	remote.InstanceArch = preserveEmptyList(state.InstanceArch, remote.InstanceArch)
+	remote.CapacityType = preserveEmptyList(state.CapacityType, remote.CapacityType)
+	remote.Zone = preserveEmptyList(state.Zone, remote.Zone)
+	if state.Labels.IsNull() || state.Labels.IsUnknown() {
+		remote.Labels = customfield.NullMap[types.String](ctx)
+	}
+	if state.Taints.IsNullOrUnknown() {
+		remote.Taints = customfield.NullObjectList[api.TaintModel](ctx)
+	}
+	return remote
+}
+
+func systemDiskSizeFromBlockDeviceMappings(ctx context.Context, mappings customfield.NestedObjectList[api.BlockDeviceMappingModel]) (types.Int64, bool, error) {
+	if mappings.IsNullOrUnknown() {
+		return types.Int64Null(), false, nil
+	}
+	items, diags := mappings.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings: %v", diags)
+	}
+	if len(items) == 0 || items[0].EBS.IsNull() || items[0].EBS.IsUnknown() {
+		return types.Int64Null(), false, nil
+	}
+	ebs, ebsDiags := items[0].EBS.Value(ctx)
+	if ebsDiags.HasError() {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings.ebs: %v", ebsDiags)
+	}
+	if ebs == nil || ebs.VolumeSize.IsNull() || ebs.VolumeSize.IsUnknown() || ebs.VolumeSize.ValueString() == "" {
+		return types.Int64Null(), false, nil
+	}
+	quantity, err := k8sresource.ParseQuantity(ebs.VolumeSize.ValueString())
+	if err != nil {
+		return types.Int64Null(), false, fmt.Errorf("block_device_mappings.ebs.volume_size: %w", err)
+	}
+	return types.Int64Value(quantity.Value() / int64(api.BytesToGiB)), true, nil
 }
 
 // orderByStateName returns server items that are tracked in state, preserving

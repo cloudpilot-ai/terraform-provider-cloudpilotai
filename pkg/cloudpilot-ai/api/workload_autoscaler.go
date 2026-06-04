@@ -43,6 +43,14 @@ type WAConfiguration struct {
 	EnableWorkloadAutoscaler    *bool   `json:"enableWorkloadAutoscaler,omitempty"`
 	WorkloadAutoscalerInstalled *bool   `json:"workloadAutoscalerInstalled,omitempty"`
 	WorkloadAutoscalerVersion   *string `json:"workloadAutoscalerVersion,omitempty"`
+
+	EnableNewWorkloadsProactiveUpdate        *bool   `json:"enableNewWorkloadsProactiveUpdate,omitempty"`
+	LimiterQuotaPerWindow                    *int    `json:"limiterQuotaPerWindow,omitempty"`
+	LimiterBurst                             *int    `json:"limiterBurst,omitempty"`
+	LimiterWindowSeconds                     *int    `json:"limiterWindowSeconds,omitempty"`
+	EnablePreemptedPodGC                     *bool   `json:"enablePreemptedPodGC,omitempty"`
+	PreemptedPodGCTTL                        *string `json:"preemptedPodGCTTL,omitempty"`
+	EnableInitialOptimizationDataWindowCheck *bool   `json:"enableInitialOptimizationDataWindowCheck,omitempty"`
 }
 
 // RecommendationPolicyResource represents a RecommendationPolicy stored in the backend.
@@ -58,6 +66,7 @@ type RecommendationPolicySpec struct {
 	EvaluationPeriod      string                           `json:"evaluationPeriod"`
 	Buffer                map[string]string                `json:"buffer,omitempty"`
 	Limits                RecommendationLimits             `json:"limits,omitempty"`
+	JVM                   *JVMRecommendationConfiguration  `json:"jvm,omitempty"`
 }
 
 type StrategyPercentileConfiguration struct {
@@ -75,6 +84,13 @@ type RecommendationLimits struct {
 	RequestMax map[string]string `json:"requestMax,omitempty"`
 }
 
+type JVMRecommendationConfiguration struct {
+	RecentNonHeapWindow     *string `json:"recentNonHeapWindow,omitempty"`
+	MinHeapXmsRatioOfMemory *string `json:"minHeapXmsRatioOfMemory,omitempty"`
+	HeapBuffer              *string `json:"heapBuffer,omitempty"`
+	HeapUsedPercentile      *int32  `json:"heapUsedPercentile,omitempty"`
+}
+
 // AutoscalingPolicyResource represents an AutoscalingPolicy stored in the backend.
 type AutoscalingPolicyResource struct {
 	Name   string                `json:"name"`
@@ -83,23 +99,36 @@ type AutoscalingPolicyResource struct {
 }
 
 type AutoscalingPolicySpec struct {
-	Priority                 int32                          `json:"priority,omitempty"`
-	RecommendationPolicyName string                         `json:"recommendationPolicyName"`
-	TargetRefs               []TypedObjectReference         `json:"targetRefs,omitempty"`
-	UpdateSchedule           []UpdateScheduleItem           `json:"updateSchedule,omitempty"`
-	UpdateResources          []string                       `json:"updateResources,omitempty"`
-	DriftThresholds          map[string]string              `json:"driftThresholds,omitempty"`
-	OnPolicyRemoval          string                         `json:"onPolicyRemoval,omitempty"`
-	LimitPolicies            map[string]ResourceLimitPolicy `json:"limitPolicies,omitempty"`
-	ResourceStartupBoost     *WorkloadStartupResourceBoost  `json:"resourceStartupBoost,omitempty"`
-	InPlaceFallback          *InPlaceFallback               `json:"inPlaceFallback,omitempty"`
+	Priority                   int32                          `json:"priority,omitempty"`
+	RecommendationPolicyName   string                         `json:"recommendationPolicyName"`
+	DisableRuntimeOptimization bool                           `json:"disableRuntimeOptimization,omitempty"`
+	TargetRefs                 []TypedObjectReference         `json:"targetRefs,omitempty"`
+	UpdateSchedule             []UpdateScheduleItem           `json:"updateSchedule,omitempty"`
+	UpdateResources            []string                       `json:"updateResources,omitempty"`
+	DriftThresholds            map[string]string              `json:"driftThresholds,omitempty"`
+	OnPolicyRemoval            string                         `json:"onPolicyRemoval,omitempty"`
+	LimitPolicies              map[string]ResourceLimitPolicy `json:"limitPolicies,omitempty"`
+	ResourceStartupBoost       *WorkloadStartupResourceBoost  `json:"resourceStartupBoost,omitempty"`
+	InPlaceFallback            *InPlaceFallback               `json:"inPlaceFallback,omitempty"`
 }
 
 type TypedObjectReference struct {
-	APIVersion string `json:"apiVersion"`
-	Kind       string `json:"kind"`
-	Name       string `json:"name,omitempty"`
-	Namespace  string `json:"namespace,omitempty"`
+	APIVersion    string         `json:"apiVersion"`
+	Kind          string         `json:"kind"`
+	Name          string         `json:"name,omitempty"`
+	Namespace     string         `json:"namespace,omitempty"`
+	LabelSelector *LabelSelector `json:"labelSelector,omitempty"`
+}
+
+type LabelSelector struct {
+	MatchLabels      map[string]string          `json:"matchLabels,omitempty"`
+	MatchExpressions []LabelSelectorRequirement `json:"matchExpressions,omitempty"`
+}
+
+type LabelSelectorRequirement struct {
+	Key      string   `json:"key"`
+	Operator string   `json:"operator"`
+	Values   []string `json:"values,omitempty"`
 }
 
 type UpdateScheduleItem struct {
@@ -124,7 +153,8 @@ type WorkloadStartupResourceBoost struct {
 }
 
 type InPlaceFallback struct {
-	DefaultPolicy string `json:"defaultPolicy,omitempty"`
+	DefaultPolicy  string            `json:"defaultPolicy,omitempty"`
+	ReasonPolicies map[string]string `json:"reasonPolicies,omitempty"`
 }
 
 // WAWorkloadListFilter is the filter used to select workloads for batch operations

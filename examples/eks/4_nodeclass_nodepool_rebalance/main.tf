@@ -37,19 +37,10 @@ resource "cloudpilotai_eks_cluster" "example" {
   # Optional. Default is false.
   disable_workload_uploading = false
 
-  # Enable upgrading the CloudPilot AI agent
+  # Enable upgrading CloudPilot AI components through the cluster upgrade script.
+  # The provider checks whether the cluster needs upgrade first.
   # Optional. Default is false.
-  enable_upgrade_agent = false
-  # Enable upgrading the CloudPilot AI rebalance component. Ignores `only_install_agent` if set to true.
-  # Optional. Default is false.
-  enable_upgrade_rebalance_component = false
-
-  # Enable uploading of nodepool and nodeclass configuration to CloudPilot AI
-  # Optional. Default is true.
-  enable_upload_config = true
-  # Enable diverse instance types for improved fault tolerance and cost optimization
-  # Optional. Default is false.
-  enable_diversity_instance_type = false
+  enable_upgrade = false
 
   # Define custom nodeclasses for different workload types.
   # The default name used by CloudPilot AI is "cloudpilot".

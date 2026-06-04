@@ -40,11 +40,47 @@ func Schema(ctx context.Context) schema.Schema {
 				Computed:    true,
 				Default:     booldefault.StaticBool(true),
 			},
-			"enable_upgrade": schema.BoolAttribute{
-				Description: "Enable upgrading the Workload Autoscaler component. When true, the component is always re-installed on every apply to pick up the latest version.",
+			"enable_new_workloads_proactive_update": schema.BoolAttribute{
+				Description: "Enable proactive update automatically for new workloads once recommendations are ready.",
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
+			},
+			"limiter_quota_per_window": schema.Int64Attribute{
+				Description: "Workload Autoscaler rate-limit quota per limiter window. Server requires a positive value.",
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(5),
+			},
+			"limiter_burst": schema.Int64Attribute{
+				Description: "Workload Autoscaler rate-limit burst. Server requires a positive value.",
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(10),
+			},
+			"limiter_window_seconds": schema.Int64Attribute{
+				Description: "Workload Autoscaler limiter window in seconds. Server requires a positive value.",
+				Optional:    true,
+				Computed:    true,
+				Default:     int64default.StaticInt64(30),
+			},
+			"enable_preempted_pod_gc": schema.BoolAttribute{
+				Description: "Enable garbage collection for preempted pods.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
+			},
+			"preempted_pod_gc_ttl": schema.StringAttribute{
+				Description: "TTL for preempted pod garbage collection, for example '30m'.",
+				Optional:    true,
+				Computed:    true,
+				Default:     stringdefault.StaticString("30m"),
+			},
+			"enable_initial_optimization_data_window_check": schema.BoolAttribute{
+				Description: "Require the initial optimization data window before enabling mutation and update paths for new workloads.",
+				Optional:    true,
+				Computed:    true,
+				Default:     booldefault.StaticBool(true),
 			},
 
 			"recommendation_policies": schema.ListNestedAttribute{
@@ -158,6 +194,28 @@ func recommendationPolicyAttributes() map[string]schema.Attribute {
 			Computed:    true,
 			Default:     stringdefault.StaticString(""),
 		},
+		"jvm_heap_buffer": schema.StringAttribute{
+			Description: "JVM heap buffer for HeapXmx, for example '25%' or '300Mi'.",
+			Optional:    true,
+			Computed:    true,
+			Default:     stringdefault.StaticString(""),
+		},
+		"jvm_min_heap_xms_ratio_of_memory": schema.StringAttribute{
+			Description: "Minimum ratio of HeapXms to JVM memory recommendation, for example '0.25'.",
+			Optional:    true,
+			Computed:    true,
+			Default:     stringdefault.StaticString(""),
+		},
+		"jvm_recent_non_heap_window": schema.StringAttribute{
+			Description: "Recent non-heap protection window, for example '2h'.",
+			Optional:    true,
+			Computed:    true,
+			Default:     stringdefault.StaticString(""),
+		},
+		"jvm_heap_used_percentile": schema.Int32Attribute{
+			Description: "JVM heap-used percentile, valid server range is 20 to 100.",
+			Optional:    true,
+		},
 	}
 }
 
@@ -182,6 +240,12 @@ func autoscalingPolicyAttributes(ctx context.Context) map[string]schema.Attribut
 			Optional:    true,
 			Computed:    true,
 			Default:     int64default.StaticInt64(0),
+		},
+		"disable_runtime_optimization": schema.BoolAttribute{
+			Description: "Disable runtime-based optimization for workloads matched by this AutoscalingPolicy.",
+			Optional:    true,
+			Computed:    true,
+			Default:     booldefault.StaticBool(false),
 		},
 		"update_resources": schema.ListAttribute{
 			Description: "Resources to optimize, e.g. ['cpu', 'memory'].",
@@ -232,6 +296,41 @@ func autoscalingPolicyAttributes(ctx context.Context) map[string]schema.Attribut
 						Optional:    true,
 						Computed:    true,
 						Default:     stringdefault.StaticString(""),
+					},
+					"label_selector": schema.SingleNestedAttribute{
+						Description: "Kubernetes label selector for matching workloads.",
+						Optional:    true,
+						CustomType:  customfield.NewNestedObjectType[api.LabelSelectorModel](ctx),
+						Attributes: map[string]schema.Attribute{
+							"match_labels": schema.MapAttribute{
+								Description: "Label key/value pairs that selected workloads must match.",
+								Optional:    true,
+								ElementType: types.StringType,
+								CustomType:  customfield.NewMapType[types.String](ctx),
+							},
+							"match_expressions": schema.ListNestedAttribute{
+								Description: "Label selector match expressions.",
+								Optional:    true,
+								CustomType:  customfield.NewNestedObjectListType[api.LabelSelectorRequirementModel](ctx),
+								NestedObject: schema.NestedAttributeObject{
+									Attributes: map[string]schema.Attribute{
+										"key": schema.StringAttribute{
+											Description: "Label key.",
+											Required:    true,
+										},
+										"operator": schema.StringAttribute{
+											Description: "Selector operator, for example 'In', 'NotIn', 'Exists', or 'DoesNotExist'.",
+											Required:    true,
+										},
+										"values": schema.ListAttribute{
+											Description: "Selector values used by the operator.",
+											Optional:    true,
+											ElementType: types.StringType,
+										},
+									},
+								},
+							},
+						},
 					},
 				},
 			},
@@ -340,6 +439,12 @@ func autoscalingPolicyAttributes(ctx context.Context) map[string]schema.Attribut
 			Optional:    true,
 			Computed:    true,
 			Default:     stringdefault.StaticString(""),
+		},
+		"in_place_fallback_reason_policies": schema.MapAttribute{
+			Description: "Fallback policy overrides keyed by in-place failure reason.",
+			Optional:    true,
+			ElementType: types.StringType,
+			CustomType:  customfield.NewMapType[types.String](ctx),
 		},
 	}
 }

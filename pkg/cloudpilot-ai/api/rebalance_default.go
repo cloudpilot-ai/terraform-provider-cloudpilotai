@@ -52,7 +52,7 @@ func DefaultEC2NodeClassSpec(clusterName string) *awsproviderv1.EC2NodeClassSpec
 			},
 		},
 		AMISelectorTerms: []awsproviderv1.AMISelectorTerm{
-			{Alias: "al2023@v20250519"},
+			{Alias: "al2023@v20260423"},
 		},
 		BlockDeviceMappings: []*awsproviderv1.BlockDeviceMapping{
 			{
