@@ -143,10 +143,14 @@ type RecommendationPolicyModel struct {
 }
 
 func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
+	return m.ToResourceFromBase(nil)
+}
+
+func (m *RecommendationPolicyModel) ToResourceFromBase(base *RecommendationPolicyResource) *RecommendationPolicyResource {
 	rp := &RecommendationPolicyResource{
 		Name: m.Name.ValueString(),
 		Spec: RecommendationPolicySpec{
-			StrategyType:     m.StrategyType.ValueString(),
+			StrategyType:     "percentile",
 			EvaluationPeriod: m.EvaluationPeriod.ValueString(),
 			HistoryWindowDuration: WindowDuration{
 				CPU:    m.HistoryWindowCPU.ValueString(),
@@ -154,78 +158,136 @@ func (m *RecommendationPolicyModel) ToResource() *RecommendationPolicyResource {
 			},
 		},
 	}
+	if base != nil {
+		*rp = *base
+		rp.Name = m.Name.ValueString()
+		rp.Spec.EvaluationPeriod = m.EvaluationPeriod.ValueString()
+		rp.Spec.HistoryWindowDuration = WindowDuration{
+			CPU:    m.HistoryWindowCPU.ValueString(),
+			Memory: m.HistoryWindowMemory.ValueString(),
+		}
+	} else {
+		rp.Spec.StrategyPercentile = &StrategyPercentileConfiguration{
+			CPU:    95,
+			Memory: 95,
+		}
+	}
+	if !m.StrategyType.IsNull() && !m.StrategyType.IsUnknown() && m.StrategyType.ValueString() != "" {
+		rp.Spec.StrategyType = m.StrategyType.ValueString()
+	}
 
-	if !m.PercentileCPU.IsNull() && !m.PercentileMemory.IsNull() {
+	if !m.PercentileCPU.IsNull() && !m.PercentileCPU.IsUnknown() && !m.PercentileMemory.IsNull() && !m.PercentileMemory.IsUnknown() {
 		rp.Spec.StrategyPercentile = &StrategyPercentileConfiguration{
 			CPU:    m.PercentileCPU.ValueInt32(),
 			Memory: m.PercentileMemory.ValueInt32(),
 		}
 	}
 
-	buffer := make(map[string]string)
-	if !m.BufferCPU.IsNull() && !m.BufferCPU.IsUnknown() && m.BufferCPU.ValueString() != "" {
-		buffer["cpu"] = m.BufferCPU.ValueString()
+	buffer := mapsClone(rp.Spec.Buffer)
+	if !m.BufferCPU.IsNull() && !m.BufferCPU.IsUnknown() {
+		if m.BufferCPU.ValueString() == "" {
+			delete(buffer, "cpu")
+		} else {
+			buffer["cpu"] = m.BufferCPU.ValueString()
+		}
 	}
-	if !m.BufferMemory.IsNull() && !m.BufferMemory.IsUnknown() && m.BufferMemory.ValueString() != "" {
-		buffer["memory"] = m.BufferMemory.ValueString()
+	if !m.BufferMemory.IsNull() && !m.BufferMemory.IsUnknown() {
+		if m.BufferMemory.ValueString() == "" {
+			delete(buffer, "memory")
+		} else {
+			buffer["memory"] = m.BufferMemory.ValueString()
+		}
 	}
 	if len(buffer) > 0 {
 		rp.Spec.Buffer = buffer
+	} else {
+		rp.Spec.Buffer = nil
 	}
 
-	limits := RecommendationLimits{}
-	hasLimits := false
-	requestMin := make(map[string]string)
-	if !m.RequestMinCPU.IsNull() && !m.RequestMinCPU.IsUnknown() && m.RequestMinCPU.ValueString() != "" {
-		requestMin["cpu"] = m.RequestMinCPU.ValueString()
+	limits := rp.Spec.Limits
+	requestMin := mapsClone(limits.RequestMin)
+	if !m.RequestMinCPU.IsNull() && !m.RequestMinCPU.IsUnknown() {
+		if m.RequestMinCPU.ValueString() == "" {
+			delete(requestMin, "cpu")
+		} else {
+			requestMin["cpu"] = m.RequestMinCPU.ValueString()
+		}
 	}
-	if !m.RequestMinMemory.IsNull() && !m.RequestMinMemory.IsUnknown() && m.RequestMinMemory.ValueString() != "" {
-		requestMin["memory"] = m.RequestMinMemory.ValueString()
+	if !m.RequestMinMemory.IsNull() && !m.RequestMinMemory.IsUnknown() {
+		if m.RequestMinMemory.ValueString() == "" {
+			delete(requestMin, "memory")
+		} else {
+			requestMin["memory"] = m.RequestMinMemory.ValueString()
+		}
 	}
 	if len(requestMin) > 0 {
 		limits.RequestMin = requestMin
-		hasLimits = true
+	} else {
+		limits.RequestMin = nil
 	}
 
-	requestMax := make(map[string]string)
-	if !m.RequestMaxCPU.IsNull() && !m.RequestMaxCPU.IsUnknown() && m.RequestMaxCPU.ValueString() != "" {
-		requestMax["cpu"] = m.RequestMaxCPU.ValueString()
+	requestMax := mapsClone(limits.RequestMax)
+	if !m.RequestMaxCPU.IsNull() && !m.RequestMaxCPU.IsUnknown() {
+		if m.RequestMaxCPU.ValueString() == "" {
+			delete(requestMax, "cpu")
+		} else {
+			requestMax["cpu"] = m.RequestMaxCPU.ValueString()
+		}
 	}
-	if !m.RequestMaxMemory.IsNull() && !m.RequestMaxMemory.IsUnknown() && m.RequestMaxMemory.ValueString() != "" {
-		requestMax["memory"] = m.RequestMaxMemory.ValueString()
+	if !m.RequestMaxMemory.IsNull() && !m.RequestMaxMemory.IsUnknown() {
+		if m.RequestMaxMemory.ValueString() == "" {
+			delete(requestMax, "memory")
+		} else {
+			requestMax["memory"] = m.RequestMaxMemory.ValueString()
+		}
 	}
 	if len(requestMax) > 0 {
 		limits.RequestMax = requestMax
-		hasLimits = true
+	} else {
+		limits.RequestMax = nil
 	}
-	if hasLimits {
+	if limits.RequestMin != nil || limits.RequestMax != nil {
 		rp.Spec.Limits = limits
+	} else {
+		rp.Spec.Limits = RecommendationLimits{}
 	}
 
-	jvm := &JVMRecommendationConfiguration{}
-	hasJVM := false
-	if !m.JVMHeapBuffer.IsNull() && !m.JVMHeapBuffer.IsUnknown() && m.JVMHeapBuffer.ValueString() != "" {
-		v := m.JVMHeapBuffer.ValueString()
-		jvm.HeapBuffer = &v
-		hasJVM = true
+	jvm := rp.Spec.JVM
+	if jvm == nil {
+		jvm = &JVMRecommendationConfiguration{}
 	}
-	if !m.JVMMinHeapXmsRatioOfMemory.IsNull() && !m.JVMMinHeapXmsRatioOfMemory.IsUnknown() && m.JVMMinHeapXmsRatioOfMemory.ValueString() != "" {
-		v := m.JVMMinHeapXmsRatioOfMemory.ValueString()
-		jvm.MinHeapXmsRatioOfMemory = &v
-		hasJVM = true
+	if !m.JVMHeapBuffer.IsNull() && !m.JVMHeapBuffer.IsUnknown() {
+		if m.JVMHeapBuffer.ValueString() == "" {
+			jvm.HeapBuffer = nil
+		} else {
+			v := m.JVMHeapBuffer.ValueString()
+			jvm.HeapBuffer = &v
+		}
 	}
-	if !m.JVMRecentNonHeapWindow.IsNull() && !m.JVMRecentNonHeapWindow.IsUnknown() && m.JVMRecentNonHeapWindow.ValueString() != "" {
-		v := m.JVMRecentNonHeapWindow.ValueString()
-		jvm.RecentNonHeapWindow = &v
-		hasJVM = true
+	if !m.JVMMinHeapXmsRatioOfMemory.IsNull() && !m.JVMMinHeapXmsRatioOfMemory.IsUnknown() {
+		if m.JVMMinHeapXmsRatioOfMemory.ValueString() == "" {
+			jvm.MinHeapXmsRatioOfMemory = nil
+		} else {
+			v := m.JVMMinHeapXmsRatioOfMemory.ValueString()
+			jvm.MinHeapXmsRatioOfMemory = &v
+		}
+	}
+	if !m.JVMRecentNonHeapWindow.IsNull() && !m.JVMRecentNonHeapWindow.IsUnknown() {
+		if m.JVMRecentNonHeapWindow.ValueString() == "" {
+			jvm.RecentNonHeapWindow = nil
+		} else {
+			v := m.JVMRecentNonHeapWindow.ValueString()
+			jvm.RecentNonHeapWindow = &v
+		}
 	}
 	if !m.JVMHeapUsedPercentile.IsNull() && !m.JVMHeapUsedPercentile.IsUnknown() {
 		v := m.JVMHeapUsedPercentile.ValueInt32()
 		jvm.HeapUsedPercentile = &v
-		hasJVM = true
 	}
-	if hasJVM {
+	if jvm.HeapBuffer != nil || jvm.MinHeapXmsRatioOfMemory != nil || jvm.RecentNonHeapWindow != nil || jvm.HeapUsedPercentile != nil {
 		rp.Spec.JVM = jvm
+	} else {
+		rp.Spec.JVM = nil
 	}
 
 	return rp
@@ -243,66 +305,41 @@ func RecommendationPolicyModelFromResource(rp *RecommendationPolicyResource) Rec
 	if rp.Spec.StrategyPercentile != nil {
 		m.PercentileCPU = types.Int32Value(rp.Spec.StrategyPercentile.CPU)
 		m.PercentileMemory = types.Int32Value(rp.Spec.StrategyPercentile.Memory)
-	} else {
-		m.PercentileCPU = types.Int32Value(95)
-		m.PercentileMemory = types.Int32Value(95)
 	}
 
 	if v, ok := rp.Spec.Buffer["cpu"]; ok {
 		m.BufferCPU = types.StringValue(v)
-	} else {
-		m.BufferCPU = types.StringValue("")
 	}
 	if v, ok := rp.Spec.Buffer["memory"]; ok {
 		m.BufferMemory = types.StringValue(v)
-	} else {
-		m.BufferMemory = types.StringValue("")
 	}
 
 	if v, ok := rp.Spec.Limits.RequestMin["cpu"]; ok {
 		m.RequestMinCPU = types.StringValue(v)
-	} else {
-		m.RequestMinCPU = types.StringValue("")
 	}
 	if v, ok := rp.Spec.Limits.RequestMin["memory"]; ok {
 		m.RequestMinMemory = types.StringValue(v)
-	} else {
-		m.RequestMinMemory = types.StringValue("")
 	}
 	if v, ok := rp.Spec.Limits.RequestMax["cpu"]; ok {
 		m.RequestMaxCPU = types.StringValue(v)
-	} else {
-		m.RequestMaxCPU = types.StringValue("")
 	}
 	if v, ok := rp.Spec.Limits.RequestMax["memory"]; ok {
 		m.RequestMaxMemory = types.StringValue(v)
-	} else {
-		m.RequestMaxMemory = types.StringValue("")
 	}
 
 	if rp.Spec.JVM != nil {
 		if rp.Spec.JVM.HeapBuffer != nil {
 			m.JVMHeapBuffer = types.StringValue(*rp.Spec.JVM.HeapBuffer)
-		} else {
-			m.JVMHeapBuffer = types.StringValue("")
 		}
 		if rp.Spec.JVM.MinHeapXmsRatioOfMemory != nil {
 			m.JVMMinHeapXmsRatioOfMemory = types.StringValue(*rp.Spec.JVM.MinHeapXmsRatioOfMemory)
-		} else {
-			m.JVMMinHeapXmsRatioOfMemory = types.StringValue("")
 		}
 		if rp.Spec.JVM.RecentNonHeapWindow != nil {
 			m.JVMRecentNonHeapWindow = types.StringValue(NormalizeDuration(*rp.Spec.JVM.RecentNonHeapWindow))
-		} else {
-			m.JVMRecentNonHeapWindow = types.StringValue("")
 		}
 		if rp.Spec.JVM.HeapUsedPercentile != nil {
 			m.JVMHeapUsedPercentile = types.Int32Value(*rp.Spec.JVM.HeapUsedPercentile)
 		}
-	} else {
-		m.JVMHeapBuffer = types.StringValue("")
-		m.JVMMinHeapXmsRatioOfMemory = types.StringValue("")
-		m.JVMRecentNonHeapWindow = types.StringValue("")
 	}
 
 	return m
@@ -374,14 +411,32 @@ type AutoscalingPolicyModel struct {
 }
 
 func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPolicyResource, error) {
+	return m.ToResourceFromBase(ctx, nil)
+}
+
+func (m *AutoscalingPolicyModel) ToResourceFromBase(ctx context.Context, base *AutoscalingPolicyResource) (*AutoscalingPolicyResource, error) {
 	ap := &AutoscalingPolicyResource{
 		Name:   m.Name.ValueString(),
-		Enable: m.Enable.ValueBool(),
+		Enable: true,
 		Spec: AutoscalingPolicySpec{
-			Priority:                 int32(m.Priority.ValueInt64()),
+			Priority:                 0,
 			RecommendationPolicyName: m.RecommendationPolicyName.ValueString(),
-			OnPolicyRemoval:          m.OnPolicyRemoval.ValueString(),
+			OnPolicyRemoval:          "off",
 		},
+	}
+	if base != nil {
+		*ap = *base
+		ap.Name = m.Name.ValueString()
+		ap.Spec.RecommendationPolicyName = m.RecommendationPolicyName.ValueString()
+	}
+	if !m.Enable.IsNull() && !m.Enable.IsUnknown() {
+		ap.Enable = m.Enable.ValueBool()
+	}
+	if !m.Priority.IsNull() && !m.Priority.IsUnknown() {
+		ap.Spec.Priority = int32(m.Priority.ValueInt64())
+	}
+	if !m.OnPolicyRemoval.IsNull() && !m.OnPolicyRemoval.IsUnknown() && m.OnPolicyRemoval.ValueString() != "" {
+		ap.Spec.OnPolicyRemoval = m.OnPolicyRemoval.ValueString()
 	}
 
 	if !m.DisableRuntimeOptimization.IsNull() && !m.DisableRuntimeOptimization.IsUnknown() {
@@ -412,6 +467,7 @@ func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPo
 		if diags.HasError() {
 			return nil, fmt.Errorf("failed to parse target_refs: %v", diags)
 		}
+		ap.Spec.TargetRefs = nil
 		for _, tr := range targetRefs {
 			selector, err := labelSelectorModelToAPI(ctx, tr.LabelSelector)
 			if err != nil {
@@ -432,6 +488,7 @@ func (m *AutoscalingPolicyModel) ToResource(ctx context.Context) (*AutoscalingPo
 		if diags.HasError() {
 			return nil, fmt.Errorf("failed to parse update_schedules: %v", diags)
 		}
+		ap.Spec.UpdateSchedule = nil
 		for _, s := range schedules {
 			ap.Spec.UpdateSchedule = append(ap.Spec.UpdateSchedule, UpdateScheduleItem{
 				Name:     s.Name.ValueString(),
@@ -570,6 +627,9 @@ func labelSelectorModelFromAPI(ctx context.Context, in *LabelSelector) customfie
 	if in == nil {
 		return customfield.NullObject[LabelSelectorModel](ctx)
 	}
+	if len(in.MatchLabels) == 0 && len(in.MatchExpressions) == 0 {
+		return customfield.NullObject[LabelSelectorModel](ctx)
+	}
 	labels := map[string]types.String{}
 	for k, v := range in.MatchLabels {
 		labels[k] = types.StringValue(v)
@@ -612,13 +672,9 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 
 	if v, ok := ap.Spec.DriftThresholds["cpu"]; ok {
 		m.DriftThresholdCPU = types.StringValue(v)
-	} else {
-		m.DriftThresholdCPU = types.StringValue("")
 	}
 	if v, ok := ap.Spec.DriftThresholds["memory"]; ok {
 		m.DriftThresholdMemory = types.StringValue(v)
-	} else {
-		m.DriftThresholdMemory = types.StringValue("")
 	}
 
 	// target refs
@@ -627,24 +683,32 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 		targetRefModels = append(targetRefModels, TargetRefModel{
 			APIVersion:    types.StringValue(tr.APIVersion),
 			Kind:          types.StringValue(tr.Kind),
-			Name:          types.StringValue(tr.Name),
-			Namespace:     types.StringValue(tr.Namespace),
+			Name:          stringOrNull(tr.Name),
+			Namespace:     stringOrNull(tr.Namespace),
 			LabelSelector: labelSelectorModelFromAPI(ctx, tr.LabelSelector),
 		})
 	}
-	m.TargetRefs = customfield.NewObjectListMust(ctx, targetRefModels)
+	if len(targetRefModels) > 0 {
+		m.TargetRefs = customfield.NewObjectListMust(ctx, targetRefModels)
+	} else {
+		m.TargetRefs = customfield.NullObjectList[TargetRefModel](ctx)
+	}
 
 	// update schedules
 	scheduleModels := make([]UpdateScheduleModel, 0, len(ap.Spec.UpdateSchedule))
 	for _, s := range ap.Spec.UpdateSchedule {
 		scheduleModels = append(scheduleModels, UpdateScheduleModel{
 			Name:     types.StringValue(s.Name),
-			Schedule: types.StringValue(s.Schedule),
-			Duration: types.StringValue(s.Duration),
+			Schedule: stringOrNull(s.Schedule),
+			Duration: stringOrNull(s.Duration),
 			Mode:     types.StringValue(s.Mode),
 		})
 	}
-	m.UpdateSchedules = customfield.NewObjectListMust(ctx, scheduleModels)
+	if len(scheduleModels) > 0 {
+		m.UpdateSchedules = customfield.NewObjectListMust(ctx, scheduleModels)
+	} else {
+		m.UpdateSchedules = customfield.NullObjectList[UpdateScheduleModel](ctx)
+	}
 
 	// limit policies — use sorted keys for deterministic order
 	limitPolicyModels := make([]LimitPolicyModel, 0, len(ap.Spec.LimitPolicies))
@@ -660,27 +724,23 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 		}
 		if policy.RemoveLimit != nil {
 			lp.RemoveLimit = types.BoolValue(*policy.RemoveLimit)
-		} else {
-			lp.RemoveLimit = types.BoolValue(false)
 		}
 		if policy.KeepLimit != nil {
 			lp.KeepLimit = types.BoolValue(*policy.KeepLimit)
-		} else {
-			lp.KeepLimit = types.BoolValue(false)
 		}
 		if policy.Multiplier != nil {
 			lp.Multiplier = types.StringValue(*policy.Multiplier)
-		} else {
-			lp.Multiplier = types.StringValue("")
 		}
 		if policy.AutoHeadroom != nil {
 			lp.AutoHeadroom = types.StringValue(*policy.AutoHeadroom)
-		} else {
-			lp.AutoHeadroom = types.StringValue("")
 		}
 		limitPolicyModels = append(limitPolicyModels, lp)
 	}
-	m.LimitPolicies = customfield.NewObjectListMust(ctx, limitPolicyModels)
+	if len(limitPolicyModels) > 0 {
+		m.LimitPolicies = customfield.NewObjectListMust(ctx, limitPolicyModels)
+	} else {
+		m.LimitPolicies = customfield.NullObjectList[LimitPolicyModel](ctx)
+	}
 
 	// startup boost
 	if ap.Spec.ResourceStartupBoost != nil && ap.Spec.ResourceStartupBoost.Enabled {
@@ -689,37 +749,40 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 		m.StartupBoostMinReadyDuration = types.StringValue(ap.Spec.ResourceStartupBoost.MinReadyDuration)
 		if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["cpu"]; ok {
 			m.StartupBoostMultiplierCPU = types.StringValue(v)
-		} else {
-			m.StartupBoostMultiplierCPU = types.StringValue("")
 		}
 		if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["memory"]; ok {
 			m.StartupBoostMultiplierMemory = types.StringValue(v)
-		} else {
-			m.StartupBoostMultiplierMemory = types.StringValue("")
 		}
-	} else {
-		m.StartupBoostEnabled = types.BoolValue(false)
-		m.StartupBoostMinBoostDuration = types.StringValue("")
-		m.StartupBoostMinReadyDuration = types.StringValue("")
-		m.StartupBoostMultiplierCPU = types.StringValue("")
-		m.StartupBoostMultiplierMemory = types.StringValue("")
 	}
 
 	if ap.Spec.InPlaceFallback != nil {
-		m.InPlaceFallbackDefaultPolicy = types.StringValue(ap.Spec.InPlaceFallback.DefaultPolicy)
-		if len(ap.Spec.InPlaceFallback.ReasonPolicies) > 0 {
-			reasonPolicies := map[string]types.String{}
-			for k, v := range ap.Spec.InPlaceFallback.ReasonPolicies {
-				reasonPolicies[k] = types.StringValue(v)
-			}
-			m.InPlaceFallbackReasonPolicies = customfield.NewMapMust[types.String](ctx, reasonPolicies)
-		} else {
-			m.InPlaceFallbackReasonPolicies = customfield.NullMap[types.String](ctx)
+		if ap.Spec.InPlaceFallback.DefaultPolicy != "" {
+			m.InPlaceFallbackDefaultPolicy = types.StringValue(ap.Spec.InPlaceFallback.DefaultPolicy)
 		}
-	} else {
-		m.InPlaceFallbackDefaultPolicy = types.StringValue("")
-		m.InPlaceFallbackReasonPolicies = customfield.NullMap[types.String](ctx)
+		reasonPolicies := map[string]types.String{}
+		for k, v := range ap.Spec.InPlaceFallback.ReasonPolicies {
+			reasonPolicies[k] = types.StringValue(v)
+		}
+		m.InPlaceFallbackReasonPolicies = customfield.NewMapMust[types.String](ctx, reasonPolicies)
 	}
 
 	return m
+}
+
+func mapsClone(in map[string]string) map[string]string {
+	if in == nil {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(in))
+	for k, v := range in {
+		out[k] = v
+	}
+	return out
+}
+
+func stringOrNull(value string) types.String {
+	if value == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(value)
 }

@@ -2,9 +2,12 @@ package helper
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	customfield "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 type fakeRebalanceConfigurationClient struct {
@@ -104,6 +107,62 @@ func TestSyncRebalanceConfigurationSkipsUpdateWhileStillDisabled(t *testing.T) {
 	}
 }
 
+type fakeWorkloadConfigurationClient struct {
+	workloadConfig   *api.ClusterWorkloadSpec
+	updatedWorkloads []api.Workload
+}
+
+func (f *fakeWorkloadConfigurationClient) GetWorkloadRebalanceConfiguration(string) (*api.ClusterWorkloadSpec, error) {
+	return f.workloadConfig, nil
+}
+
+func (f *fakeWorkloadConfigurationClient) UpdateWorkloadRebalanceConfiguration(_ string, workload api.Workload) error {
+	f.updatedWorkloads = append(f.updatedWorkloads, workload)
+	return nil
+}
+
+func TestSyncWorkloadConfigurationPreservesRemoteFieldsWhenOmitted(t *testing.T) {
+	client := &fakeWorkloadConfigurationClient{
+		workloadConfig: &api.ClusterWorkloadSpec{
+			Workloads: []api.Workload{{
+				Name:               "api",
+				Type:               "Deployment",
+				Namespace:          "default",
+				Replicas:           3,
+				RebalanceAble:      true,
+				SpotFriendly:       true,
+				MinNonSpotReplicas: 2,
+			}},
+		},
+	}
+
+	workloads := customfield.NewObjectListMust(context.Background(), []api.WorkloadModel{{
+		Name:               types.StringValue("api"),
+		Type:               types.StringValue("Deployment"),
+		Namespace:          types.StringValue("default"),
+		RebalanceAble:      types.BoolNull(),
+		SpotFriendly:       types.BoolNull(),
+		MinNonSpotReplicas: types.Int64Null(),
+	}})
+
+	if err := SyncWorkloadConfiguration(context.Background(), client, "cluster-1", workloads, customfield.NullObjectList[api.WorkloadTemplateModel](context.Background())); err != nil {
+		t.Fatalf("SyncWorkloadConfiguration() error = %v", err)
+	}
+	if len(client.updatedWorkloads) != 1 {
+		t.Fatalf("updated workloads = %d, want 1", len(client.updatedWorkloads))
+	}
+	got := client.updatedWorkloads[0]
+	if !got.RebalanceAble {
+		t.Fatalf("RebalanceAble = %v, want true", got.RebalanceAble)
+	}
+	if !got.SpotFriendly {
+		t.Fatalf("SpotFriendly = %v, want true", got.SpotFriendly)
+	}
+	if got.MinNonSpotReplicas != 2 {
+		t.Fatalf("MinNonSpotReplicas = %d, want 2", got.MinNonSpotReplicas)
+	}
+}
+
 type fakeClusterUpgradeClient struct {
 	summary           *api.ClusterCostsSummary
 	upgradeSH         string
@@ -194,5 +253,23 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 	}
 	if client.getUpgradeSHCalls != 1 {
 		t.Fatalf("GetClusterUpgradeSH calls = %d, want 1", client.getUpgradeSHCalls)
+	}
+}
+
+func TestDeleteOptimizedNodesSHDrainsManagedNodesBeforeDeletingNodeClaims(t *testing.T) {
+	drain := "kubectl drain $node --ignore-daemonsets --delete-emptydir-data --force"
+	deleteNodeClaim := "kubectl delete nodeclaim --all"
+
+	if !strings.Contains(DeleteOptimizedNodesSH, drain) {
+		t.Fatalf("DeleteOptimizedNodesSH missing drain command: %q", DeleteOptimizedNodesSH)
+	}
+
+	drainIdx := strings.Index(DeleteOptimizedNodesSH, drain)
+	deleteIdx := strings.Index(DeleteOptimizedNodesSH, deleteNodeClaim)
+	if deleteIdx == -1 {
+		t.Fatalf("DeleteOptimizedNodesSH missing nodeclaim deletion command: %q", DeleteOptimizedNodesSH)
+	}
+	if drainIdx > deleteIdx {
+		t.Fatalf("drain command must run before deleting nodeclaims: %q", DeleteOptimizedNodesSH)
 	}
 }

@@ -22,6 +22,7 @@ type namedItem struct {
 type fakePostWriteStateHydratorClient struct {
 	clusterSetting *api.ClusterSetting
 	nodeClasses    api.RebalanceNodeClassList
+	nodePools      api.RebalanceNodePoolList
 }
 
 func (f *fakePostWriteStateHydratorClient) GetClusterSetting(string) (*api.ClusterSetting, error) {
@@ -30,6 +31,10 @@ func (f *fakePostWriteStateHydratorClient) GetClusterSetting(string) (*api.Clust
 
 func (f *fakePostWriteStateHydratorClient) ListNodeClasses(string) (api.RebalanceNodeClassList, error) {
 	return f.nodeClasses, nil
+}
+
+func (f *fakePostWriteStateHydratorClient) ListNodePools(string) (api.RebalanceNodePoolList, error) {
+	return f.nodePools, nil
 }
 
 func TestSortedValuesByName(t *testing.T) {
@@ -97,6 +102,19 @@ func TestSchemaUsesUnifiedUpgradeFlag(t *testing.T) {
 	}
 }
 
+func TestEnableRebalanceHasNoSchemaDefault(t *testing.T) {
+	attr, ok := Schema(context.Background()).Attributes["enable_rebalance"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("enable_rebalance attribute has unexpected type %T", Schema(context.Background()).Attributes["enable_rebalance"])
+	}
+	if attr.BoolDefaultValue() != nil {
+		t.Fatalf("enable_rebalance should not have a schema default")
+	}
+	if attr.IsComputed() {
+		t.Fatalf("enable_rebalance should not be computed")
+	}
+}
+
 func TestDeletePrefersConfiguredClusterIDOverGeneratedID(t *testing.T) {
 	got := resolveDeleteClusterUID(
 		types.StringValue("user-specified-id"),
@@ -107,6 +125,46 @@ func TestDeletePrefersConfiguredClusterIDOverGeneratedID(t *testing.T) {
 
 	if got != "user-specified-id" {
 		t.Fatalf("got cluster ID %q, want configured cluster ID during delete", got)
+	}
+}
+
+func TestWorkloadOptionalFieldsHaveNoDefault(t *testing.T) {
+	workloadsAttr, ok := Schema(context.Background()).Attributes["workloads"].(schema.ListNestedAttribute)
+	if !ok {
+		t.Fatalf("workloads attribute has unexpected type %T", Schema(context.Background()).Attributes["workloads"])
+	}
+
+	rebalanceAttr, ok := workloadsAttr.NestedObject.Attributes["rebalance_able"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("rebalance_able attribute has unexpected type %T", workloadsAttr.NestedObject.Attributes["rebalance_able"])
+	}
+	if rebalanceAttr.BoolDefaultValue() != nil {
+		t.Fatalf("rebalance_able should not have a schema default")
+	}
+	if rebalanceAttr.IsComputed() {
+		t.Fatalf("rebalance_able should not be computed")
+	}
+
+	spotAttr, ok := workloadsAttr.NestedObject.Attributes["spot_friendly"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("spot_friendly attribute has unexpected type %T", workloadsAttr.NestedObject.Attributes["spot_friendly"])
+	}
+	if spotAttr.BoolDefaultValue() != nil {
+		t.Fatalf("spot_friendly should not have a schema default")
+	}
+	if spotAttr.IsComputed() {
+		t.Fatalf("spot_friendly should not be computed")
+	}
+
+	replicasAttr, ok := workloadsAttr.NestedObject.Attributes["min_non_spot_replicas"].(schema.Int64Attribute)
+	if !ok {
+		t.Fatalf("min_non_spot_replicas attribute has unexpected type %T", workloadsAttr.NestedObject.Attributes["min_non_spot_replicas"])
+	}
+	if replicasAttr.Int64DefaultValue() != nil {
+		t.Fatalf("min_non_spot_replicas should not have a schema default")
+	}
+	if replicasAttr.IsComputed() {
+		t.Fatalf("min_non_spot_replicas should not be computed")
 	}
 }
 
@@ -193,6 +251,76 @@ func TestUseStateForUnknownInt64PreservesNullState(t *testing.T) {
 
 	if !resp.PlanValue.IsNull() {
 		t.Fatalf("plan value should remain null, got %v", resp.PlanValue)
+	}
+}
+
+func TestUseStateForUnknownStringPreservesNullState(t *testing.T) {
+	resp := &schemaplanmodifier.StringResponse{
+		PlanValue: types.StringUnknown(),
+	}
+
+	useStateForUnknownString().PlanModifyString(context.Background(), schemaplanmodifier.StringRequest{
+		State: tfsdk.State{
+			Raw: tftypes.NewValue(
+				tftypes.Object{
+					AttributeTypes: map[string]tftypes.Type{
+						"attr": tftypes.String,
+					},
+				},
+				map[string]tftypes.Value{
+					"attr": tftypes.NewValue(tftypes.String, nil),
+				},
+			),
+		},
+		StateValue:  types.StringNull(),
+		PlanValue:   types.StringUnknown(),
+		ConfigValue: types.StringNull(),
+	}, resp)
+
+	if !resp.PlanValue.IsNull() {
+		t.Fatalf("plan value should remain null, got %v", resp.PlanValue)
+	}
+}
+
+func TestOperationalStringAttributesDoNotPreserveNullState(t *testing.T) {
+	tests := []string{"kubeconfig", "account_id"}
+
+	for _, name := range tests {
+		t.Run(name, func(t *testing.T) {
+			attr, ok := Schema(context.Background()).Attributes[name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("%s attribute has unexpected type %T", name, Schema(context.Background()).Attributes[name])
+			}
+			modifiers := attr.StringPlanModifiers()
+			if len(modifiers) == 0 {
+				t.Fatalf("%s should define a string plan modifier", name)
+			}
+
+			resp := &schemaplanmodifier.StringResponse{
+				PlanValue: types.StringUnknown(),
+			}
+			modifiers[0].PlanModifyString(context.Background(), schemaplanmodifier.StringRequest{
+				State: tfsdk.State{
+					Raw: tftypes.NewValue(
+						tftypes.Object{
+							AttributeTypes: map[string]tftypes.Type{
+								name: tftypes.String,
+							},
+						},
+						map[string]tftypes.Value{
+							name: tftypes.NewValue(tftypes.String, nil),
+						},
+					),
+				},
+				StateValue:  types.StringNull(),
+				PlanValue:   types.StringUnknown(),
+				ConfigValue: types.StringNull(),
+			}, resp)
+
+			if !resp.PlanValue.IsUnknown() {
+				t.Fatalf("%s plan value should stay unknown so apply can backfill it, got %v", name, resp.PlanValue)
+			}
+		})
 	}
 }
 
@@ -338,6 +466,30 @@ func TestPreserveNodePoolStateRepresentationLeavesLabelsAndTaintsNullWhenOmitted
 	}
 	if !got.Taints.IsNull() {
 		t.Fatalf("Taints should remain null when taints are omitted from state")
+	}
+}
+
+func TestPreserveNodePoolStateRepresentationKeepsEmptyTaintsList(t *testing.T) {
+	ctx := context.Background()
+	remote := api.EC2NodePoolModel{
+		Name:   types.StringValue("cloudpilot-general"),
+		Taints: customfield.NullObjectList[api.TaintModel](ctx),
+	}
+	state := api.EC2NodePoolModel{
+		Name:   types.StringValue("cloudpilot-general"),
+		Taints: customfield.NewObjectListMust(ctx, []api.TaintModel{}),
+	}
+
+	got := preserveNodePoolStateRepresentation(ctx, remote, state)
+	if got.Taints.IsNull() {
+		t.Fatalf("Taints should preserve an explicit empty list from state")
+	}
+	taints, diags := got.Taints.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("Taints diagnostics = %v", diags)
+	}
+	if len(taints) != 0 {
+		t.Fatalf("expected empty taints list, got %#v", taints)
 	}
 }
 
@@ -513,6 +665,40 @@ func TestHydratePostWriteStateRefreshesNodeClassesFromServer(t *testing.T) {
 	}
 }
 
+func TestHydratePostWriteStateLeavesMissingNodeClassStringsNull(t *testing.T) {
+	ctx := context.Background()
+	data := ClusterModel{
+		NodeClasses: customfield.NewObjectListMust(ctx, []api.EC2NodeClassModel{{
+			Name:     types.StringValue("cloudpilot"),
+			AmiAlias: types.StringUnknown(),
+			UserData: types.StringUnknown(),
+		}}),
+	}
+
+	err := hydratePostWriteState(ctx, &fakePostWriteStateHydratorClient{
+		nodeClasses: api.RebalanceNodeClassList{
+			EC2NodeClasses: []api.EC2NodeClass{{
+				Name:          "cloudpilot",
+				NodeClassSpec: &awsproviderv1.EC2NodeClassSpec{},
+			}},
+		},
+	}, "cluster-1", &data)
+	if err != nil {
+		t.Fatalf("hydratePostWriteState() error = %v", err)
+	}
+
+	nodeClasses, diags := data.NodeClasses.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("nodeclasses diagnostics = %v", diags)
+	}
+	if !nodeClasses[0].AmiAlias.IsNull() {
+		t.Fatalf("AmiAlias should be null after hydration, got %#v", nodeClasses[0].AmiAlias)
+	}
+	if !nodeClasses[0].UserData.IsNull() {
+		t.Fatalf("UserData should be null after hydration, got %#v", nodeClasses[0].UserData)
+	}
+}
+
 func TestHydratePostWriteStateNormalizesUnknownNodeClassTemplateStrings(t *testing.T) {
 	ctx := context.Background()
 	data := ClusterModel{
@@ -539,5 +725,81 @@ func TestHydratePostWriteStateNormalizesUnknownNodeClassTemplateStrings(t *testi
 	}
 	if !templates[0].UserData.IsNull() {
 		t.Fatalf("UserData should be null after hydration, got %#v", templates[0].UserData)
+	}
+}
+
+func TestHydratePostWriteStateRefreshesNodePoolsFromServer(t *testing.T) {
+	ctx := context.Background()
+	data := ClusterModel{
+		NodePools: customfield.NewObjectListMust(ctx, []api.EC2NodePoolModel{{
+			Name:              types.StringValue("cloudpilot-general"),
+			TemplateName:      types.StringValue("default"),
+			InstanceCPUMIN:    types.Int64Unknown(),
+			InstanceMemoryMIN: types.Int64Unknown(),
+		}}),
+	}
+
+	err := hydratePostWriteState(ctx, &fakePostWriteStateHydratorClient{
+		nodePools: api.RebalanceNodePoolList{
+			EC2NodePools: []api.EC2NodePool{{
+				Name:         "cloudpilot-general",
+				NodePoolSpec: api.DefaultGeneralEC2NodePoolSpec(),
+			}},
+		},
+	}, "cluster-1", &data)
+	if err != nil {
+		t.Fatalf("hydratePostWriteState() error = %v", err)
+	}
+
+	nodePools, diags := data.NodePools.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("nodepools diagnostics = %v", diags)
+	}
+	if len(nodePools) != 1 {
+		t.Fatalf("got %d nodepools, want 1", len(nodePools))
+	}
+	if nodePools[0].InstanceCPUMIN.IsUnknown() {
+		t.Fatalf("InstanceCPUMIN should not remain unknown")
+	}
+	if !nodePools[0].InstanceCPUMIN.IsNull() {
+		t.Fatalf("InstanceCPUMIN should be null when server omits the minimum filter, got %#v", nodePools[0].InstanceCPUMIN)
+	}
+	if nodePools[0].InstanceMemoryMIN.IsUnknown() {
+		t.Fatalf("InstanceMemoryMIN should not remain unknown")
+	}
+	if !nodePools[0].InstanceMemoryMIN.IsNull() {
+		t.Fatalf("InstanceMemoryMIN should be null when server omits the minimum filter, got %#v", nodePools[0].InstanceMemoryMIN)
+	}
+	if nodePools[0].TemplateName.ValueString() != "default" {
+		t.Fatalf("TemplateName = %q, want default", nodePools[0].TemplateName.ValueString())
+	}
+}
+
+func TestHydratePostWriteStateNormalizesUnknownNodePoolTemplateMinimums(t *testing.T) {
+	ctx := context.Background()
+	data := ClusterModel{
+		NodePoolTemplates: customfield.NewObjectListMust(ctx, []api.EC2NodePoolTemplateModel{{
+			TemplateName:      types.StringValue("default"),
+			InstanceCPUMIN:    types.Int64Unknown(),
+			InstanceMemoryMIN: types.Int64Unknown(),
+		}}),
+	}
+
+	if err := hydratePostWriteState(ctx, &fakePostWriteStateHydratorClient{}, "cluster-1", &data); err != nil {
+		t.Fatalf("hydratePostWriteState() error = %v", err)
+	}
+
+	templates, diags := data.NodePoolTemplates.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("nodepool templates diagnostics = %v", diags)
+	}
+	if len(templates) != 1 {
+		t.Fatalf("got %d nodepool templates, want 1", len(templates))
+	}
+	if !templates[0].InstanceCPUMIN.IsNull() {
+		t.Fatalf("InstanceCPUMIN should be null after hydration, got %#v", templates[0].InstanceCPUMIN)
+	}
+	if !templates[0].InstanceMemoryMIN.IsNull() {
+		t.Fatalf("InstanceMemoryMIN should be null after hydration, got %#v", templates[0].InstanceMemoryMIN)
 	}
 }

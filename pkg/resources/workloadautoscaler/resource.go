@@ -8,6 +8,7 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"k8s.io/apimachinery/pkg/util/wait"
 
@@ -24,6 +25,12 @@ var (
 
 type WorkloadAutoscaler struct {
 	client cloudpilotaiclient.Interface
+}
+
+type postWriteStateHydratorClient interface {
+	GetWAConfiguration(clusterID string) (*api.WAConfiguration, error)
+	ListRecommendationPolicies(clusterID string) ([]api.RecommendationPolicyResource, error)
+	ListAutoscalingPolicies(clusterID string) ([]api.AutoscalingPolicyResource, error)
 }
 
 func NewWorkloadAutoscaler() resource.Resource {
@@ -96,8 +103,8 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 		tflog.Info(ctx, "installing CloudPilot AI Workload Autoscaler")
 		if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
 			kubeconfigPath,
-			data.StorageClass.ValueString(),
-			data.EnableNodeAgent.ValueBool(),
+			stringValueOrDefault(data.StorageClass, ""),
+			boolValueOrDefault(data.EnableNodeAgent, true),
 		); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install Workload Autoscaler",
@@ -139,6 +146,10 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 		)
 		return
 	}
+	if err := hydratePostWriteState(ctx, w.client, clusterID, &data); err != nil {
+		resp.Diagnostics.AddError("failed to hydrate Workload Autoscaler state after sync", err.Error())
+		return
+	}
 
 	tflog.Info(ctx, "created Workload Autoscaler resource successfully")
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -167,8 +178,9 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 
 	clusterID := data.ClusterID.ValueString()
 
-	needReinstall := data.EnableNodeAgent.ValueBool() != state.EnableNodeAgent.ValueBool()
-	if !needReinstall {
+	needReinstall := managedBoolChanged(data.EnableNodeAgent, state.EnableNodeAgent) ||
+		managedStringChanged(data.StorageClass, state.StorageClass)
+	if !needReinstall && !shouldSkipBackendInstallCheckForStateBackfill(data, state) {
 		waConfig, err := w.client.GetWAConfiguration(clusterID)
 		if err != nil {
 			tflog.Warn(ctx, fmt.Sprintf("failed to get Workload Autoscaler configuration before upgrade, fallback to reinstall path: %v", err))
@@ -189,8 +201,8 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		tflog.Info(ctx, "upgrading CloudPilot AI Workload Autoscaler")
 		if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
 			data.Kubeconfig.ValueString(),
-			data.StorageClass.ValueString(),
-			data.EnableNodeAgent.ValueBool(),
+			stringValueOrDefault(data.StorageClass, ""),
+			boolValueOrDefault(data.EnableNodeAgent, true),
 		); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade Workload Autoscaler",
@@ -216,6 +228,10 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		)
 		return
 	}
+	if err := hydratePostWriteState(ctx, w.client, clusterID, &data); err != nil {
+		resp.Diagnostics.AddError("failed to hydrate Workload Autoscaler state after sync", err.Error())
+		return
+	}
 
 	tflog.Info(ctx, "updated Workload Autoscaler resource successfully")
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -239,7 +255,7 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 	if conf, err := w.client.GetWAConfiguration(clusterID); err != nil {
 		tflog.Warn(ctx, fmt.Sprintf("failed to read Workload Autoscaler configuration: %v", err))
 	} else {
-		data.ApplyWAConfiguration(conf)
+		mergeWAConfigurationFromAPI(&data, conf, isImport)
 	}
 
 	// Read recommendation policies
@@ -253,16 +269,19 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 	}
 
 	if !data.RecommendationPolicies.IsNullOrUnknown() {
-		rpByName := make(map[string]api.RecommendationPolicyModel, len(rps))
-		for i := range rps {
-			m := api.RecommendationPolicyModelFromResource(&rps[i])
-			rpByName[rps[i].Name] = m
-		}
-
 		stateRPs, diags := data.RecommendationPolicies.AsStructSliceT(ctx)
 		if diags.HasError() {
 			resp.Diagnostics.Append(diags...)
 			return
+		}
+
+		rpByName := make(map[string]api.RecommendationPolicyModel, len(rps))
+		for i := range rps {
+			m := preserveRecommendationPolicyStateRepresentation(
+				api.RecommendationPolicyModelFromResource(&rps[i]),
+				findRecommendationPolicyStateModel(stateRPs, rps[i].Name),
+			)
+			rpByName[rps[i].Name] = m
 		}
 
 		rpModels := orderByState(stateRPs, rpByName, func(m api.RecommendationPolicyModel) string {
@@ -324,7 +343,151 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 		data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, allAPs)
 	}
 
+	if err := hydratePostWriteState(ctx, w.client, clusterID, &data); err != nil {
+		resp.Diagnostics.AddError("failed to hydrate Workload Autoscaler state after read", err.Error())
+		return
+	}
+
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+}
+
+func hydratePostWriteState(ctx context.Context, client postWriteStateHydratorClient, clusterID string, data *WorkloadAutoscalerModel) error {
+	conf, err := client.GetWAConfiguration(clusterID)
+	if err != nil {
+		return fmt.Errorf("failed to get Workload Autoscaler configuration: %w", err)
+	}
+	mergeWAConfigurationFromAPI(data, conf, false)
+
+	rps, err := client.ListRecommendationPolicies(clusterID)
+	if err != nil {
+		return fmt.Errorf("failed to list recommendation policies: %w", err)
+	}
+	if err := hydrateRecommendationPoliciesPostWrite(ctx, data, rps); err != nil {
+		return err
+	}
+
+	aps, err := client.ListAutoscalingPolicies(clusterID)
+	if err != nil {
+		return fmt.Errorf("failed to list autoscaling policies: %w", err)
+	}
+	if err := hydrateAutoscalingPoliciesPostWrite(ctx, data, aps); err != nil {
+		return err
+	}
+
+	return nil
+}
+
+func hydrateRecommendationPoliciesPostWrite(ctx context.Context, data *WorkloadAutoscalerModel, rps []api.RecommendationPolicyResource) error {
+	if data.RecommendationPolicies.IsNullOrUnknown() {
+		return nil
+	}
+
+	stateRPs, diags := data.RecommendationPolicies.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("recommendation policies diagnostics = %v", diags)
+	}
+
+	rpByName := make(map[string]api.RecommendationPolicyModel, len(rps))
+	for i := range rps {
+		rpByName[rps[i].Name] = preserveRecommendationPolicyStateRepresentation(
+			api.RecommendationPolicyModelFromResource(&rps[i]),
+			findRecommendationPolicyStateModel(stateRPs, rps[i].Name),
+		)
+	}
+
+	ordered := orderByState(stateRPs, rpByName, func(m api.RecommendationPolicyModel) string {
+		return m.Name.ValueString()
+	})
+	data.RecommendationPolicies = customfield.NewObjectListMust(ctx, ordered)
+	return nil
+}
+
+func hydrateAutoscalingPoliciesPostWrite(ctx context.Context, data *WorkloadAutoscalerModel, aps []api.AutoscalingPolicyResource) error {
+	if data.AutoscalingPolicies.IsNullOrUnknown() {
+		return nil
+	}
+
+	stateAPs, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("autoscaling policies diagnostics = %v", diags)
+	}
+
+	apByName := make(map[string]api.AutoscalingPolicyModel, len(aps))
+	for i := range aps {
+		model := api.AutoscalingPolicyModelFromResource(ctx, &aps[i])
+		apByName[aps[i].Name] = preserveAutoscalingPolicyStateRepresentation(ctx, model, findAutoscalingPolicyStateModel(stateAPs, aps[i].Name))
+	}
+
+	ordered := orderByState(stateAPs, apByName, func(m api.AutoscalingPolicyModel) string {
+		return m.Name.ValueString()
+	})
+	data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, ordered)
+	return nil
+}
+
+func findAutoscalingPolicyStateModel(items []api.AutoscalingPolicyModel, name string) api.AutoscalingPolicyModel {
+	for _, item := range items {
+		if item.Name.ValueString() == name {
+			return item
+		}
+	}
+	return api.AutoscalingPolicyModel{}
+}
+
+func findRecommendationPolicyStateModel(items []api.RecommendationPolicyModel, name string) api.RecommendationPolicyModel {
+	for _, item := range items {
+		if item.Name.ValueString() == name {
+			return item
+		}
+	}
+	return api.RecommendationPolicyModel{}
+}
+
+func preserveRecommendationPolicyStateRepresentation(remote, state api.RecommendationPolicyModel) api.RecommendationPolicyModel {
+	remote.StrategyType = preserveManagedString(state.StrategyType, remote.StrategyType)
+	remote.PercentileCPU = preserveManagedInt32(state.PercentileCPU, remote.PercentileCPU)
+	remote.PercentileMemory = preserveManagedInt32(state.PercentileMemory, remote.PercentileMemory)
+	remote.BufferCPU = preserveManagedString(state.BufferCPU, remote.BufferCPU)
+	remote.BufferMemory = preserveManagedString(state.BufferMemory, remote.BufferMemory)
+	remote.RequestMinCPU = preserveManagedString(state.RequestMinCPU, remote.RequestMinCPU)
+	remote.RequestMinMemory = preserveManagedString(state.RequestMinMemory, remote.RequestMinMemory)
+	remote.RequestMaxCPU = preserveManagedString(state.RequestMaxCPU, remote.RequestMaxCPU)
+	remote.RequestMaxMemory = preserveManagedString(state.RequestMaxMemory, remote.RequestMaxMemory)
+	remote.JVMHeapBuffer = preserveManagedString(state.JVMHeapBuffer, remote.JVMHeapBuffer)
+	remote.JVMMinHeapXmsRatioOfMemory = preserveManagedString(state.JVMMinHeapXmsRatioOfMemory, remote.JVMMinHeapXmsRatioOfMemory)
+	remote.JVMRecentNonHeapWindow = preserveManagedString(state.JVMRecentNonHeapWindow, remote.JVMRecentNonHeapWindow)
+	remote.JVMHeapUsedPercentile = preserveManagedInt32(state.JVMHeapUsedPercentile, remote.JVMHeapUsedPercentile)
+	return remote
+}
+
+func preserveAutoscalingPolicyStateRepresentation(ctx context.Context, remote, state api.AutoscalingPolicyModel) api.AutoscalingPolicyModel {
+	remote.Enable = preserveManagedBool(state.Enable, remote.Enable)
+	remote.Priority = preserveManagedInt64(state.Priority, remote.Priority)
+	remote.DisableRuntimeOptimization = preserveManagedBool(state.DisableRuntimeOptimization, remote.DisableRuntimeOptimization)
+	remote.UpdateResources = preserveManagedStringList(state.UpdateResources, remote.UpdateResources)
+	remote.DriftThresholdCPU = preserveManagedString(state.DriftThresholdCPU, remote.DriftThresholdCPU)
+	remote.DriftThresholdMemory = preserveManagedString(state.DriftThresholdMemory, remote.DriftThresholdMemory)
+	remote.OnPolicyRemoval = preserveManagedString(state.OnPolicyRemoval, remote.OnPolicyRemoval)
+	remote.TargetRefs = preserveManagedObjectList(ctx, state.TargetRefs, remote.TargetRefs)
+	remote.UpdateSchedules = preserveManagedObjectList(ctx, state.UpdateSchedules, remote.UpdateSchedules)
+	remote.LimitPolicies = preserveManagedObjectList(ctx, state.LimitPolicies, remote.LimitPolicies)
+	remote.StartupBoostEnabled = preserveManagedBool(state.StartupBoostEnabled, remote.StartupBoostEnabled)
+	remote.StartupBoostMinBoostDuration = preserveManagedString(state.StartupBoostMinBoostDuration, remote.StartupBoostMinBoostDuration)
+	remote.StartupBoostMinReadyDuration = preserveManagedString(state.StartupBoostMinReadyDuration, remote.StartupBoostMinReadyDuration)
+	remote.StartupBoostMultiplierCPU = preserveManagedString(state.StartupBoostMultiplierCPU, remote.StartupBoostMultiplierCPU)
+	remote.StartupBoostMultiplierMemory = preserveManagedString(state.StartupBoostMultiplierMemory, remote.StartupBoostMultiplierMemory)
+	remote.InPlaceFallbackDefaultPolicy = preserveManagedString(state.InPlaceFallbackDefaultPolicy, remote.InPlaceFallbackDefaultPolicy)
+	if remote.InPlaceFallbackReasonPolicies.IsNull() || remote.InPlaceFallbackReasonPolicies.IsUnknown() {
+		if !state.InPlaceFallbackReasonPolicies.IsNull() && !state.InPlaceFallbackReasonPolicies.IsUnknown() {
+			values, diags := state.InPlaceFallbackReasonPolicies.Value(ctx)
+			if !diags.HasError() && len(values) == 0 {
+				remote.InPlaceFallbackReasonPolicies = state.InPlaceFallbackReasonPolicies
+			}
+		}
+	} else if state.InPlaceFallbackReasonPolicies.IsNull() || state.InPlaceFallbackReasonPolicies.IsUnknown() {
+		remote.InPlaceFallbackReasonPolicies = customfield.NullMap[types.String](ctx)
+	}
+	return remote
 }
 
 // orderByState returns server items that are tracked in state, preserving
@@ -497,4 +660,164 @@ func extractPolicyNames[T any](ctx context.Context, list customfield.NestedObjec
 		names[getName(item)] = struct{}{}
 	}
 	return names
+}
+
+func shouldSkipBackendInstallCheckForStateBackfill(data, state WorkloadAutoscalerModel) bool {
+	return state.Kubeconfig.ValueString() == "" &&
+		data.Kubeconfig.ValueString() != "" &&
+		!managedBoolChanged(data.EnableNodeAgent, state.EnableNodeAgent) &&
+		!managedStringChanged(data.StorageClass, state.StorageClass)
+}
+
+func mergeWAConfigurationFromAPI(data *WorkloadAutoscalerModel, conf *api.WAConfiguration, importAll bool) {
+	if conf == nil {
+		return
+	}
+
+	if importAll || !data.EnableNewWorkloadsProactiveUpdate.IsNull() {
+		if conf.EnableNewWorkloadsProactiveUpdate != nil {
+			data.EnableNewWorkloadsProactiveUpdate = types.BoolValue(*conf.EnableNewWorkloadsProactiveUpdate)
+		} else {
+			data.EnableNewWorkloadsProactiveUpdate = types.BoolNull()
+		}
+	}
+	if importAll || !data.LimiterQuotaPerWindow.IsNull() {
+		if conf.LimiterQuotaPerWindow != nil {
+			data.LimiterQuotaPerWindow = types.Int64Value(int64(*conf.LimiterQuotaPerWindow))
+		} else {
+			data.LimiterQuotaPerWindow = types.Int64Null()
+		}
+	}
+	if importAll || !data.LimiterBurst.IsNull() {
+		if conf.LimiterBurst != nil {
+			data.LimiterBurst = types.Int64Value(int64(*conf.LimiterBurst))
+		} else {
+			data.LimiterBurst = types.Int64Null()
+		}
+	}
+	if importAll || !data.LimiterWindowSeconds.IsNull() {
+		if conf.LimiterWindowSeconds != nil {
+			data.LimiterWindowSeconds = types.Int64Value(int64(*conf.LimiterWindowSeconds))
+		} else {
+			data.LimiterWindowSeconds = types.Int64Null()
+		}
+	}
+	if importAll || !data.EnablePreemptedPodGC.IsNull() {
+		if conf.EnablePreemptedPodGC != nil {
+			data.EnablePreemptedPodGC = types.BoolValue(*conf.EnablePreemptedPodGC)
+		} else {
+			data.EnablePreemptedPodGC = types.BoolNull()
+		}
+	}
+	if importAll || !data.PreemptedPodGCTTL.IsNull() {
+		if conf.PreemptedPodGCTTL != nil {
+			data.PreemptedPodGCTTL = types.StringValue(*conf.PreemptedPodGCTTL)
+		} else {
+			data.PreemptedPodGCTTL = types.StringNull()
+		}
+	}
+	if importAll || !data.EnableInitialOptimizationDataWindowCheck.IsNull() {
+		if conf.EnableInitialOptimizationDataWindowCheck != nil {
+			data.EnableInitialOptimizationDataWindowCheck = types.BoolValue(*conf.EnableInitialOptimizationDataWindowCheck)
+		} else {
+			data.EnableInitialOptimizationDataWindowCheck = types.BoolNull()
+		}
+	}
+}
+
+func isManagedBool(value types.Bool) bool {
+	return !value.IsNull()
+}
+
+func isManagedInt64(value types.Int64) bool {
+	return !value.IsNull()
+}
+
+func isManagedString(value types.String) bool {
+	return !value.IsNull()
+}
+
+func boolValueOrDefault(value types.Bool, fallback bool) bool {
+	if !isManagedBool(value) {
+		return fallback
+	}
+	return value.ValueBool()
+}
+
+func stringValueOrDefault(value types.String, fallback string) string {
+	if !isManagedString(value) {
+		return fallback
+	}
+	return value.ValueString()
+}
+
+func managedBoolChanged(plan, state types.Bool) bool {
+	if !isManagedBool(plan) {
+		return false
+	}
+	if !isManagedBool(state) {
+		return true
+	}
+	return plan.ValueBool() != state.ValueBool()
+}
+
+func managedStringChanged(plan, state types.String) bool {
+	if !isManagedString(plan) {
+		return false
+	}
+	if !isManagedString(state) {
+		return true
+	}
+	return plan.ValueString() != state.ValueString()
+}
+
+func preserveManagedBool(stateVal, remoteVal types.Bool) types.Bool {
+	if stateVal.IsNull() {
+		return types.BoolNull()
+	}
+	return remoteVal
+}
+
+func preserveManagedInt64(stateVal, remoteVal types.Int64) types.Int64 {
+	if stateVal.IsNull() {
+		return types.Int64Null()
+	}
+	return remoteVal
+}
+
+func preserveManagedInt32(stateVal, remoteVal types.Int32) types.Int32 {
+	if stateVal.IsNull() {
+		return types.Int32Null()
+	}
+	return remoteVal
+}
+
+func preserveManagedString(stateVal, remoteVal types.String) types.String {
+	if stateVal.IsNull() {
+		return types.StringNull()
+	}
+	return remoteVal
+}
+
+func preserveManagedStringList(stateVal, remoteVal *[]types.String) *[]types.String {
+	if stateVal == nil {
+		return nil
+	}
+	if remoteVal == nil && len(*stateVal) == 0 {
+		return stateVal
+	}
+	return remoteVal
+}
+
+func preserveManagedObjectList[T any](ctx context.Context, stateVal, remoteVal customfield.NestedObjectList[T]) customfield.NestedObjectList[T] {
+	if stateVal.IsNull() {
+		return customfield.NullObjectList[T](ctx)
+	}
+	if remoteVal.IsNullOrUnknown() {
+		values, diags := stateVal.AsStructSliceT(ctx)
+		if !diags.HasError() && len(values) == 0 {
+			return stateVal
+		}
+	}
+	return remoteVal
 }

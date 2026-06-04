@@ -120,7 +120,7 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	var nodeClassModel EC2NodeClassModel
 	nodeClassModel.Name = types.StringValue(e.Name)
 	nodeClassModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
-	nodeClassModel.OriginNodeClassJSON = types.StringValue("")
+	nodeClassModel.OriginNodeClassJSON = types.StringNull()
 
 	if e.NodeClassSpec.Role != "" {
 		nodeClassModel.Role = types.StringValue(e.NodeClassSpec.Role)
@@ -218,13 +218,8 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 			break
 		}
 	}
-	if nodeClassModel.AmiAlias.IsNull() {
-		nodeClassModel.AmiAlias = types.StringValue("")
-	}
 	if e.NodeClassSpec.UserData != nil {
 		nodeClassModel.UserData = types.StringValue(*e.NodeClassSpec.UserData)
-	} else {
-		nodeClassModel.UserData = types.StringValue("")
 	}
 	blockDeviceMappings := blockDeviceMappingModelsFromAWS(ctx, e.NodeClassSpec.BlockDeviceMappings)
 	if len(blockDeviceMappings) > 0 {
@@ -307,7 +302,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	nodePoolModel.Name = types.StringValue(e.Name)
 	nodePoolModel.Enable = types.BoolValue(e.Enable)
 	nodePoolModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
-	nodePoolModel.OriginNodePoolJSON = types.StringValue("")
+	nodePoolModel.OriginNodePoolJSON = types.StringNull()
 
 	if e.NodePoolSpec == nil {
 		return &nodePoolModel, nil

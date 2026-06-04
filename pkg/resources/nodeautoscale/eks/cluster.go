@@ -39,6 +39,7 @@ type Cluster struct {
 type postWriteStateHydratorClient interface {
 	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
 	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
+	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
 }
 
 const clusterReadyPollTimeout = 5 * time.Minute
@@ -130,7 +131,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		// 1. install cloudpilot ai agent component
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
+			data.Kubeconfig.ValueString(), boolValueOrDefault(data.DisableWorkloadUploading, false), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -159,7 +160,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 
 	rebalanceComponentInstalled := !rebalanceConfig.LastComponentsActiveTime.IsZero()
 
-	if !data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool() {
+	if !boolValueOrDefault(data.OnlyInstallAgent, false) || boolValueOrDefault(data.EnableRebalance, false) {
 		if !rebalanceComponentInstalled {
 			// 1.2. install cloudpilot ai rebalance component
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
@@ -175,7 +176,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		}
 	}
 
-	if data.EnableUpgrade.ValueBool() {
+	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
 			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
 		if err != nil {
@@ -264,7 +265,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	if !agentExist {
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), data.DisableWorkloadUploading.ValueBool(), data.AWSProfile.ValueString()); err != nil {
+			data.Kubeconfig.ValueString(), boolValueOrDefault(data.DisableWorkloadUploading, false), data.AWSProfile.ValueString()); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -281,7 +282,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		}
 	}
 
-	if !data.OnlyInstallAgent.ValueBool() || data.EnableRebalance.ValueBool() {
+	if !boolValueOrDefault(data.OnlyInstallAgent, false) || boolValueOrDefault(data.EnableRebalance, false) {
 		rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -305,7 +306,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		}
 	}
 
-	if data.EnableUpgrade.ValueBool() {
+	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
 			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
 		if err != nil {
@@ -417,7 +418,9 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		return
 	}
 
-	data.EnableRebalance = types.BoolValue(rebalanceConfiguration.Enable)
+	if isImport || !data.EnableRebalance.IsNull() {
+		data.EnableRebalance = types.BoolValue(rebalanceConfiguration.Enable)
+	}
 
 	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
 		data.ClusterSetting = clusterSettingObjectFromAPI(ctx, clusterSetting)
@@ -452,9 +455,8 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		for wi := range workloadModels {
 			k := workloadModels[wi].Namespace.ValueString() + "/" + workloadModels[wi].Type.ValueString() + "/" + workloadModels[wi].Name.ValueString()
 			if v, ok := workloadM[k]; ok {
-				stateTemplateName := workloadModels[wi].TemplateName
-				workloadModels[wi] = *v.ToWorkloadModel()
-				workloadModels[wi].TemplateName = stateTemplateName
+				stateModel := workloadModels[wi]
+				workloadModels[wi] = preserveWorkloadStateRepresentation(*v.ToWorkloadModel(), stateModel)
 			}
 		}
 		data.Workloads = customfield.NewObjectListMust(ctx, workloadModels)
@@ -629,9 +631,9 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 	}
 
 	nodesRestored := false
-	if data.SkipRestore.ValueBool() {
+	if boolValueOrDefault(data.SkipRestore, false) {
 		tflog.Info(ctx, "skip_restore is true, skipping node restore step")
-	} else if data.RestoreNodeNumber.ValueInt64() > 0 {
+	} else if int64ValueOrDefault(data.RestoreNodeNumber, 0) > 0 {
 		opNodeNum, err := helper.GetCloudpilotAIOptimizedNodeNumber(ctx, data.Kubeconfig.ValueString(), data.AWSProfile.ValueString())
 		if err != nil {
 			resp.Diagnostics.AddError(
@@ -644,7 +646,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 			if err := helper.RestoreCloudpilotAIComponent(ctx, c.client,
 				clusterUID, data.ClusterName.ValueString(), data.Region.ValueString(),
 				data.Kubeconfig.ValueString(), data.AWSProfile.ValueString(),
-				data.RestoreNodeNumber.ValueInt64()); err != nil {
+				int64ValueOrDefault(data.RestoreNodeNumber, 0)); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to restore CloudPilot AI component",
 					err.Error(),
@@ -763,10 +765,14 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 
 	// sync rebalance configuration
 	tflog.Info(ctx, "syncing rebalance configuration")
-	if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterUID, data.EnableRebalance.ValueBool()); err != nil {
-		return fmt.Errorf("failed to sync rebalance configuration: %w", err)
+	if isManagedBool(data.EnableRebalance) {
+		if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterUID, data.EnableRebalance.ValueBool()); err != nil {
+			return fmt.Errorf("failed to sync rebalance configuration: %w", err)
+		}
+		tflog.Info(ctx, "synced rebalance configuration successfully")
+	} else {
+		tflog.Info(ctx, "enable_rebalance is unmanaged, skipping rebalance configuration sync")
 	}
-	tflog.Info(ctx, "synced rebalance configuration successfully")
 
 	// sync cluster setting only when it is configured on the Terraform resource.
 	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
@@ -797,6 +803,14 @@ func hydratePostWriteState(ctx context.Context, client postWriteStateHydratorCli
 		return err
 	}
 	data.NodeClassTemplates, err = normalizeNodeClassTemplatesPostWrite(ctx, data.NodeClassTemplates)
+	if err != nil {
+		return err
+	}
+	data.NodePools, err = hydrateNodePoolsPostWrite(ctx, client, clusterUID, data.NodePools)
+	if err != nil {
+		return err
+	}
+	data.NodePoolTemplates, err = normalizeNodePoolTemplatesPostWrite(ctx, data.NodePoolTemplates)
 	if err != nil {
 		return err
 	}
@@ -953,6 +967,90 @@ func normalizeNodeClassTemplatesPostWrite(ctx context.Context, current customfie
 	return list, nil
 }
 
+func hydrateNodePoolsPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.EC2NodePoolModel]) (customfield.NestedObjectList[api.EC2NodePoolModel], error) {
+	if current.IsNullOrUnknown() {
+		return current, nil
+	}
+
+	stateNodePools, diags := current.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to parse nodepools: %v", diags)
+	}
+
+	remoteList, err := client.ListNodePools(clusterUID)
+	if err != nil {
+		return current, fmt.Errorf("failed to list nodepools: %w", err)
+	}
+
+	remoteByName := make(map[string]api.EC2NodePoolModel, len(remoteList.EC2NodePools))
+	for i := range remoteList.EC2NodePools {
+		model, err := remoteList.EC2NodePools[i].ToEC2NodePoolModel()
+		if err != nil {
+			return current, fmt.Errorf("failed to convert nodepool %q: %w", remoteList.EC2NodePools[i].Name, err)
+		}
+		if model != nil {
+			remoteByName[remoteList.EC2NodePools[i].Name] = normalizeNodePoolComputedUnknowns(*model)
+		}
+	}
+
+	hydrated := make([]api.EC2NodePoolModel, 0, len(stateNodePools))
+	for _, stateNodePool := range stateNodePools {
+		if remote, ok := remoteByName[stateNodePool.Name.ValueString()]; ok {
+			hydrated = append(hydrated, normalizeNodePoolComputedUnknowns(preserveNodePoolStateRepresentation(ctx, remote, stateNodePool)))
+			continue
+		}
+
+		hydrated = append(hydrated, normalizeNodePoolComputedUnknowns(stateNodePool))
+	}
+
+	list, diags := customfield.NewObjectList(ctx, hydrated)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to build nodepools state: %v", diags)
+	}
+	return list, nil
+}
+
+func normalizeNodePoolComputedUnknowns(model api.EC2NodePoolModel) api.EC2NodePoolModel {
+	if model.NodeClass.IsUnknown() {
+		model.NodeClass = types.StringNull()
+	}
+	if model.InstanceCPUMIN.IsUnknown() {
+		model.InstanceCPUMIN = types.Int64Null()
+	}
+	if model.InstanceMemoryMIN.IsUnknown() {
+		model.InstanceMemoryMIN = types.Int64Null()
+	}
+	return model
+}
+
+func normalizeNodePoolTemplatesPostWrite(ctx context.Context, current customfield.NestedObjectList[api.EC2NodePoolTemplateModel]) (customfield.NestedObjectList[api.EC2NodePoolTemplateModel], error) {
+	if current.IsNullOrUnknown() {
+		return current, nil
+	}
+
+	templates, diags := current.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to parse nodepool_templates: %v", diags)
+	}
+	for i := range templates {
+		if templates[i].NodeClass.IsUnknown() {
+			templates[i].NodeClass = types.StringNull()
+		}
+		if templates[i].InstanceCPUMIN.IsUnknown() {
+			templates[i].InstanceCPUMIN = types.Int64Null()
+		}
+		if templates[i].InstanceMemoryMIN.IsUnknown() {
+			templates[i].InstanceMemoryMIN = types.Int64Null()
+		}
+	}
+
+	list, diags := customfield.NewObjectList(ctx, templates)
+	if diags.HasError() {
+		return current, fmt.Errorf("failed to build nodepool_templates state: %v", diags)
+	}
+	return list, nil
+}
+
 func validateNodeClassDiskFields(ctx context.Context, data *ClusterModel) error {
 	if err := validateNodeClassDiskFieldsForClasses(ctx, data.NodeClasses); err != nil {
 		return err
@@ -998,10 +1096,20 @@ func hasSystemDiskSize(value types.Int64) bool {
 
 func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api.EC2NodeClassModel) (api.EC2NodeClassModel, error) {
 	remote.TemplateName = state.TemplateName
+	remote.Role = preserveManagedString(state.Role, remote.Role)
+	remote.EnableImageAccelerator = preserveManagedBool(state.EnableImageAccelerator, remote.EnableImageAccelerator)
+	remote.AmiAlias = preserveManagedString(state.AmiAlias, remote.AmiAlias)
+	remote.UserData = preserveManagedString(state.UserData, remote.UserData)
+	remote.SubnetSelectorTerms = preserveManagedObjectList(ctx, state.SubnetSelectorTerms, remote.SubnetSelectorTerms)
+	remote.SecurityGroupSelectorTerms = preserveManagedObjectList(ctx, state.SecurityGroupSelectorTerms, remote.SecurityGroupSelectorTerms)
+	remote.InstanceTags = preserveManagedMap(ctx, state.InstanceTags, remote.InstanceTags)
+	remote.ExtraCPUAllocationMCore = preserveManagedInt64(state.ExtraCPUAllocationMCore, remote.ExtraCPUAllocationMCore)
+	remote.ExtraMemoryAllocationMib = preserveManagedInt64(state.ExtraMemoryAllocationMib, remote.ExtraMemoryAllocationMib)
+	remote.OriginNodeClassJSON = preserveManagedString(state.OriginNodeClassJSON, remote.OriginNodeClassJSON)
+
 	if !hasSystemDiskSize(state.SystemDiskSizeGib) {
-		if state.BlockDeviceMappings.IsNullOrUnknown() {
-			remote.BlockDeviceMappings = customfield.NullObjectList[api.BlockDeviceMappingModel](ctx)
-		}
+		remote.SystemDiskSizeGib = preserveManagedInt64(state.SystemDiskSizeGib, remote.SystemDiskSizeGib)
+		remote.BlockDeviceMappings = preserveManagedObjectList(ctx, state.BlockDeviceMappings, remote.BlockDeviceMappings)
 		return remote, nil
 	}
 
@@ -1019,18 +1127,33 @@ func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api
 }
 
 func preserveNodePoolStateRepresentation(ctx context.Context, remote, state api.EC2NodePoolModel) api.EC2NodePoolModel {
-	remote.NodeDisruptionDelay = preserveSemanticDuration(state.NodeDisruptionDelay, remote.NodeDisruptionDelay)
 	remote.TemplateName = state.TemplateName
-	remote.InstanceFamily = preserveEmptyList(state.InstanceFamily, remote.InstanceFamily)
-	remote.InstanceArch = preserveEmptyList(state.InstanceArch, remote.InstanceArch)
-	remote.CapacityType = preserveEmptyList(state.CapacityType, remote.CapacityType)
-	remote.Zone = preserveEmptyList(state.Zone, remote.Zone)
-	if state.Labels.IsNull() || state.Labels.IsUnknown() {
-		remote.Labels = customfield.NullMap[types.String](ctx)
-	}
-	if state.Taints.IsNullOrUnknown() {
-		remote.Taints = customfield.NullObjectList[api.TaintModel](ctx)
-	}
+	remote.Enable = preserveManagedBool(state.Enable, remote.Enable)
+	remote.NodeClass = preserveManagedString(state.NodeClass, remote.NodeClass)
+	remote.EnableImageAccelerator = preserveManagedBool(state.EnableImageAccelerator, remote.EnableImageAccelerator)
+	remote.EnableGPU = preserveManagedBool(state.EnableGPU, remote.EnableGPU)
+	remote.ProvisionPriority = preserveManagedInt32(state.ProvisionPriority, remote.ProvisionPriority)
+	remote.InstanceFamily = preserveManagedList(state.InstanceFamily, remote.InstanceFamily)
+	remote.InstanceArch = preserveManagedList(state.InstanceArch, remote.InstanceArch)
+	remote.CapacityType = preserveManagedList(state.CapacityType, remote.CapacityType)
+	remote.Zone = preserveManagedList(state.Zone, remote.Zone)
+	remote.InstanceCPUMAX = preserveManagedInt64(state.InstanceCPUMAX, remote.InstanceCPUMAX)
+	remote.InstanceCPUMIN = preserveManagedInt64(state.InstanceCPUMIN, remote.InstanceCPUMIN)
+	remote.InstanceMemoryMAX = preserveManagedInt64(state.InstanceMemoryMAX, remote.InstanceMemoryMAX)
+	remote.InstanceMemoryMIN = preserveManagedInt64(state.InstanceMemoryMIN, remote.InstanceMemoryMIN)
+	remote.NodeDisruptionLimit = preserveManagedString(state.NodeDisruptionLimit, remote.NodeDisruptionLimit)
+	remote.NodeDisruptionDelay = preserveManagedDuration(state.NodeDisruptionDelay, remote.NodeDisruptionDelay)
+	remote.Labels = preserveManagedMap(ctx, state.Labels, remote.Labels)
+	remote.Taints = preserveManagedObjectList(ctx, state.Taints, remote.Taints)
+	remote.OriginNodePoolJSON = preserveManagedString(state.OriginNodePoolJSON, remote.OriginNodePoolJSON)
+	return remote
+}
+
+func preserveWorkloadStateRepresentation(remote, state api.WorkloadModel) api.WorkloadModel {
+	remote.TemplateName = state.TemplateName
+	remote.RebalanceAble = preserveManagedBool(state.RebalanceAble, remote.RebalanceAble)
+	remote.SpotFriendly = preserveManagedBool(state.SpotFriendly, remote.SpotFriendly)
+	remote.MinNonSpotReplicas = preserveManagedInt64(state.MinNonSpotReplicas, remote.MinNonSpotReplicas)
 	return remote
 }
 
@@ -1141,4 +1264,93 @@ func preserveSemanticDuration(stateVal, serverVal types.String) types.String {
 		return stateVal
 	}
 	return serverVal
+}
+
+func isManagedBool(value types.Bool) bool {
+	return !value.IsNull()
+}
+
+func boolValueOrDefault(value types.Bool, fallback bool) bool {
+	if !isManagedBool(value) {
+		return fallback
+	}
+	return value.ValueBool()
+}
+
+func int64ValueOrDefault(value types.Int64, fallback int64) int64 {
+	if value.IsNull() || value.IsUnknown() {
+		return fallback
+	}
+	return value.ValueInt64()
+}
+
+func preserveManagedBool(stateVal, remoteVal types.Bool) types.Bool {
+	if stateVal.IsNull() {
+		return types.BoolNull()
+	}
+	return remoteVal
+}
+
+func preserveManagedInt64(stateVal, remoteVal types.Int64) types.Int64 {
+	if stateVal.IsNull() {
+		return types.Int64Null()
+	}
+	return remoteVal
+}
+
+func preserveManagedInt32(stateVal, remoteVal types.Int32) types.Int32 {
+	if stateVal.IsNull() {
+		return types.Int32Null()
+	}
+	return remoteVal
+}
+
+func preserveManagedString(stateVal, remoteVal types.String) types.String {
+	if stateVal.IsNull() {
+		return types.StringNull()
+	}
+	return remoteVal
+}
+
+func preserveManagedDuration(stateVal, remoteVal types.String) types.String {
+	if stateVal.IsNull() || stateVal.IsUnknown() {
+		return types.StringNull()
+	}
+	return preserveSemanticDuration(stateVal, remoteVal)
+}
+
+func preserveManagedList(stateVal, remoteVal *[]types.String) *[]types.String {
+	if stateVal == nil {
+		return nil
+	}
+	if remoteVal == nil && len(*stateVal) == 0 {
+		return stateVal
+	}
+	return remoteVal
+}
+
+func preserveManagedMap(ctx context.Context, stateVal, remoteVal customfield.Map[types.String]) customfield.Map[types.String] {
+	if stateVal.IsNull() {
+		return customfield.NullMap[types.String](ctx)
+	}
+	if remoteVal.IsNull() || remoteVal.IsUnknown() {
+		values, diags := stateVal.Value(ctx)
+		if !diags.HasError() && len(values) == 0 {
+			return stateVal
+		}
+	}
+	return remoteVal
+}
+
+func preserveManagedObjectList[T any](ctx context.Context, stateVal, remoteVal customfield.NestedObjectList[T]) customfield.NestedObjectList[T] {
+	if stateVal.IsNull() {
+		return customfield.NullObjectList[T](ctx)
+	}
+	if remoteVal.IsNullOrUnknown() {
+		values, diags := stateVal.AsStructSliceT(ctx)
+		if !diags.HasError() && len(values) == 0 {
+			return stateVal
+		}
+	}
+	return remoteVal
 }
