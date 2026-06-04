@@ -62,3 +62,16 @@ type ClusterCostsSummary struct {
 
 	JoinTime time.Time `json:"joinTime"`
 }
+
+type ClusterSetting struct {
+	EnableNodeRepair   *bool    `json:"enableNodeRepair,omitempty"`
+	EnableDiskMonitor  *bool    `json:"enableDiskMonitor,omitempty"`
+	MaintenanceEnabled *bool    `json:"maintenanceEnabled,omitempty"`
+	Discount           *float64 `json:"discount,omitempty"`
+	PreRunCommand      *string  `json:"preRunCommand,omitempty"`
+	PostRunCommand     *string  `json:"postRunCommand,omitempty"`
+}
+
+type ClusterMaintenanceStatus struct {
+	MaintenanceModeEnabled *bool `json:"maintenanceModeEnabled,omitempty"`
+}

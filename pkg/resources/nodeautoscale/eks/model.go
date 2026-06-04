@@ -15,19 +15,17 @@ type ClusterModel struct {
 	Region      types.String `tfsdk:"region"`
 	AccountID   types.String `tfsdk:"account_id"`
 
+	ClusterSetting customfield.NestedObject[ClusterSettingModel] `tfsdk:"cluster_setting"`
+
 	// agent configurations
 	DisableWorkloadUploading types.Bool `tfsdk:"disable_workload_uploading"`
 
 	OnlyInstallAgent types.Bool `tfsdk:"only_install_agent"`
 
-	// upgrade configurations
-	EnableUpgradeAgent              types.Bool `tfsdk:"enable_upgrade_agent"`
-	EnableUpgradeRebalanceComponent types.Bool `tfsdk:"enable_upgrade_rebalance_component"` // if true, OnlyInstallAgent ignored
+	EnableUpgrade types.Bool `tfsdk:"enable_upgrade"`
 
 	// rebalance configuration
-	EnableRebalance             types.Bool `tfsdk:"enable_rebalance"` // if true, OnlyInstallAgent ignored
-	EnableUploadConfig          types.Bool `tfsdk:"enable_upload_config"`
-	EnableDiversityInstanceType types.Bool `tfsdk:"enable_diversity_instance_type"`
+	EnableRebalance types.Bool `tfsdk:"enable_rebalance"` // if true, OnlyInstallAgent ignored
 
 	CustomNodeRole types.String `tfsdk:"custom_node_role"`
 

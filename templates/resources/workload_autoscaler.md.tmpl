@@ -13,6 +13,54 @@ Manages the CloudPilot AI Workload Autoscaler on a Kubernetes cluster. This reso
 
 {{ tffile "examples/resources/cloudpilotai_workload_autoscaler/resource.tf" }}
 
+### Advanced Workload Autoscaler Config
+
+```terraform
+enable_new_workloads_proactive_update          = false
+limiter_quota_per_window                      = 5
+limiter_burst                                 = 10
+limiter_window_seconds                        = 30
+enable_preempted_pod_gc                       = true
+preempted_pod_gc_ttl                          = "30m"
+enable_initial_optimization_data_window_check = true
+
+recommendation_policies = [
+  {
+    name                             = "java"
+    history_window_cpu               = "24h"
+    history_window_memory            = "48h"
+    evaluation_period                = "1m"
+    jvm_heap_buffer                  = "300Mi"
+    jvm_min_heap_xms_ratio_of_memory = "0.25"
+    jvm_recent_non_heap_window       = "2h"
+    jvm_heap_used_percentile         = 20
+  }
+]
+
+autoscaling_policies = [
+  {
+    name                         = "default-ap"
+    recommendation_policy_name   = "java"
+    disable_runtime_optimization = false
+    in_place_fallback_reason_policies = {
+      JVMHeapDrift = "hold"
+    }
+    target_refs = [
+      {
+        api_version = "apps/v1"
+        kind        = "Deployment"
+        label_selector = {
+          match_labels = { app = "api" }
+          match_expressions = [
+            { key = "tier", operator = "In", values = ["backend"] }
+          ]
+        }
+      }
+    ]
+  }
+]
+```
+
 {{ .SchemaMarkdown | trimspace }}
 
 ## Import

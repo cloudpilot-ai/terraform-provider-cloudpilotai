@@ -68,6 +68,39 @@ func Schema(ctx context.Context) schema.Schema {
 				Computed:    true,
 			},
 
+			"cluster_setting": schema.SingleNestedAttribute{
+				Description: "Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting.",
+				Optional:    true,
+				CustomType:  customfield.NewNestedObjectType[ClusterSettingModel](ctx),
+				Attributes: map[string]schema.Attribute{
+					"enable_node_repair": schema.BoolAttribute{
+						Description: "Enable CloudPilot AI node repair for this cluster.",
+						Optional:    true,
+						Computed:    true,
+					},
+					"enable_disk_monitor": schema.BoolAttribute{
+						Description: "Enable disk monitor for this cluster.",
+						Optional:    true,
+						Computed:    true,
+					},
+					"discount": schema.Float64Attribute{
+						Description: "Cluster-level discount ratio used by cost calculations.",
+						Optional:    true,
+						Computed:    true,
+					},
+					"pre_run_command": schema.StringAttribute{
+						Description: "Command run before maintenance or repair actions.",
+						Optional:    true,
+						Computed:    true,
+					},
+					"post_run_command": schema.StringAttribute{
+						Description: "Command run after maintenance or repair actions.",
+						Optional:    true,
+						Computed:    true,
+					},
+				},
+			},
+
 			// agent configurations
 			"disable_workload_uploading": schema.BoolAttribute{
 				Description: "Disable automatic uploading of workload information to CloudPilot AI",
@@ -83,15 +116,8 @@ func Schema(ctx context.Context) schema.Schema {
 				Default:     booldefault.StaticBool(false),
 			},
 
-			// upgrade configurations
-			"enable_upgrade_agent": schema.BoolAttribute{
-				Description: "Enable upgrading the CloudPilot AI agent",
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(false),
-			},
-			"enable_upgrade_rebalance_component": schema.BoolAttribute{
-				Description: "Enable upgrading the CloudPilot AI rebalance component. Ignores `only_install_agent` if set to true.",
+			"enable_upgrade": schema.BoolAttribute{
+				Description: "Enable upgrading CloudPilot AI components through the cluster upgrade script. The provider checks whether the cluster needs upgrade first, and only runs the upgrade when required.",
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
@@ -100,18 +126,6 @@ func Schema(ctx context.Context) schema.Schema {
 			// rebalance configurations
 			"enable_rebalance": schema.BoolAttribute{
 				Description: "Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.",
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(false),
-			},
-			"enable_upload_config": schema.BoolAttribute{
-				Description: "Enable uploading of nodepool and nodeclass configuration to CloudPilot AI",
-				Optional:    true,
-				Computed:    true,
-				Default:     booldefault.StaticBool(true),
-			},
-			"enable_diversity_instance_type": schema.BoolAttribute{
-				Description: "Enable diverse instance types for improved fault tolerance and cost optimization",
 				Optional:    true,
 				Computed:    true,
 				Default:     booldefault.StaticBool(false),
@@ -173,7 +187,7 @@ func Schema(ctx context.Context) schema.Schema {
 							Description: "NodePool Template Name",
 							Required:    true,
 						},
-					}, nodePoolTemplateSchema()),
+					}, nodePoolTemplateSchema(ctx)),
 				},
 			},
 
@@ -197,7 +211,7 @@ func Schema(ctx context.Context) schema.Schema {
 							Description: "The origin nodepool json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.",
 							Optional:    true,
 						},
-					}, nodePoolTemplateSchema()),
+					}, nodePoolTemplateSchema(ctx)),
 				},
 			},
 		},
@@ -215,6 +229,16 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			Optional:    true,
 			Computed:    true,
 			Default:     booldefault.StaticBool(false),
+		},
+		"ami_alias": schema.StringAttribute{
+			Description: "EKS optimized AMI alias, for example 'al2023@latest'. Maps to spec.amiSelectorTerms alias.",
+			Optional:    true,
+			Computed:    true,
+		},
+		"user_data": schema.StringAttribute{
+			Description: "NodeClass userData passed to Karpenter EC2NodeClass spec.userData.",
+			Optional:    true,
+			Computed:    true,
 		},
 		"subnet_selector_terms": schema.ListNestedAttribute{
 			Description: "Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{\"cluster.cloudpilot.ai/{cluster_name}\": \"true\"}`.",
@@ -265,10 +289,43 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			ElementType: types.StringType,
 		},
 		"system_disk_size_gib": schema.Int64Attribute{
-			Description: "Each provisioned node's system storage size, default to be 20 GiB.",
+			Description: "Each provisioned node's system storage size. Do not combine with block_device_mappings on the same NodeClass.",
 			Optional:    true,
 			Computed:    true,
-			Default:     int64default.StaticInt64(20),
+			PlanModifiers: []planmodifier.Int64{
+				useStateForUnknownInt64(),
+			},
+		},
+		"block_device_mappings": schema.ListNestedAttribute{
+			Description: "Full EC2 blockDeviceMappings list. Do not combine with system_disk_size_gib on the same NodeClass.",
+			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.BlockDeviceMappingModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"device_name": schema.StringAttribute{
+						Description: "Device name, for example /dev/xvda.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString(""),
+					},
+					"root_volume": schema.BoolAttribute{
+						Description: "Whether this mapping is the kubelet root volume.",
+						Optional:    true,
+						Computed:    true,
+						Default:     booldefault.StaticBool(false),
+					},
+					"ebs": schema.SingleNestedAttribute{
+						Description: "EBS settings for this block device.",
+						Optional:    true,
+						CustomType:  customfield.NewNestedObjectType[api.BlockDeviceModel](ctx),
+						Attributes: map[string]schema.Attribute{
+							"encrypted":   schema.BoolAttribute{Optional: true},
+							"volume_size": schema.StringAttribute{Optional: true},
+							"volume_type": schema.StringAttribute{Optional: true},
+						},
+					},
+				},
+			},
 		},
 		"extra_cpu_allocation_mcore": schema.Int64Attribute{
 			Description: "Each provisioned node will have extra CPU allocation, used only for burstable pods.",
@@ -289,7 +346,7 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 	}
 }
 
-func nodePoolTemplateSchema() map[string]schema.Attribute {
+func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"enable": schema.BoolAttribute{
 			Description: "Enable",
@@ -387,6 +444,35 @@ func nodePoolTemplateSchema() map[string]schema.Attribute {
 			Optional:    true,
 			Computed:    true,
 			Default:     stringdefault.StaticString("60m"),
+		},
+		"labels": schema.MapAttribute{
+			Description: "Labels applied to provisioned nodes through spec.template.metadata.labels.",
+			Optional:    true,
+			ElementType: types.StringType,
+			CustomType:  customfield.NewMapType[types.String](ctx),
+		},
+		"taints": schema.ListNestedAttribute{
+			Description: "Taints applied to provisioned nodes through spec.template.spec.taints.",
+			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.TaintModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"key": schema.StringAttribute{
+						Description: "Taint key.",
+						Required:    true,
+					},
+					"value": schema.StringAttribute{
+						Description: "Taint value.",
+						Optional:    true,
+						Computed:    true,
+						Default:     stringdefault.StaticString(""),
+					},
+					"effect": schema.StringAttribute{
+						Description: "Taint effect: NoSchedule, PreferNoSchedule, or NoExecute.",
+						Required:    true,
+					},
+				},
+			},
 		},
 	}
 }

@@ -19,8 +19,10 @@ import (
 )
 
 const (
-	MilliCoreToCore = 1000.0
-	BytesToGiB      = 1073741824.0
+	MilliCoreToCore   = 1000.0
+	BytesToGiB        = 1073741824.0
+	RebalanceTypeAll  = "all"
+	RebalanceTypeNode = "node"
 )
 
 type RebalanceConfig struct {
@@ -210,10 +212,25 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 		nodeClassModel.InstanceTags = customfield.NullMap[types.String](ctx)
 	}
 
-	if len(e.NodeClassSpec.BlockDeviceMappings) > 0 &&
-		e.NodeClassSpec.BlockDeviceMappings[0] != nil &&
-		e.NodeClassSpec.BlockDeviceMappings[0].EBS != nil {
-		nodeClassModel.SystemDiskSizeGib = types.Int64Value(e.NodeClassSpec.BlockDeviceMappings[0].EBS.VolumeSize.Value() / BytesToGiB)
+	for _, term := range e.NodeClassSpec.AMISelectorTerms {
+		if term.Alias != "" {
+			nodeClassModel.AmiAlias = types.StringValue(term.Alias)
+			break
+		}
+	}
+	if nodeClassModel.AmiAlias.IsNull() {
+		nodeClassModel.AmiAlias = types.StringValue("")
+	}
+	if e.NodeClassSpec.UserData != nil {
+		nodeClassModel.UserData = types.StringValue(*e.NodeClassSpec.UserData)
+	} else {
+		nodeClassModel.UserData = types.StringValue("")
+	}
+	blockDeviceMappings := blockDeviceMappingModelsFromAWS(ctx, e.NodeClassSpec.BlockDeviceMappings)
+	if len(blockDeviceMappings) > 0 {
+		nodeClassModel.BlockDeviceMappings = customfield.NewObjectListMust(ctx, blockDeviceMappings)
+	} else {
+		nodeClassModel.BlockDeviceMappings = customfield.NullObjectList[BlockDeviceMappingModel](ctx)
 	}
 
 	if e.NodeClassSpec.Kubelet != nil &&
@@ -238,6 +255,43 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	}
 
 	return &nodeClassModel, nil
+}
+
+func blockDeviceMappingModelsFromAWS(ctx context.Context, in []*awsproviderv1.BlockDeviceMapping) []BlockDeviceMappingModel {
+	out := make([]BlockDeviceMappingModel, 0, len(in))
+	for _, m := range in {
+		if m == nil {
+			continue
+		}
+		model := BlockDeviceMappingModel{
+			RootVolume: types.BoolValue(m.RootVolume),
+			EBS:        customfield.NullObject[BlockDeviceModel](ctx),
+		}
+		if m.DeviceName != nil {
+			model.DeviceName = types.StringValue(*m.DeviceName)
+		} else {
+			model.DeviceName = types.StringValue("")
+		}
+		if m.EBS != nil {
+			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(m.EBS))
+		}
+		out = append(out, model)
+	}
+	return out
+}
+
+func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
+	model := &BlockDeviceModel{}
+	if in.Encrypted != nil {
+		model.Encrypted = types.BoolValue(*in.Encrypted)
+	}
+	if in.VolumeSize != nil {
+		model.VolumeSize = types.StringValue(in.VolumeSize.String())
+	}
+	if in.VolumeType != nil {
+		model.VolumeType = types.StringValue(*in.VolumeType)
+	}
+	return model
 }
 
 func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
@@ -285,6 +339,30 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	nodePoolModel.InstanceMemoryMIN, err = requirementsToOptionalInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt)
 	if err != nil {
 		return nil, err
+	}
+
+	if len(e.NodePoolSpec.Template.ObjectMeta.Labels) > 0 {
+		labelModels := map[string]types.String{}
+		for k, v := range e.NodePoolSpec.Template.ObjectMeta.Labels {
+			labelModels[k] = types.StringValue(v)
+		}
+		nodePoolModel.Labels = customfield.NewMapMust[types.String](context.Background(), labelModels)
+	} else {
+		nodePoolModel.Labels = customfield.NullMap[types.String](context.Background())
+	}
+
+	if len(e.NodePoolSpec.Template.Spec.Taints) > 0 {
+		taintModels := make([]TaintModel, 0, len(e.NodePoolSpec.Template.Spec.Taints))
+		for _, taint := range e.NodePoolSpec.Template.Spec.Taints {
+			taintModels = append(taintModels, TaintModel{
+				Key:    types.StringValue(taint.Key),
+				Value:  types.StringValue(taint.Value),
+				Effect: types.StringValue(string(taint.Effect)),
+			})
+		}
+		nodePoolModel.Taints = customfield.NewObjectListMust(context.Background(), taintModels)
+	} else {
+		nodePoolModel.Taints = customfield.NullObjectList[TaintModel](context.Background())
 	}
 
 	if len(e.NodePoolSpec.Disruption.Budgets) != 0 {

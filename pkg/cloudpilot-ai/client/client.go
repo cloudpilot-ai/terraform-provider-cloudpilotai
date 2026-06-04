@@ -3,6 +3,7 @@
 package client
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -18,6 +19,9 @@ import (
 type Interface interface {
 	// cluster
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
+	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
+	UpdateClusterSetting(clusterID string, setting *api.ClusterSetting) error
+	UpdateClusterMaintenanceStatus(clusterID string, status *api.ClusterMaintenanceStatus) error
 	DeleteCluster(clusterID string) error
 
 	// sh
@@ -92,6 +96,25 @@ func (c *Client) GetCluster(clusterID string) (*api.ClusterCostsSummary, error) 
 	return &out, err
 }
 
+func (c *Client) GetClusterSetting(clusterID string) (*api.ClusterSetting, error) {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/setting", c.Endpoint, clusterID)
+	out, err := doJSON[api.ClusterSetting](c, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+	return &out, nil
+}
+
+func (c *Client) UpdateClusterSetting(clusterID string, setting *api.ClusterSetting) error {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/setting", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, setting)
+}
+
+func (c *Client) UpdateClusterMaintenanceStatus(clusterID string, status *api.ClusterMaintenanceStatus) error {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/maintenance/status", c.Endpoint, clusterID)
+	return doJSONNoData(c, http.MethodPost, url, status)
+}
+
 func (c *Client) DeleteCluster(clusterID string) error {
 	url := fmt.Sprintf("%s/api/v1/clusters/%s", c.Endpoint, clusterID)
 	err := doJSONNoData(c, http.MethodDelete, url, nil)
@@ -158,9 +181,46 @@ func (c *Client) GetRebalanceSH(clusterID string) (string, error) {
 
 func (c *Client) GetRebalanceConfiguration(clusterID string) (*api.RebalanceConfig, error) {
 	url := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/configuration", c.Endpoint, clusterID)
-	out, err := doJSON[api.RebalanceConfig](c, http.MethodGet, url, nil)
+	resp, err := c.requestWithHeaders(http.MethodGet, url, nil, map[string]string{
+		"User-Agent": browserLikeUserAgent,
+	})
 	if err != nil {
 		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var stdResp api.ResponseBody
+	if err := json.NewDecoder(resp.Body).Decode(&stdResp); err != nil {
+		if resp.StatusCode != http.StatusOK {
+			klog.Errorf("Server error (non-JSON), method(%s) url(%s): %s", http.MethodGet, url, resp.Status)
+			return nil, fmt.Errorf("server error: %s", resp.Status)
+		}
+		klog.Errorf("Decode response body failed, method(%s) url(%s), err: %v", http.MethodGet, url, err)
+		return nil, err
+	}
+	if resp.StatusCode != http.StatusOK {
+		if resp.StatusCode == http.StatusNotFound {
+			return nil, ErrNotFound
+		}
+		msg := stdResp.Message
+		if msg == "" {
+			msg = resp.Status
+		}
+		klog.Errorf("Server error, method(%s) url(%s): %s", http.MethodGet, url, msg)
+		return nil, fmt.Errorf("server error: %s", msg)
+	}
+
+	dataBytes, err := json.Marshal(stdResp.Data)
+	if err != nil {
+		klog.Errorf("Marshal stdResp.Data failed, method(%s) url(%s): %v", http.MethodGet, url, err)
+		return nil, err
+	}
+	var out api.RebalanceConfig
+	if len(dataBytes) > 0 && string(dataBytes) != "null" {
+		if err := json.Unmarshal(dataBytes, &out); err != nil {
+			klog.Errorf("Unmarshal to target type failed, method(%s) url(%s): %v", http.MethodGet, url, err)
+			return nil, err
+		}
 	}
 
 	return &out, nil

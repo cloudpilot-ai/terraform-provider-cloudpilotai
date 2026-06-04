@@ -71,8 +71,8 @@ See `terraform.tfvars.example` for all available optimization variables.
 
 ### Node Autoscaler (`cloudpilotai_eks_cluster`)
 
-- **Agent Options**: `only_install_agent`, `enable_upgrade_agent`, `disable_workload_uploading`
-- **Rebalance Features**: `enable_rebalance`, `enable_upload_config`, `enable_diversity_instance_type`
+- **Agent Options**: `only_install_agent`, `enable_upgrade`, `disable_workload_uploading`
+- **Rebalance Features**: `enable_rebalance`
 - **Templates**: `workload_templates`, `nodeclass_templates`, `nodepool_templates`
 - **Custom Resources**: `workloads`, `nodeclasses`, `nodepools`
 - **Instance Filtering**: CPU/memory limits, instance families, availability zones

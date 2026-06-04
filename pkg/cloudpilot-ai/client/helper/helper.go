@@ -18,6 +18,16 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
+type rebalanceConfigurationClient interface {
+	GetRebalanceConfiguration(clusterID string) (*api.RebalanceConfig, error)
+	UpdateRebalanceConfiguration(clusterID string, config *api.RebalanceConfig) error
+}
+
+type clusterUpgradeClient interface {
+	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
+	GetClusterUpgradeSH(clusterID string) (string, error)
+}
+
 func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface, kubeconfigPath string, disableWorkloadUploading bool, awsProfile string,
 ) error {
 	agentSH, err := client.GetAgentSH(disableWorkloadUploading)
@@ -48,6 +58,43 @@ func InstallCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilo
 		env["AWS_PROFILE"] = awsProfile
 	}
 	return ExecuteSH(ctx, rebalanceSH, env)
+}
+
+func UpgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
+	clusterUID, kubeconfigPath, customNodeRole, awsProfile string,
+) (bool, error) {
+	return upgradeCloudpilotAIComponentsIfNeeded(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsProfile, ExecuteSH)
+}
+
+func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
+	clusterUID, kubeconfigPath, customNodeRole, awsProfile string,
+	execute func(context.Context, string, map[string]string) error,
+) (bool, error) {
+	cluster, err := client.GetCluster(clusterUID)
+	if err != nil {
+		return false, err
+	}
+	if cluster == nil || !cluster.NeedUpgrade {
+		return false, nil
+	}
+
+	upgradeSH, err := client.GetClusterUpgradeSH(clusterUID)
+	if err != nil {
+		return false, err
+	}
+
+	env := map[string]string{"KUBECONFIG": kubeconfigPath}
+	if customNodeRole != "" {
+		env["CUSTOM_NODE_ROLE"] = customNodeRole
+	}
+	if awsProfile != "" {
+		env["AWS_PROFILE"] = awsProfile
+	}
+	if err := execute(ctx, upgradeSH, env); err != nil {
+		return false, err
+	}
+
+	return true, nil
 }
 
 const DeleteOptimizedNodesSH = `kubectl delete nodeclaim --all; while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
@@ -155,18 +202,22 @@ func ExecuteSH(ctx context.Context, sh string, env map[string]string) error {
 	return nil
 }
 
-func SyncRebalanceConfiguration(ctx context.Context, client cloudpilotaiclient.Interface, clusterUID string, enableRebalance, enableUploadConfig, enableDiversityInstanceType bool) error {
+func SyncRebalanceConfiguration(ctx context.Context, client rebalanceConfigurationClient, clusterUID string, enableRebalance bool) error {
 	config, err := client.GetRebalanceConfiguration(clusterUID)
 	if err != nil {
 		return err
 	}
 
-	if config.Enable != enableRebalance || config.UploadConfig != enableUploadConfig || config.EnableDiversityInstanceType != enableDiversityInstanceType {
+	if config.Enable != enableRebalance {
+		rebalanceType := config.RebalanceType
+		if enableRebalance && !config.Enable {
+			rebalanceType = api.RebalanceTypeNode
+		}
 		if err := client.UpdateRebalanceConfiguration(clusterUID, &api.RebalanceConfig{
 			Enable:                      enableRebalance,
-			UploadConfig:                enableUploadConfig,
-			EnableDiversityInstanceType: enableDiversityInstanceType,
-			RebalanceType:               config.RebalanceType,
+			UploadConfig:                config.UploadConfig,
+			EnableDiversityInstanceType: config.EnableDiversityInstanceType,
+			RebalanceType:               rebalanceType,
 		}); err != nil {
 			return err
 		}
