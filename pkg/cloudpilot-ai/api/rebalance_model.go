@@ -39,15 +39,25 @@ type WorkloadModel struct {
 	MinNonSpotReplicas types.Int64 `tfsdk:"min_non_spot_replicas"`
 }
 
-func (w *WorkloadModel) ToWorkload(workloadTemplate *WorkloadTemplateModel, replicas int) *Workload {
-	workload := Workload{
-		Name:               w.Name.ValueString(),
-		Type:               w.Type.ValueString(),
-		Namespace:          w.Namespace.ValueString(),
-		Replicas:           replicas,
-		RebalanceAble:      w.RebalanceAble.ValueBool(),
-		SpotFriendly:       w.SpotFriendly.ValueBool(),
-		MinNonSpotReplicas: int(w.MinNonSpotReplicas.ValueInt64()),
+func (w *WorkloadModel) ToWorkload(base *Workload, workloadTemplate *WorkloadTemplateModel, replicas int) *Workload {
+	workload := Workload{}
+	if base != nil {
+		workload = *base
+	}
+
+	workload.Name = w.Name.ValueString()
+	workload.Type = w.Type.ValueString()
+	workload.Namespace = w.Namespace.ValueString()
+	workload.Replicas = replicas
+
+	if !w.RebalanceAble.IsNull() && !w.RebalanceAble.IsUnknown() {
+		workload.RebalanceAble = w.RebalanceAble.ValueBool()
+	}
+	if !w.SpotFriendly.IsNull() && !w.SpotFriendly.IsUnknown() {
+		workload.SpotFriendly = w.SpotFriendly.ValueBool()
+	}
+	if !w.MinNonSpotReplicas.IsNull() && !w.MinNonSpotReplicas.IsUnknown() {
+		workload.MinNonSpotReplicas = int(w.MinNonSpotReplicas.ValueInt64())
 	}
 
 	return applyTemplate(&workload, workloadTemplate)

@@ -5,8 +5,6 @@ import (
 	"context"
 
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default"
 	"github.com/samber/lo"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
@@ -63,20 +61,14 @@ func workloadTemplateSchema() map[string]schema.Attribute {
 		"rebalance_able": schema.BoolAttribute{
 			Description: "Rebalance able",
 			Optional:    true,
-			Computed:    true,
-			Default:     booldefault.StaticBool(true),
 		},
 		"spot_friendly": schema.BoolAttribute{
 			Description: "Spot friendly",
 			Optional:    true,
-			Computed:    true,
-			Default:     booldefault.StaticBool(true),
 		},
 		"min_non_spot_replicas": schema.Int64Attribute{
 			Description: "Min non spot replicas",
 			Optional:    true,
-			Computed:    true,
-			Default:     int64default.StaticInt64(0),
 		},
 	}
 }

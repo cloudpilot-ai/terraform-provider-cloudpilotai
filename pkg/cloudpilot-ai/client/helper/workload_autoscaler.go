@@ -2,6 +2,7 @@ package helper
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -85,7 +86,14 @@ func ApplyRecommendationPolicies(ctx context.Context, client cloudpilotaiclient.
 	desiredNames = make(map[string]struct{}, len(rpModels))
 	for i := range rpModels {
 		desiredNames[rpModels[i].Name.ValueString()] = struct{}{}
-		rp := rpModels[i].ToResource()
+		var base *api.RecommendationPolicyResource
+		existing, getErr := client.GetRecommendationPolicy(clusterID, rpModels[i].Name.ValueString())
+		if getErr == nil {
+			base = existing
+		} else if !errors.Is(getErr, cloudpilotaiclient.ErrNotFound) {
+			return nil, fmt.Errorf("failed to get recommendation policy %s: %w", rpModels[i].Name.ValueString(), getErr)
+		}
+		rp := rpModels[i].ToResourceFromBase(base)
 		tflog.Info(ctx, fmt.Sprintf("applying recommendation policy: %s", rp.Name))
 		if err := client.ApplyRecommendationPolicy(clusterID, rp); err != nil {
 			return nil, fmt.Errorf("failed to apply recommendation policy %s: %w", rp.Name, err)
@@ -141,7 +149,14 @@ func ApplyAutoscalingPolicies(ctx context.Context, client cloudpilotaiclient.Int
 	desiredNames = make(map[string]struct{}, len(apModels))
 	for i := range apModels {
 		desiredNames[apModels[i].Name.ValueString()] = struct{}{}
-		ap, convErr := apModels[i].ToResource(ctx)
+		var base *api.AutoscalingPolicyResource
+		existing, getErr := client.GetAutoscalingPolicy(clusterID, apModels[i].Name.ValueString())
+		if getErr == nil {
+			base = existing
+		} else if !errors.Is(getErr, cloudpilotaiclient.ErrNotFound) {
+			return nil, fmt.Errorf("failed to get autoscaling policy %s: %w", apModels[i].Name.ValueString(), getErr)
+		}
+		ap, convErr := apModels[i].ToResourceFromBase(ctx, base)
 		if convErr != nil {
 			return nil, fmt.Errorf("failed to convert autoscaling policy %s: %w", apModels[i].Name.ValueString(), convErr)
 		}

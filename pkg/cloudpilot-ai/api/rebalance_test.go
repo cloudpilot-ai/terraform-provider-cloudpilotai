@@ -52,6 +52,26 @@ func TestEC2NodeClassToModelLeavesBlockDeviceMappingsNullWhenUnset(t *testing.T)
 	}
 }
 
+func TestEC2NodeClassToModelLeavesAmiAliasAndUserDataNullWhenUnset(t *testing.T) {
+	model, err := (&EC2NodeClass{
+		Name:          "cloudpilot",
+		NodeClassSpec: &awsproviderv1.EC2NodeClassSpec{},
+	}).ToEC2NodeClassModel(context.Background())
+	if err != nil {
+		t.Fatalf("ToEC2NodeClassModel() error = %v", err)
+	}
+
+	if !model.AmiAlias.IsNull() {
+		t.Fatalf("AmiAlias should be null when the backend omits an alias, got %#v", model.AmiAlias)
+	}
+	if !model.UserData.IsNull() {
+		t.Fatalf("UserData should be null when the backend omits userData, got %#v", model.UserData)
+	}
+	if !model.OriginNodeClassJSON.IsNull() {
+		t.Fatalf("OriginNodeClassJSON should be null when the backend omits raw nodeclass JSON, got %#v", model.OriginNodeClassJSON)
+	}
+}
+
 func TestEC2NodePoolToModelLeavesInstanceMinimumsNullWhenRequirementsMissing(t *testing.T) {
 	model, err := (&EC2NodePool{
 		Name:         "cloudpilot-general",
@@ -67,6 +87,9 @@ func TestEC2NodePoolToModelLeavesInstanceMinimumsNullWhenRequirementsMissing(t *
 
 	if !model.InstanceMemoryMIN.IsNull() {
 		t.Fatalf("InstanceMemoryMIN should be null when instance-memory Gt requirement is missing")
+	}
+	if !model.OriginNodePoolJSON.IsNull() {
+		t.Fatalf("OriginNodePoolJSON should be null when the backend omits raw nodepool JSON, got %#v", model.OriginNodePoolJSON)
 	}
 }
 

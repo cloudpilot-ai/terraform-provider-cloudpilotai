@@ -23,6 +23,11 @@ type rebalanceConfigurationClient interface {
 	UpdateRebalanceConfiguration(clusterID string, config *api.RebalanceConfig) error
 }
 
+type workloadConfigurationClient interface {
+	GetWorkloadRebalanceConfiguration(clusterID string) (*api.ClusterWorkloadSpec, error)
+	UpdateWorkloadRebalanceConfiguration(clusterID string, workload api.Workload) error
+}
+
 type clusterUpgradeClient interface {
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
 	GetClusterUpgradeSH(clusterID string) (string, error)
@@ -97,7 +102,11 @@ func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUp
 	return true, nil
 }
 
-const DeleteOptimizedNodesSH = `kubectl delete nodeclaim --all; while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
+const DeleteOptimizedNodesSH = `for node in $(kubectl get node -l node.cloudpilot.ai/managed=true 2>/dev/null | grep -v 'No resources found' | tail -n +2 | awk '{print $1}'); do
+  kubectl drain $node --ignore-daemonsets --delete-emptydir-data --force
+done
+kubectl delete nodeclaim --all
+while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
 
 func GetCloudpilotAIOptimizedNodeNumber(ctx context.Context, kubeconfigPath, awsProfile string) (int64, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", `kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length'`)
@@ -226,7 +235,7 @@ func SyncRebalanceConfiguration(ctx context.Context, client rebalanceConfigurati
 	return nil
 }
 
-func SyncWorkloadConfiguration(ctx context.Context, client cloudpilotaiclient.Interface, clusterUID string,
+func SyncWorkloadConfiguration(ctx context.Context, client workloadConfigurationClient, clusterUID string,
 	workloadNestedObjectList customfield.NestedObjectList[api.WorkloadModel],
 	workloadTemplateNestedObjectList customfield.NestedObjectList[api.WorkloadTemplateModel],
 ) error {
@@ -256,12 +265,12 @@ func SyncWorkloadConfiguration(ctx context.Context, client cloudpilotaiclient.In
 		return err
 	}
 
-	workloadReplicasM := lo.SliceToMap(workloadRebalanceConfiguration.Workloads, func(item api.Workload) (string, int) {
-		return item.Namespace + item.Type + item.Name, item.Replicas
+	workloadM := lo.SliceToMap(workloadRebalanceConfiguration.Workloads, func(item api.Workload) (string, api.Workload) {
+		return item.Namespace + item.Type + item.Name, item
 	})
 
 	for wi := range workloads {
-		replicas, ok := workloadReplicasM[workloads[wi].Namespace.ValueString()+workloads[wi].Type.ValueString()+workloads[wi].Name.ValueString()]
+		existing, ok := workloadM[workloads[wi].Namespace.ValueString()+workloads[wi].Type.ValueString()+workloads[wi].Name.ValueString()]
 		if !ok {
 			continue
 		}
@@ -276,7 +285,7 @@ func SyncWorkloadConfiguration(ctx context.Context, client cloudpilotaiclient.In
 			}
 		}
 
-		if err := client.UpdateWorkloadRebalanceConfiguration(clusterUID, *workloads[wi].ToWorkload(workloadTemplate, replicas)); err != nil {
+		if err := client.UpdateWorkloadRebalanceConfiguration(clusterUID, *workloads[wi].ToWorkload(&existing, workloadTemplate, existing.Replicas)); err != nil {
 			return err
 		}
 	}

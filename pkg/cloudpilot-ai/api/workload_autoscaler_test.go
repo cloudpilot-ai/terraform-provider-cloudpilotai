@@ -116,3 +116,101 @@ func TestAutoscalingPolicyModelFromResourceLeavesAbsentReasonPoliciesNull(t *tes
 		t.Fatalf("InPlaceFallbackReasonPolicies should be null when the backend does not return any fallback policies")
 	}
 }
+
+func TestAutoscalingPolicyModelFromResourceKeepsEmptyReasonPoliciesWhenFallbackExists(t *testing.T) {
+	model := AutoscalingPolicyModelFromResource(context.Background(), &AutoscalingPolicyResource{
+		Name:   "default-ap",
+		Enable: true,
+		Spec: AutoscalingPolicySpec{
+			RecommendationPolicyName: "balanced",
+			OnPolicyRemoval:          "off",
+			InPlaceFallback: &InPlaceFallback{
+				ReasonPolicies: map[string]string{},
+			},
+		},
+	})
+
+	if model.InPlaceFallbackReasonPolicies.IsNull() {
+		t.Fatalf("InPlaceFallbackReasonPolicies should preserve an explicit empty map when fallback exists")
+	}
+	values, diags := model.InPlaceFallbackReasonPolicies.Value(context.Background())
+	if diags.HasError() {
+		t.Fatalf("InPlaceFallbackReasonPolicies diagnostics = %v", diags)
+	}
+	if len(values) != 0 {
+		t.Fatalf("expected empty reason policy map, got %#v", values)
+	}
+}
+
+func TestAutoscalingPolicyModelFromResourceLeavesOptionalCollectionsNullWhenUnset(t *testing.T) {
+	model := AutoscalingPolicyModelFromResource(context.Background(), &AutoscalingPolicyResource{
+		Name:   "default-ap",
+		Enable: true,
+		Spec: AutoscalingPolicySpec{
+			RecommendationPolicyName: "balanced",
+			OnPolicyRemoval:          "off",
+		},
+	})
+
+	if !model.TargetRefs.IsNull() {
+		t.Fatalf("TargetRefs should be null when the backend omits target refs")
+	}
+	if !model.UpdateSchedules.IsNull() {
+		t.Fatalf("UpdateSchedules should be null when the backend omits update schedules")
+	}
+	if !model.LimitPolicies.IsNull() {
+		t.Fatalf("LimitPolicies should be null when the backend omits limit policies")
+	}
+}
+
+func TestAutoscalingPolicyModelToResourceFromBaseReplacesManagedSlices(t *testing.T) {
+	ctx := context.Background()
+	model := AutoscalingPolicyModel{
+		Name:                     types.StringValue("default-ap"),
+		Enable:                   types.BoolValue(true),
+		RecommendationPolicyName: types.StringValue("balanced"),
+		TargetRefs: customfield.NewObjectListMust(ctx, []TargetRefModel{{
+			APIVersion: types.StringValue("apps/v1"),
+			Kind:       types.StringValue("Deployment"),
+			Namespace:  types.StringValue("cloudpilot"),
+		}}),
+		UpdateSchedules: customfield.NewObjectListMust(ctx, []UpdateScheduleModel{{
+			Name: types.StringValue("default"),
+			Mode: types.StringValue("recreate"),
+		}}),
+	}
+
+	resource, err := model.ToResourceFromBase(ctx, &AutoscalingPolicyResource{
+		Name:   "default-ap",
+		Enable: true,
+		Spec: AutoscalingPolicySpec{
+			RecommendationPolicyName: "balanced",
+			TargetRefs: []TypedObjectReference{{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+				Namespace:  "cloudpilot",
+			}},
+			UpdateSchedule: []UpdateScheduleItem{{
+				Name: "default",
+				Mode: "recreate",
+			}},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ToResourceFromBase() error = %v", err)
+	}
+
+	if len(resource.Spec.TargetRefs) != 1 {
+		t.Fatalf("TargetRefs = %#v, want exactly one managed target ref", resource.Spec.TargetRefs)
+	}
+	if len(resource.Spec.UpdateSchedule) != 1 {
+		t.Fatalf("UpdateSchedule = %#v, want exactly one managed update schedule", resource.Spec.UpdateSchedule)
+	}
+}
+
+func TestLabelSelectorModelFromAPILeavesEmptySelectorNull(t *testing.T) {
+	got := labelSelectorModelFromAPI(context.Background(), &LabelSelector{})
+	if !got.IsNull() {
+		t.Fatalf("LabelSelector should be null when the backend returns an empty selector")
+	}
+}
