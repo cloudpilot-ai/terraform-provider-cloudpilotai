@@ -313,34 +313,15 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 	}
 
 	if !data.AutoscalingPolicies.IsNullOrUnknown() {
-		apByName := make(map[string]api.AutoscalingPolicyModel, len(aps))
-		for i := range aps {
-			m := api.AutoscalingPolicyModelFromResource(ctx, &aps[i])
-			apByName[aps[i].Name] = m
-		}
-
-		stateAPs, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
+		if err := mergeAutoscalingPoliciesFromAPI(ctx, &data, aps, isImport); err != nil {
+			resp.Diagnostics.AddError("failed to merge autoscaling policies", err.Error())
 			return
 		}
-
-		apModels := orderByState(stateAPs, apByName, func(m api.AutoscalingPolicyModel) string {
-			return m.Name.ValueString()
-		})
-
-		apList, diags := customfield.NewObjectList(ctx, apModels)
-		if diags.HasError() {
-			resp.Diagnostics.Append(diags...)
+	} else if isImport {
+		if err := mergeAutoscalingPoliciesFromAPI(ctx, &data, aps, true); err != nil {
+			resp.Diagnostics.AddError("failed to merge autoscaling policies", err.Error())
 			return
 		}
-		data.AutoscalingPolicies = apList
-	} else if isImport && len(aps) > 0 {
-		allAPs := make([]api.AutoscalingPolicyModel, 0, len(aps))
-		for i := range aps {
-			allAPs = append(allAPs, api.AutoscalingPolicyModelFromResource(ctx, &aps[i]))
-		}
-		data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, allAPs)
 	}
 
 	if err := hydratePostWriteState(ctx, w.client, clusterID, &data); err != nil {
@@ -403,26 +384,7 @@ func hydrateRecommendationPoliciesPostWrite(ctx context.Context, data *WorkloadA
 }
 
 func hydrateAutoscalingPoliciesPostWrite(ctx context.Context, data *WorkloadAutoscalerModel, aps []api.AutoscalingPolicyResource) error {
-	if data.AutoscalingPolicies.IsNullOrUnknown() {
-		return nil
-	}
-
-	stateAPs, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
-	if diags.HasError() {
-		return fmt.Errorf("autoscaling policies diagnostics = %v", diags)
-	}
-
-	apByName := make(map[string]api.AutoscalingPolicyModel, len(aps))
-	for i := range aps {
-		model := api.AutoscalingPolicyModelFromResource(ctx, &aps[i])
-		apByName[aps[i].Name] = preserveAutoscalingPolicyStateRepresentation(ctx, model, findAutoscalingPolicyStateModel(stateAPs, aps[i].Name))
-	}
-
-	ordered := orderByState(stateAPs, apByName, func(m api.AutoscalingPolicyModel) string {
-		return m.Name.ValueString()
-	})
-	data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, ordered)
-	return nil
+	return mergeAutoscalingPoliciesFromAPI(ctx, data, aps, false)
 }
 
 func findAutoscalingPolicyStateModel(items []api.AutoscalingPolicyModel, name string) api.AutoscalingPolicyModel {
@@ -441,6 +403,43 @@ func findRecommendationPolicyStateModel(items []api.RecommendationPolicyModel, n
 		}
 	}
 	return api.RecommendationPolicyModel{}
+}
+
+func mergeAutoscalingPoliciesFromAPI(ctx context.Context, data *WorkloadAutoscalerModel, aps []api.AutoscalingPolicyResource, importAll bool) error {
+	if data.AutoscalingPolicies.IsNullOrUnknown() {
+		if importAll && len(aps) > 0 {
+			allAPs := make([]api.AutoscalingPolicyModel, 0, len(aps))
+			for i := range aps {
+				allAPs = append(allAPs, api.AutoscalingPolicyModelFromResource(ctx, &aps[i]))
+			}
+			data.AutoscalingPolicies = customfield.NewObjectListMust(ctx, allAPs)
+		}
+		return nil
+	}
+
+	stateAPs, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("autoscaling policies diagnostics = %v", diags)
+	}
+
+	apByName := make(map[string]api.AutoscalingPolicyModel, len(aps))
+	for i := range aps {
+		model := api.AutoscalingPolicyModelFromResource(ctx, &aps[i])
+		if !importAll {
+			model = preserveAutoscalingPolicyStateRepresentation(ctx, model, findAutoscalingPolicyStateModel(stateAPs, aps[i].Name))
+		}
+		apByName[aps[i].Name] = model
+	}
+
+	ordered := orderByState(stateAPs, apByName, func(m api.AutoscalingPolicyModel) string {
+		return m.Name.ValueString()
+	})
+	list, diags := customfield.NewObjectList(ctx, ordered)
+	if diags.HasError() {
+		return fmt.Errorf("autoscaling policies diagnostics = %v", diags)
+	}
+	data.AutoscalingPolicies = list
+	return nil
 }
 
 func preserveRecommendationPolicyStateRepresentation(remote, state api.RecommendationPolicyModel) api.RecommendationPolicyModel {
