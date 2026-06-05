@@ -29,6 +29,46 @@ func (f *fakePostWriteStateHydratorClient) ListAutoscalingPolicies(string) ([]ap
 	return f.autoscalingPolicies, nil
 }
 
+func autoscalingPolicyWithServerDefaults(name, recommendationPolicyName string) api.AutoscalingPolicyResource {
+	removeLimit := true
+	autoHeadroom := "2"
+
+	return api.AutoscalingPolicyResource{
+		Name:   name,
+		Enable: true,
+		Spec: api.AutoscalingPolicySpec{
+			RecommendationPolicyName:   recommendationPolicyName,
+			Priority:                   0,
+			DisableRuntimeOptimization: false,
+			UpdateResources:            []string{"cpu", "memory"},
+			DriftThresholds: map[string]string{
+				"cpu":    "5%",
+				"memory": "5%",
+			},
+			OnPolicyRemoval: "off",
+			TargetRefs: []api.TypedObjectReference{{
+				APIVersion: "apps/v1",
+				Kind:       "Deployment",
+			}},
+			UpdateSchedule: []api.UpdateScheduleItem{{
+				Name: "default",
+				Mode: "off",
+			}},
+			LimitPolicies: map[string]api.ResourceLimitPolicy{
+				"cpu": {
+					RemoveLimit: &removeLimit,
+				},
+				"memory": {
+					AutoHeadroom: &autoHeadroom,
+				},
+			},
+			InPlaceFallback: &api.InPlaceFallback{
+				ReasonPolicies: map[string]string{},
+			},
+		},
+	}
+}
+
 func TestWorkloadAutoscalerModelToWAConfigurationIncludesAdvancedFields(t *testing.T) {
 	model := WorkloadAutoscalerModel{
 		EnableNewWorkloadsProactiveUpdate:        types.BoolValue(true),
@@ -174,6 +214,99 @@ func TestHydratePostWriteStateRefreshesBackendManagedFields(t *testing.T) {
 	}
 	if data.LimiterQuotaPerWindow.IsUnknown() || data.LimiterQuotaPerWindow.ValueInt64() != 7 {
 		t.Fatalf("LimiterQuotaPerWindow = %#v, want known 7", data.LimiterQuotaPerWindow)
+	}
+}
+
+func TestMergeAutoscalingPoliciesFromAPIForReadPreservesOmittedDefaults(t *testing.T) {
+	ctx := context.Background()
+
+	data := WorkloadAutoscalerModel{
+		AutoscalingPolicies: customfield.NewObjectListMust(ctx, []api.AutoscalingPolicyModel{{
+			Name:                     types.StringValue("readonly"),
+			Enable:                   types.BoolValue(true),
+			RecommendationPolicyName: types.StringValue("cost-savings"),
+			Priority:                 types.Int64Value(0),
+			TargetRefs: customfield.NewObjectListMust(ctx, []api.TargetRefModel{{
+				APIVersion: types.StringValue("apps/v1"),
+				Kind:       types.StringValue("Deployment"),
+			}}),
+			UpdateSchedules: customfield.NewObjectListMust(ctx, []api.UpdateScheduleModel{{
+				Name: types.StringValue("default"),
+				Mode: types.StringValue("off"),
+			}}),
+		}}),
+	}
+
+	err := mergeAutoscalingPoliciesFromAPI(ctx, &data, []api.AutoscalingPolicyResource{
+		autoscalingPolicyWithServerDefaults("readonly", "cost-savings"),
+	}, false)
+	if err != nil {
+		t.Fatalf("mergeAutoscalingPoliciesFromAPI() error = %v", err)
+	}
+
+	policies, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("AutoscalingPolicies diagnostics = %v", diags)
+	}
+	if len(policies) != 1 {
+		t.Fatalf("AutoscalingPolicies length = %d, want 1", len(policies))
+	}
+
+	got := policies[0]
+	if !got.DisableRuntimeOptimization.IsNull() {
+		t.Fatalf("DisableRuntimeOptimization should remain null for omitted config, got %#v", got.DisableRuntimeOptimization)
+	}
+	if got.UpdateResources != nil {
+		t.Fatalf("UpdateResources should remain nil for omitted config, got %#v", got.UpdateResources)
+	}
+	if !got.DriftThresholdCPU.IsNull() {
+		t.Fatalf("DriftThresholdCPU should remain null for omitted config, got %#v", got.DriftThresholdCPU)
+	}
+	if !got.DriftThresholdMemory.IsNull() {
+		t.Fatalf("DriftThresholdMemory should remain null for omitted config, got %#v", got.DriftThresholdMemory)
+	}
+	if !got.OnPolicyRemoval.IsNull() {
+		t.Fatalf("OnPolicyRemoval should remain null for omitted config, got %#v", got.OnPolicyRemoval)
+	}
+	if !got.LimitPolicies.IsNull() {
+		t.Fatalf("LimitPolicies should remain null for omitted config, got %#v", got.LimitPolicies)
+	}
+	if !got.InPlaceFallbackReasonPolicies.IsNull() {
+		t.Fatalf("InPlaceFallbackReasonPolicies should remain null for omitted config, got %#v", got.InPlaceFallbackReasonPolicies)
+	}
+}
+
+func TestMergeAutoscalingPoliciesFromAPIForImportKeepsRemoteDefaults(t *testing.T) {
+	ctx := context.Background()
+	data := WorkloadAutoscalerModel{}
+
+	err := mergeAutoscalingPoliciesFromAPI(ctx, &data, []api.AutoscalingPolicyResource{
+		autoscalingPolicyWithServerDefaults("readonly", "cost-savings"),
+	}, true)
+	if err != nil {
+		t.Fatalf("mergeAutoscalingPoliciesFromAPI() error = %v", err)
+	}
+
+	policies, diags := data.AutoscalingPolicies.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("AutoscalingPolicies diagnostics = %v", diags)
+	}
+	if len(policies) != 1 {
+		t.Fatalf("AutoscalingPolicies length = %d, want 1", len(policies))
+	}
+
+	got := policies[0]
+	if got.OnPolicyRemoval.ValueString() != "off" {
+		t.Fatalf("OnPolicyRemoval = %#v, want off", got.OnPolicyRemoval)
+	}
+	if got.UpdateResources == nil || len(*got.UpdateResources) != 2 {
+		t.Fatalf("UpdateResources = %#v, want cpu and memory", got.UpdateResources)
+	}
+	if got.DriftThresholdCPU.ValueString() != "5%" {
+		t.Fatalf("DriftThresholdCPU = %#v, want 5%%", got.DriftThresholdCPU)
+	}
+	if got.LimitPolicies.IsNull() {
+		t.Fatalf("LimitPolicies should be populated during import")
 	}
 }
 
