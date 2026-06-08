@@ -20,9 +20,9 @@ Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation 
 ### Prerequisites
 
 - **[Terraform](https://developer.hashicorp.com/terraform/install)** - Version 1.0 or later
-- **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** — Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as updating kubeconfig. If you haven't created an EKS cluster yet, see the example setup: [eks-ondemand](https://github.com/cloudpilot-ai/examples/tree/main/clusters/eks-ondemand)
-  - **Important**: Even if you provide a `kubeconfig` path, AWS CLI permissions are still required. The kubeconfig parameter only prevents the provider from generating a new kubeconfig file; all kubectl operations still require proper AWS credentials.
-  - **Multi-account setup**: If your AWS CLI is configured with multiple accounts/profiles, ensure you switch to the correct account that matches your EKS cluster before running Terraform commands.
+- **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** — Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as generating kubeconfig, running install scripts, and executing `kubectl`/`helm` through the generated kubeconfig.
+  - **Terraform-only CI/CD:** If your Terraform run already has AWS base credentials or OIDC, set `aws_assume_role` on `cloudpilotai_eks_cluster` to make CloudPilot assume the same target role for its AWS CLI and kubeconfig operations.
+  - **Local development:** `aws_profile` remains available as the source-credential fallback, and generated kubeconfigs preserve that profile for later `kubectl` and `helm` calls.
 - **[Kubectl](https://kubernetes.io/docs/tasks/tools)** - For cluster operations and component management
 - **CloudPilot AI API key** - See [CloudPilot AI API Key Documentation](https://docs.cloudpilot.ai/guide/getting_started/get_apikeys) for setup instructions
 

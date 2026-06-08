@@ -2,9 +2,13 @@ package eks
 
 import (
 	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"testing"
 
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	schemaplanmodifier "github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
@@ -12,6 +16,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-go/tftypes"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
@@ -35,6 +40,16 @@ func (f *fakePostWriteStateHydratorClient) ListNodeClasses(string) (api.Rebalanc
 
 func (f *fakePostWriteStateHydratorClient) ListNodePools(string) (api.RebalanceNodePoolList, error) {
 	return f.nodePools, nil
+}
+
+type fakeReadAuthClient struct {
+	cloudpilotaiclient.Interface
+	getClusterCalls int
+}
+
+func (f *fakeReadAuthClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
+	f.getClusterCalls++
+	return nil, errors.New("client should not be reached before aws env validation")
 }
 
 func TestSortedValuesByName(t *testing.T) {
@@ -99,6 +114,95 @@ func TestSchemaUsesUnifiedUpgradeFlag(t *testing.T) {
 	}
 	if _, ok := s.Attributes["enable_upgrade_rebalance_component"]; ok {
 		t.Fatalf("eks schema should not expose enable_upgrade_rebalance_component")
+	}
+}
+
+func TestSchemaExposesAWSAssumeRoleNestedAttribute(t *testing.T) {
+	attr, ok := Schema(context.Background()).Attributes["aws_assume_role"].(schema.SingleNestedAttribute)
+	if !ok {
+		t.Fatalf("aws_assume_role attribute has unexpected type %T", Schema(context.Background()).Attributes["aws_assume_role"])
+	}
+	if !attr.IsOptional() {
+		t.Fatalf("aws_assume_role should be optional")
+	}
+
+	roleARNAttr, ok := attr.Attributes["role_arn"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("role_arn attribute has unexpected type %T", attr.Attributes["role_arn"])
+	}
+	if !roleARNAttr.IsRequired() {
+		t.Fatalf("role_arn should be required")
+	}
+
+	sessionAttr, ok := attr.Attributes["session_name"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("session_name attribute has unexpected type %T", attr.Attributes["session_name"])
+	}
+	if !sessionAttr.IsOptional() {
+		t.Fatalf("session_name should be optional")
+	}
+}
+
+func TestExecutionAuthConfigFromClusterModelReadsAssumeRoleAndProfile(t *testing.T) {
+	ctx := context.Background()
+	data := ClusterModel{
+		AWSProfile: types.StringValue("dev"),
+		AWSAssumeRole: customfield.NewObjectMust(ctx, &AWSAssumeRoleModel{
+			RoleARN:     types.StringValue("arn:aws:iam::123456789012:role/sts-admin"),
+			SessionName: types.StringValue("terraform-user"),
+		}),
+	}
+
+	got, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		t.Fatalf("executionAuthConfigFromModel() error = %v", err)
+	}
+	if got.Profile != "dev" {
+		t.Fatalf("Profile = %q, want dev", got.Profile)
+	}
+	if got.AssumeRoleARN != "arn:aws:iam::123456789012:role/sts-admin" {
+		t.Fatalf("AssumeRoleARN = %q, want sts-admin role", got.AssumeRoleARN)
+	}
+	if got.AssumeRoleSessionName != "terraform-user" {
+		t.Fatalf("AssumeRoleSessionName = %q, want terraform-user", got.AssumeRoleSessionName)
+	}
+}
+
+func TestReadPreparesAWSAuthEnvironmentWhenClusterIDExists(t *testing.T) {
+	ctx := context.Background()
+	awsPath := filepath.Join(t.TempDir(), "aws")
+	if err := os.WriteFile(awsPath, []byte("#!/bin/sh\necho sentinel-assume-role >&2\nexit 42\n"), 0o755); err != nil {
+		t.Fatalf("failed to write fake aws command: %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(awsPath))
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &ClusterModel{
+		ClusterID:   types.StringValue("cluster-1"),
+		ClusterName: types.StringValue("demo"),
+		Region:      types.StringValue("us-east-2"),
+		AccountID:   types.StringValue("123456789012"),
+		Kubeconfig:  types.StringValue("/tmp/kubeconfig"),
+		AWSAssumeRole: customfield.NewObjectMust(ctx, &AWSAssumeRoleModel{
+			RoleARN: types.StringValue("arn:aws:iam::123456789012:role/sts-admin"),
+		}),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	client := &fakeReadAuthClient{}
+	resp := &resource.ReadResponse{}
+	(&Cluster{client: client}).Read(ctx, resource.ReadRequest{State: state}, resp)
+
+	if !resp.Diagnostics.HasError() {
+		t.Fatalf("Read() diagnostics had no error, want aws auth environment error")
+	}
+	if resp.Diagnostics[0].Summary() != "failed to prepare aws auth environment" {
+		t.Fatalf("Read() diagnostic title = %q, want failed to prepare aws auth environment", resp.Diagnostics[0].Summary())
+	}
+	if client.getClusterCalls != 0 {
+		t.Fatalf("GetCluster calls = %d, want 0 before aws auth environment succeeds", client.getClusterCalls)
 	}
 }
 

@@ -73,4 +73,4 @@ Import only requires a valid CloudPilot AI API key — no AWS credentials, profi
 
 After importing, the resource state will contain the cluster's full configuration including rebalance settings, workloads, node classes, and node pools fetched from the server. You can then manage them via `terraform apply`.
 
-~> **Note:** To perform create, update, or delete operations after import, you will need to add `aws_profile` and/or `kubeconfig` to your configuration, as those operations require access to the actual AWS cluster.
+~> **Note:** To perform create, update, or delete operations after import, you will need to add `aws_profile`, `aws_assume_role`, and/or `kubeconfig` to your configuration so CloudPilot can reach the real AWS cluster.

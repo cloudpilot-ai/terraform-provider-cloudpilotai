@@ -61,6 +61,8 @@ autoscaling_policies = [
 ]
 ```
 
+The `kubeconfig` you pass must already contain working auth for the target Kubernetes cluster. For EKS, the `cloudpilotai_eks_cluster` resource now generates a kubeconfig that carries `aws_profile` and `aws_assume_role` auth forward for this purpose.
+
 {{ .SchemaMarkdown | trimspace }}
 
 ## Import

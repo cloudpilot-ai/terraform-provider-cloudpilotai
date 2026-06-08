@@ -22,7 +22,7 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilitaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client/helper"
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/aws"
+	awsauth "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/aws"
 	customfield "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
@@ -105,13 +105,32 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(&data); err != nil {
+	authCfg, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to decode aws auth configuration", err.Error())
+		return
+	}
+
+	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
 		)
 		return
 	}
+
+	awsEnv, err := awsauth.CommandEnv(ctx, authCfg)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare aws auth environment", err.Error())
+		return
+	}
+
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
+		return
+	}
+	defer cleanupShellKubeconfig()
 
 	clusterUID := resolveClusterUID(data.ClusterID, data.ClusterID, data.ClusterName, data.Region, data.AccountID)
 	data.ClusterID = types.StringValue(clusterUID)
@@ -131,7 +150,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		// 1. install cloudpilot ai agent component
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), boolValueOrDefault(data.DisableWorkloadUploading, false), data.AWSProfile.ValueString()); err != nil {
+			shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -165,7 +184,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 			// 1.2. install cloudpilot ai rebalance component
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
 			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-				clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
+				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to install CloudPilot AI rebalance component",
 					err.Error(),
@@ -178,7 +197,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 
 	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
+			clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade CloudPilot AI components",
@@ -239,13 +258,32 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return m.Name.ValueString()
 	})
 
-	if err := c.fillMissingParameters(&data); err != nil {
+	authCfg, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to decode aws auth configuration", err.Error())
+		return
+	}
+
+	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
 		)
 		return
 	}
+
+	awsEnv, err := awsauth.CommandEnv(ctx, authCfg)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare aws auth environment", err.Error())
+		return
+	}
+
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
+		return
+	}
+	defer cleanupShellKubeconfig()
 
 	clusterUID := resolveClusterUID(data.ClusterID, state.ClusterID, data.ClusterName, data.Region, data.AccountID)
 	data.ClusterID = types.StringValue(clusterUID)
@@ -265,7 +303,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	if !agentExist {
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			data.Kubeconfig.ValueString(), boolValueOrDefault(data.DisableWorkloadUploading, false), data.AWSProfile.ValueString()); err != nil {
+			shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -295,7 +333,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		if rebalanceConfig != nil && rebalanceConfig.LastComponentsActiveTime.IsZero() {
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
 			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-				clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString()); err != nil {
+				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to install CloudPilot AI rebalance component",
 					err.Error(),
@@ -308,7 +346,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 
 	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-			clusterUID, data.Kubeconfig.ValueString(), data.CustomNodeRole.ValueString(), data.AWSProfile.ValueString())
+			clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"failed to upgrade CloudPilot AI components",
@@ -371,6 +409,12 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		return
 	}
 
+	authCfg, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to decode aws auth configuration", err.Error())
+		return
+	}
+
 	isImport := false
 	if importFlag, diags := req.Private.GetKey(ctx, "is_import"); !diags.HasError() && string(importFlag) == "true" {
 		isImport = true
@@ -381,7 +425,7 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	if clusterUID == "" {
 		// cluster_id is not yet known (normal CRUD path); need AWS credentials
 		// to derive account_id and kubeconfig.
-		if err := c.fillMissingParameters(&data); err != nil {
+		if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to fill missing parameters",
 				err.Error(),
@@ -390,6 +434,11 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		}
 		clusterUID = api.GenerateClusterUID(api.CloudProviderAWS, data.ClusterName.ValueString(), data.Region.ValueString(), data.AccountID.ValueString())
 		data.ClusterID = types.StringValue(clusterUID)
+	}
+
+	if _, err := awsauth.CommandEnv(ctx, authCfg); err != nil {
+		resp.Diagnostics.AddError("failed to prepare aws auth environment", err.Error())
+		return
 	}
 
 	if _, err := c.client.GetCluster(clusterUID); err != nil {
@@ -608,13 +657,32 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(&data); err != nil {
+	authCfg, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to decode aws auth configuration", err.Error())
+		return
+	}
+
+	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
 		)
 		return
 	}
+
+	awsEnv, err := awsauth.CommandEnv(ctx, authCfg)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare aws auth environment", err.Error())
+		return
+	}
+
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
+		return
+	}
+	defer cleanupShellKubeconfig()
 
 	clusterUID := resolveDeleteClusterUID(data.ClusterID, data.ClusterName, data.Region, data.AccountID)
 
@@ -634,7 +702,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 	if boolValueOrDefault(data.SkipRestore, false) {
 		tflog.Info(ctx, "skip_restore is true, skipping node restore step")
 	} else if int64ValueOrDefault(data.RestoreNodeNumber, 0) > 0 {
-		opNodeNum, err := helper.GetCloudpilotAIOptimizedNodeNumber(ctx, data.Kubeconfig.ValueString(), data.AWSProfile.ValueString())
+		opNodeNum, err := helper.GetCloudpilotAIOptimizedNodeNumber(ctx, shellKubeconfig, awsEnv)
 		if err != nil {
 			resp.Diagnostics.AddError(
 				"failed to get optimized node number",
@@ -645,8 +713,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		if opNodeNum > 0 {
 			if err := helper.RestoreCloudpilotAIComponent(ctx, c.client,
 				clusterUID, data.ClusterName.ValueString(), data.Region.ValueString(),
-				data.Kubeconfig.ValueString(), data.AWSProfile.ValueString(),
-				int64ValueOrDefault(data.RestoreNodeNumber, 0)); err != nil {
+				shellKubeconfig, awsEnv, int64ValueOrDefault(data.RestoreNodeNumber, 0)); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to restore CloudPilot AI component",
 					err.Error(),
@@ -663,7 +730,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		tflog.Info(ctx, "nodes were restored, running full uninstall flow")
 		if err := helper.UninstallCloudpilotAIAgentComponent(ctx, c.client,
 			clusterUID, data.ClusterName.ValueString(), api.CloudProviderAWS, data.Region.ValueString(),
-			data.Kubeconfig.ValueString(), data.AWSProfile.ValueString()); err != nil {
+			shellKubeconfig, awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to uninstall cloudpilot agent component",
 				err.Error(),
@@ -672,7 +739,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		}
 	} else {
 		tflog.Info(ctx, "nodes were not restored, deleting cloudpilot namespace directly")
-		if err := helper.DeleteCloudpilotNamespace(ctx, data.Kubeconfig.ValueString(), data.AWSProfile.ValueString()); err != nil {
+		if err := helper.DeleteCloudpilotNamespace(ctx, shellKubeconfig, awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to delete cloudpilot namespace",
 				err.Error(),
@@ -693,14 +760,34 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
-	profile := ""
+func executionAuthConfigFromModel(ctx context.Context, data ClusterModel) (awsauth.ExecutionAuthConfig, error) {
+	cfg := awsauth.ExecutionAuthConfig{}
+
 	if !data.AWSProfile.IsNull() && !data.AWSProfile.IsUnknown() {
-		profile = data.AWSProfile.ValueString()
+		cfg.Profile = data.AWSProfile.ValueString()
 	}
 
+	if !data.AWSAssumeRole.IsNull() && !data.AWSAssumeRole.IsUnknown() {
+		value, diags := data.AWSAssumeRole.Value(ctx)
+		if diags.HasError() {
+			return cfg, fmt.Errorf("failed to decode aws_assume_role: %v", diags)
+		}
+		if value != nil {
+			if !value.RoleARN.IsNull() && !value.RoleARN.IsUnknown() {
+				cfg.AssumeRoleARN = value.RoleARN.ValueString()
+			}
+			if !value.SessionName.IsNull() && !value.SessionName.IsUnknown() {
+				cfg.AssumeRoleSessionName = value.SessionName.ValueString()
+			}
+		}
+	}
+
+	return cfg, nil
+}
+
+func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel, authCfg awsauth.ExecutionAuthConfig) error {
 	if data.AccountID.IsNull() || data.AccountID.IsUnknown() || data.AccountID.ValueString() == "" {
-		accountID, err := aws.GetAccountID(profile)
+		accountID, err := awsauth.GetAccountID(ctx, authCfg)
 		if err != nil {
 			return err
 		}
@@ -723,7 +810,7 @@ func (c *Cluster) fillMissingParameters(data *ClusterModel) error {
 
 	if kubeconfigPath == "" {
 		kubeconfigPath = strings.Join([]string{data.Region.ValueString(), data.ClusterName.ValueString(), "kubeconfig"}, "_")
-		if err := aws.UpdateKubeconfig(data.ClusterName.ValueString(), data.Region.ValueString(), kubeconfigPath, profile); err != nil {
+		if err := awsauth.UpdateKubeconfig(ctx, data.ClusterName.ValueString(), data.Region.ValueString(), kubeconfigPath, authCfg); err != nil {
 			return err
 		}
 	}

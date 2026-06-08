@@ -133,14 +133,15 @@ nodepools = [
 
 ### Optional
 
-- `aws_profile` (String) AWS CLI named profile to use for all AWS operations (sts, eks). If empty, the default profile or environment credentials are used.
+- `aws_assume_role` (Attributes) Optional IAM role to assume for CloudPilot AWS CLI and kubeconfig operations. Source credentials still come from aws_profile or the ambient AWS credential chain. (see [below for nested schema](#nestedatt--aws_assume_role))
+- `aws_profile` (String) AWS CLI named profile to use as the source credential for AWS operations. If empty, the default AWS credential chain is used.
 - `cluster_id` (String) Unique identifier of the EKS cluster. Optional override for existing clusters when the caller already knows the server-side cluster ID.
 - `cluster_setting` (Attributes) Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting. (see [below for nested schema](#nestedatt--cluster_setting))
 - `custom_node_role` (String) Custom IAM role name for EC2 instances. When set, this role will be added to the CloudPilot controller's PassNodeIAMRole policy during installation, allowing the controller to pass this role to EC2 instances.
 - `disable_workload_uploading` (Boolean) Disable automatic uploading of workload information to CloudPilot AI
 - `enable_rebalance` (Boolean) Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
 - `enable_upgrade` (Boolean) Enable upgrading CloudPilot AI components through the cluster upgrade script. The provider checks whether the cluster needs upgrade first, and only runs the upgrade when required.
-- `kubeconfig` (String) Kubernetes configuration file content for accessing the EKS cluster
+- `kubeconfig` (String) Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates a kubeconfig that includes the required exec auth for aws_profile and aws_assume_role.
 - `nodeclass_templates` (Attributes List) NodeClass templates configuration (see [below for nested schema](#nestedatt--nodeclass_templates))
 - `nodeclasses` (Attributes List) NodeClasses configuration (no change if not set) (see [below for nested schema](#nestedatt--nodeclasses))
 - `nodepool_templates` (Attributes List) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepool_templates))
@@ -154,6 +155,18 @@ nodepools = [
 ### Read-Only
 
 - `account_id` (String) AWS account ID where the cluster is deployed (computed)
+
+<a id="nestedatt--aws_assume_role"></a>
+### Nested Schema for `aws_assume_role`
+
+Required:
+
+- `role_arn` (String) IAM role ARN to assume before CloudPilot performs AWS CLI, kubectl, or helm operations.
+
+Optional:
+
+- `session_name` (String) Optional STS session name used when assuming the role. Defaults to cloudpilotai-terraform when omitted.
+
 
 <a id="nestedatt--cluster_setting"></a>
 ### Nested Schema for `cluster_setting`
@@ -425,4 +438,4 @@ terraform import cloudpilotai_eks_cluster.example <cluster-id>
 
 After importing, the resource state will contain the cluster's full configuration including rebalance settings, workloads, node classes, and node pools fetched from the server. You can then manage them via `terraform apply`.
 
-~> **Note:** To perform create, update, or delete operations after import, you will need to add `aws_profile` and/or `kubeconfig` to your configuration, as those operations require access to the actual AWS cluster.
+~> **Note:** To perform create, update, or delete operations after import, you will need to add `aws_profile`, `aws_assume_role`, and/or `kubeconfig` to your configuration so CloudPilot can reach the real AWS cluster.

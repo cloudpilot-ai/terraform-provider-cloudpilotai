@@ -2,9 +2,9 @@
 package aws
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
-	"os/exec"
 )
 
 type GetCallerIdentityResponse struct {
@@ -13,20 +13,20 @@ type GetCallerIdentityResponse struct {
 	Arn     string `json:"Arn"`
 }
 
-func GetAccountID(profile string) (string, error) {
-	args := []string{"sts", "get-caller-identity"}
-	if profile != "" {
-		args = append(args, "--profile", profile)
-	}
-	cmd := exec.Command("aws", args...)
-	output, err := cmd.Output()
+func GetAccountID(ctx context.Context, auth ExecutionAuthConfig) (string, error) {
+	env, err := CommandEnv(ctx, auth)
 	if err != nil {
-		return "", fmt.Errorf("failed to get account ID: %w, output: %s", err, string(output))
+		return "", fmt.Errorf("failed to build AWS command env: %w", err)
+	}
+
+	output, err := runAWSCommand(ctx, env, "sts", "get-caller-identity", "--output", "json")
+	if err != nil {
+		return "", fmt.Errorf("failed to get account ID: %w", err)
 	}
 
 	var response GetCallerIdentityResponse
 	if err = json.Unmarshal(output, &response); err != nil {
-		return "", err
+		return "", fmt.Errorf("failed to parse get-caller-identity response: %w", err)
 	}
 
 	return response.Account, nil

@@ -24,7 +24,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"kubeconfig": schema.StringAttribute{
-				Description: "Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import.",
+				Description: "Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import. The kubeconfig must already be able to authenticate to the target cluster. For EKS, using cloudpilotai_eks_cluster.this.kubeconfig satisfies this requirement.",
 				Optional:    true,
 				Computed:    true,
 				Default:     stringdefault.StaticString(""),

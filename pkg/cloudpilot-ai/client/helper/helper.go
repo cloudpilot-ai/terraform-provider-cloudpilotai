@@ -33,46 +33,35 @@ type clusterUpgradeClient interface {
 	GetClusterUpgradeSH(clusterID string) (string, error)
 }
 
-func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface, kubeconfigPath string, disableWorkloadUploading bool, awsProfile string,
+func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
 ) error {
 	agentSH, err := client.GetAgentSH(disableWorkloadUploading)
 	if err != nil {
 		return err
 	}
 
-	env := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
-	}
-	return ExecuteSH(ctx, agentSH, env)
+	return ExecuteSH(ctx, agentSH, buildShellEnv(kubeconfigPath, nil, awsEnv))
 }
 
 func InstallCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilotaiclient.Interface,
-	clusterUID, kubeconfigPath, customNodeRole, awsProfile string,
+	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 ) error {
 	rebalanceSH, err := client.GetRebalanceSH(clusterUID)
 	if err != nil {
 		return err
 	}
 
-	env := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if customNodeRole != "" {
-		env["CUSTOM_NODE_ROLE"] = customNodeRole
-	}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
-	}
-	return ExecuteSH(ctx, rebalanceSH, env)
+	return ExecuteSH(ctx, rebalanceSH, buildShellEnv(kubeconfigPath, map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}, awsEnv))
 }
 
 func UpgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
-	clusterUID, kubeconfigPath, customNodeRole, awsProfile string,
+	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 ) (bool, error) {
-	return upgradeCloudpilotAIComponentsIfNeeded(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsProfile, ExecuteSH)
+	return upgradeCloudpilotAIComponentsIfNeeded(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
 }
 
 func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
-	clusterUID, kubeconfigPath, customNodeRole, awsProfile string,
+	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 	execute func(context.Context, string, map[string]string) error,
 ) (bool, error) {
 	cluster, err := client.GetCluster(clusterUID)
@@ -88,13 +77,7 @@ func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUp
 		return false, err
 	}
 
-	env := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if customNodeRole != "" {
-		env["CUSTOM_NODE_ROLE"] = customNodeRole
-	}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
-	}
+	env := buildShellEnv(kubeconfigPath, map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}, awsEnv)
 	if err := execute(ctx, upgradeSH, env); err != nil {
 		return false, err
 	}
@@ -108,12 +91,11 @@ done
 kubectl delete nodeclaim --all
 while [[ $(kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length') -ne 0 ]]; do echo "Waiting for CloudPilot AI nodes to be removed..."; sleep 3; done`
 
-func GetCloudpilotAIOptimizedNodeNumber(ctx context.Context, kubeconfigPath, awsProfile string) (int64, error) {
+func GetCloudpilotAIOptimizedNodeNumber(ctx context.Context, kubeconfigPath string, awsEnv map[string]string) (int64, error) {
 	cmd := exec.CommandContext(ctx, "bash", "-c", `kubectl get nodes -l node.cloudpilot.ai/managed=true -o json | jq -r '.items | length'`)
 	cmd.Env = append(cmd.Env, os.Environ()...)
-	cmd.Env = append(cmd.Env, "KUBECONFIG="+kubeconfigPath)
-	if awsProfile != "" {
-		cmd.Env = append(cmd.Env, "AWS_PROFILE="+awsProfile)
+	for key, value := range buildShellEnv(kubeconfigPath, nil, awsEnv) {
+		cmd.Env = append(cmd.Env, fmt.Sprintf("%s=%s", key, value))
 	}
 
 	var stdoutBuf, stderrBuf bytes.Buffer
@@ -141,25 +123,18 @@ func GetCloudpilotAIOptimizedNodeNumber(ctx context.Context, kubeconfigPath, aws
 var restoreSH string
 
 func RestoreCloudpilotAIComponent(ctx context.Context, client cloudpilotaiclient.Interface,
-	clusterUID, clusterName, region, kubeconfigPath, awsProfile string, restoreNodeNumber int64,
+	clusterUID, clusterName, region, kubeconfigPath string, awsEnv map[string]string, restoreNodeNumber int64,
 ) error {
-	env := map[string]string{
-		"KUBECONFIG":       kubeconfigPath,
+	env := buildShellEnv(kubeconfigPath, map[string]string{
 		"CLUSTER_NAME":     clusterName,
 		"CLUSTER_REGION":   region,
 		"NEW_DESIRED_SIZE": fmt.Sprintf("%d", restoreNodeNumber),
-	}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
-	}
+	}, awsEnv)
 	if err := ExecuteSH(ctx, restoreSH, env); err != nil {
 		return err
 	}
 
-	deleteEnv := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if awsProfile != "" {
-		deleteEnv["AWS_PROFILE"] = awsProfile
-	}
+	deleteEnv := buildShellEnv(kubeconfigPath, nil, awsEnv)
 	if err := ExecuteSH(ctx, DeleteOptimizedNodesSH, deleteEnv); err != nil {
 		return err
 	}
@@ -168,28 +143,37 @@ func RestoreCloudpilotAIComponent(ctx context.Context, client cloudpilotaiclient
 }
 
 func UninstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface,
-	clusterUID, clusterName, provider, region, kubeconfigPath, awsProfile string,
+	clusterUID, clusterName, provider, region, kubeconfigPath string, awsEnv map[string]string,
 ) error {
 	uninstallSH, err := client.GetClusterUninstallSH(clusterUID, clusterName, provider, region)
 	if err != nil {
 		return err
 	}
 
-	env := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
-	}
-	return ExecuteSH(ctx, uninstallSH, env)
+	return ExecuteSH(ctx, uninstallSH, buildShellEnv(kubeconfigPath, nil, awsEnv))
 }
 
 const deleteCloudpilotNamespaceSH = `kubectl delete namespace cloudpilot --ignore-not-found`
 
-func DeleteCloudpilotNamespace(ctx context.Context, kubeconfigPath, awsProfile string) error {
-	env := map[string]string{"KUBECONFIG": kubeconfigPath}
-	if awsProfile != "" {
-		env["AWS_PROFILE"] = awsProfile
+func DeleteCloudpilotNamespace(ctx context.Context, kubeconfigPath string, awsEnv map[string]string) error {
+	return ExecuteSH(ctx, deleteCloudpilotNamespaceSH, buildShellEnv(kubeconfigPath, nil, awsEnv))
+}
+
+func buildShellEnv(kubeconfigPath string, extra map[string]string, awsEnv map[string]string) map[string]string {
+	env := map[string]string{
+		"KUBECONFIG": kubeconfigPath,
 	}
-	return ExecuteSH(ctx, deleteCloudpilotNamespaceSH, env)
+	for key, value := range extra {
+		if value != "" {
+			env[key] = value
+		}
+	}
+	for key, value := range awsEnv {
+		if value != "" {
+			env[key] = value
+		}
+	}
+	return env
 }
 
 func ExecuteSH(ctx context.Context, sh string, env map[string]string) error {
