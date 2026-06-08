@@ -107,6 +107,34 @@ func TestSyncRebalanceConfigurationSkipsUpdateWhileStillDisabled(t *testing.T) {
 	}
 }
 
+func TestBuildShellEnvIncludesKubeconfigAndAssumeRoleCredentials(t *testing.T) {
+	got := buildShellEnv(
+		"/tmp/kubeconfig",
+		map[string]string{"CUSTOM_NODE_ROLE": "node-role"},
+		map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKIA_TEST",
+			"AWS_SECRET_ACCESS_KEY": "secret",
+			"AWS_SESSION_TOKEN":     "token",
+		},
+	)
+
+	if got["KUBECONFIG"] != "/tmp/kubeconfig" {
+		t.Fatalf("KUBECONFIG = %q, want /tmp/kubeconfig", got["KUBECONFIG"])
+	}
+	if got["CUSTOM_NODE_ROLE"] != "node-role" {
+		t.Fatalf("CUSTOM_NODE_ROLE = %q, want node-role", got["CUSTOM_NODE_ROLE"])
+	}
+	if got["AWS_ACCESS_KEY_ID"] != "AKIA_TEST" {
+		t.Fatalf("AWS_ACCESS_KEY_ID = %q, want AKIA_TEST", got["AWS_ACCESS_KEY_ID"])
+	}
+	if got["AWS_SECRET_ACCESS_KEY"] != "secret" {
+		t.Fatalf("AWS_SECRET_ACCESS_KEY = %q, want secret", got["AWS_SECRET_ACCESS_KEY"])
+	}
+	if got["AWS_SESSION_TOKEN"] != "token" {
+		t.Fatalf("AWS_SESSION_TOKEN = %q, want token", got["AWS_SESSION_TOKEN"])
+	}
+}
+
 type fakeWorkloadConfigurationClient struct {
 	workloadConfig   *api.ClusterWorkloadSpec
 	updatedWorkloads []api.Workload
@@ -192,7 +220,7 @@ func TestUpgradeCloudpilotAIComponentsIfNeededSkipsWhenClusterDoesNotNeedUpgrade
 		"cluster-1",
 		"/tmp/kubeconfig",
 		"",
-		"",
+		map[string]string{},
 		func(context.Context, string, map[string]string) error {
 			executed = true
 			return nil
@@ -226,7 +254,11 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 		"cluster-1",
 		"/tmp/kubeconfig",
 		"custom-node-role",
-		"aws-profile",
+		map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKIA_TEST",
+			"AWS_SECRET_ACCESS_KEY": "secret",
+			"AWS_SESSION_TOKEN":     "token",
+		},
 		func(_ context.Context, sh string, env map[string]string) error {
 			executedSH = sh
 			executedEnv = env
@@ -248,8 +280,14 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 	if executedEnv["CUSTOM_NODE_ROLE"] != "custom-node-role" {
 		t.Fatalf("CUSTOM_NODE_ROLE = %q, want custom-node-role", executedEnv["CUSTOM_NODE_ROLE"])
 	}
-	if executedEnv["AWS_PROFILE"] != "aws-profile" {
-		t.Fatalf("AWS_PROFILE = %q, want aws-profile", executedEnv["AWS_PROFILE"])
+	if executedEnv["AWS_ACCESS_KEY_ID"] != "AKIA_TEST" {
+		t.Fatalf("AWS_ACCESS_KEY_ID = %q, want AKIA_TEST", executedEnv["AWS_ACCESS_KEY_ID"])
+	}
+	if executedEnv["AWS_SECRET_ACCESS_KEY"] != "secret" {
+		t.Fatalf("AWS_SECRET_ACCESS_KEY = %q, want secret", executedEnv["AWS_SECRET_ACCESS_KEY"])
+	}
+	if executedEnv["AWS_SESSION_TOKEN"] != "token" {
+		t.Fatalf("AWS_SESSION_TOKEN = %q, want token", executedEnv["AWS_SESSION_TOKEN"])
 	}
 	if client.getUpgradeSHCalls != 1 {
 		t.Fatalf("GetClusterUpgradeSH calls = %d, want 1", client.getUpgradeSHCalls)

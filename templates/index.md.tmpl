@@ -21,7 +21,9 @@ The CloudPilot AI provider enables you to manage Amazon EKS clusters and workloa
 ## Prerequisites
 
 - [Terraform](https://developer.hashicorp.com/terraform/install) >= 1.0
-- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) configured with EKS permissions
+- [AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html) configured with EKS permissions. EKS operations use the AWS CLI to generate kubeconfig, run install scripts, and execute `kubectl`/`helm`.
+  - Terraform-only CI/CD can set `aws_assume_role` on `cloudpilotai_eks_cluster` when the Terraform run already has AWS base credentials or OIDC.
+  - Local development can keep using `aws_profile` as the source-credential fallback.
 - [Kubectl](https://kubernetes.io/docs/tasks/tools/) for cluster operations
 - A CloudPilot AI API key — see [Getting API Keys](https://docs.cloudpilot.ai/guide/getting_started/get_apikeys)
 

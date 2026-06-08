@@ -18,18 +18,34 @@ func Schema(ctx context.Context) schema.Schema {
 	return schema.Schema{
 		Description: "EKS Cluster",
 		Attributes: map[string]schema.Attribute{
+			"aws_profile": schema.StringAttribute{
+				Description: "AWS CLI named profile to use as the source credential for AWS operations. If empty, the default AWS credential chain is used.",
+				Optional:    true,
+			},
+
+			"aws_assume_role": schema.SingleNestedAttribute{
+				Description: "Optional IAM role to assume for CloudPilot AWS CLI and kubeconfig operations. Source credentials still come from aws_profile or the ambient AWS credential chain.",
+				Optional:    true,
+				CustomType:  customfield.NewNestedObjectType[AWSAssumeRoleModel](ctx),
+				Attributes: map[string]schema.Attribute{
+					"role_arn": schema.StringAttribute{
+						Description: "IAM role ARN to assume before CloudPilot performs AWS CLI, kubectl, or helm operations.",
+						Required:    true,
+					},
+					"session_name": schema.StringAttribute{
+						Description: "Optional STS session name used when assuming the role. Defaults to cloudpilotai-terraform when omitted.",
+						Optional:    true,
+					},
+				},
+			},
+
 			"kubeconfig": schema.StringAttribute{
-				Description: "Kubernetes configuration file content for accessing the EKS cluster",
+				Description: "Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates a kubeconfig that includes the required exec auth for aws_profile and aws_assume_role.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					useStateForUnknownNonNullString(),
 				},
-			},
-
-			"aws_profile": schema.StringAttribute{
-				Description: "AWS CLI named profile to use for all AWS operations (sts, eks). If empty, the default profile or environment credentials are used.",
-				Optional:    true,
 			},
 
 			"cluster_name": schema.StringAttribute{

@@ -16,6 +16,7 @@ require (
 	github.com/samber/lo v1.49.1
 	k8s.io/api v0.30.3
 	k8s.io/apimachinery v0.30.3
+	k8s.io/client-go v0.30.3
 	k8s.io/klog/v2 v2.130.1
 )
 
@@ -114,7 +115,6 @@ require (
 	gopkg.in/yaml.v2 v2.4.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 	k8s.io/apiextensions-apiserver v0.30.3 // indirect
-	k8s.io/client-go v0.30.3 // indirect
 	k8s.io/kube-openapi v0.0.0-20250304201544-e5f78fe3ede9 // indirect
 	k8s.io/utils v0.0.0-20241210054802-24370beab758 // indirect
 	knative.dev/pkg v0.0.0-20240926013127-c4843b746d24 // indirect
