@@ -30,6 +30,7 @@ import (
 var (
 	_ resource.Resource                = &Cluster{}
 	_ resource.ResourceWithImportState = &Cluster{}
+	_ resource.ResourceWithModifyPlan  = &Cluster{}
 )
 
 type Cluster struct {
@@ -40,6 +41,59 @@ type postWriteStateHydratorClient interface {
 	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
 	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
+}
+
+type clusterSummaryReader interface {
+	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
+}
+
+func applyClusterSummaryStatus(data *ClusterModel, summary *api.ClusterCostsSummary) {
+	if summary == nil {
+		return
+	}
+
+	data.AgentVersion = types.StringValue(summary.AgentVersion)
+	data.OnboardManifestVersion = types.StringValue(summary.OnboardManifestVersion)
+	data.NeedUpgrade = types.BoolValue(summary.NeedUpgrade)
+}
+
+func markClusterSummaryStatusUnknown(data *ClusterModel) {
+	data.AgentVersion = types.StringUnknown()
+	data.OnboardManifestVersion = types.StringUnknown()
+	data.NeedUpgrade = types.BoolUnknown()
+}
+
+func planMayUpgradeCluster(data ClusterModel, summary *api.ClusterCostsSummary) bool {
+	return boolValueOrDefault(data.EnableUpgrade, false) && summary != nil && summary.NeedUpgrade
+}
+
+func refreshClusterSummaryStatus(data *ClusterModel, reader clusterSummaryReader, clusterID string) error {
+	summary, err := reader.GetCluster(clusterID)
+	if err != nil {
+		return err
+	}
+
+	applyClusterSummaryStatus(data, summary)
+	return nil
+}
+
+func runUpgradeActionAndRefreshClusterSummary(
+	data *ClusterModel,
+	reader clusterSummaryReader,
+	clusterID string,
+	upgradeAction func() error,
+) error {
+	if upgradeAction != nil {
+		if err := upgradeAction(); err != nil {
+			return fmt.Errorf("upgrade action failed: %w", err)
+		}
+	}
+
+	if err := refreshClusterSummaryStatus(data, reader, clusterID); err != nil {
+		return fmt.Errorf("refresh final cluster summary failed: %w", err)
+	}
+
+	return nil
 }
 
 const clusterReadyPollTimeout = 5 * time.Minute
@@ -72,6 +126,44 @@ func (c *Cluster) Configure(ctx context.Context, req resource.ConfigureRequest, 
 	}
 
 	c.client = client
+}
+
+func (c *Cluster) ModifyPlan(ctx context.Context, req resource.ModifyPlanRequest, resp *resource.ModifyPlanResponse) {
+	if req.State.Raw.IsNull() || req.Plan.Raw.IsNull() {
+		return
+	}
+
+	var plan ClusterModel
+	resp.Diagnostics.Append(req.Plan.Get(ctx, &plan)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	var state ClusterModel
+	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
+	clusterUID := resolveClusterUID(plan.ClusterID, state.ClusterID, plan.ClusterName, plan.Region, state.AccountID)
+	if clusterUID == "" {
+		return
+	}
+
+	summary, err := c.client.GetCluster(clusterUID)
+	if err != nil {
+		if errors.Is(err, cloudpilitaiclient.ErrNotFound) {
+			return
+		}
+		resp.Diagnostics.AddError("failed to refresh upgrade status during plan", err.Error())
+		return
+	}
+
+	applyClusterSummaryStatus(&plan, summary)
+	if planMayUpgradeCluster(plan, summary) {
+		markClusterSummaryStatusUnknown(&plan)
+	}
+	resp.Diagnostics.Append(resp.Plan.Set(ctx, &plan)...)
 }
 
 func (c *Cluster) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
@@ -195,21 +287,37 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		}
 	}
 
+	if err := c.syncClusterSetting(ctx, &data, clusterUID); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to sync cluster setting",
+			err.Error(),
+		)
+		return
+	}
+
+	upgradeAction := func() error { return nil }
 	if boolValueOrDefault(data.EnableUpgrade, false) {
-		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-			clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to upgrade CloudPilot AI components",
-				err.Error(),
-			)
-			return
+		upgradeAction = func() error {
+			upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
+				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
+			if err != nil {
+				return err
+			}
+			if upgraded {
+				tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
+			} else {
+				tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
+			}
+			return nil
 		}
-		if upgraded {
-			tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
-		} else {
-			tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
-		}
+	}
+
+	if err := runUpgradeActionAndRefreshClusterSummary(&data, c.client, clusterUID, upgradeAction); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to read final cluster status after apply",
+			err.Error(),
+		)
+		return
 	}
 
 	// 2. sync configurations (no previous state on Create, so pass nil — nothing to delete)
@@ -344,21 +452,37 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		}
 	}
 
+	if err := c.syncClusterSetting(ctx, &data, clusterUID); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to sync cluster setting",
+			err.Error(),
+		)
+		return
+	}
+
+	upgradeAction := func() error { return nil }
 	if boolValueOrDefault(data.EnableUpgrade, false) {
-		upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-			clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
-		if err != nil {
-			resp.Diagnostics.AddError(
-				"failed to upgrade CloudPilot AI components",
-				err.Error(),
-			)
-			return
+		upgradeAction = func() error {
+			upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
+				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
+			if err != nil {
+				return err
+			}
+			if upgraded {
+				tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
+			} else {
+				tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
+			}
+			return nil
 		}
-		if upgraded {
-			tflog.Info(ctx, "upgraded CloudPilot AI components successfully")
-		} else {
-			tflog.Info(ctx, "CloudPilot AI components already up to date, skipping upgrade")
-		}
+	}
+
+	if err := runUpgradeActionAndRefreshClusterSummary(&data, c.client, clusterUID, upgradeAction); err != nil {
+		resp.Diagnostics.AddError(
+			"failed to read final cluster status after apply",
+			err.Error(),
+		)
+		return
 	}
 
 	tflog.Info(ctx, "syncing cluster configuration")
@@ -441,13 +565,19 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 		return
 	}
 
-	if _, err := c.client.GetCluster(clusterUID); err != nil {
+	summary, err := c.client.GetCluster(clusterUID)
+	if err != nil {
+		if errors.Is(err, cloudpilitaiclient.ErrNotFound) {
+			resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
+			return
+		}
 		resp.Diagnostics.AddError(
 			"failed to get cluster",
 			err.Error(),
 		)
 		return
 	}
+	applyClusterSummaryStatus(&data, summary)
 
 	clusterSetting, err := c.client.GetClusterSetting(clusterUID)
 	if err != nil {
@@ -825,6 +955,26 @@ func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel,
 	return nil
 }
 
+func (c *Cluster) syncClusterSetting(ctx context.Context, data *ClusterModel, clusterUID string) error {
+	// sync cluster setting only when it is configured on the Terraform resource.
+	if data.ClusterSetting.IsNull() || data.ClusterSetting.IsUnknown() {
+		return nil
+	}
+
+	tflog.Info(ctx, "syncing cluster setting")
+	setting, diags := data.ClusterSetting.Value(ctx)
+	if diags.HasError() {
+		return fmt.Errorf("failed to parse cluster_setting: %v", diags)
+	}
+	if setting != nil {
+		if err := c.client.UpdateClusterSetting(clusterUID, setting.ToAPI()); err != nil {
+			return fmt.Errorf("failed to update cluster setting: %w", err)
+		}
+	}
+	tflog.Info(ctx, "synced cluster setting successfully")
+	return nil
+}
+
 func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clusterUID string,
 	previousNCNames, previousNPNames map[string]struct{},
 ) error {
@@ -861,19 +1011,8 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 		tflog.Info(ctx, "enable_rebalance is unmanaged, skipping rebalance configuration sync")
 	}
 
-	// sync cluster setting only when it is configured on the Terraform resource.
-	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
-		tflog.Info(ctx, "syncing cluster setting")
-		setting, diags := data.ClusterSetting.Value(ctx)
-		if diags.HasError() {
-			return fmt.Errorf("failed to parse cluster_setting: %v", diags)
-		}
-		if setting != nil {
-			if err := c.client.UpdateClusterSetting(clusterUID, setting.ToAPI()); err != nil {
-				return fmt.Errorf("failed to update cluster setting: %w", err)
-			}
-		}
-		tflog.Info(ctx, "synced cluster setting successfully")
+	if err := c.syncClusterSetting(ctx, data, clusterUID); err != nil {
+		return err
 	}
 
 	return nil

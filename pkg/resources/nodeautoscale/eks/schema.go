@@ -81,6 +81,27 @@ func Schema(ctx context.Context) schema.Schema {
 					useStateForUnknownNonNullString(),
 				},
 			},
+			"agent_version": schema.StringAttribute{
+				Description: "Version of the CloudPilot AI agent currently installed on the cluster (computed).",
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					useStateForUnknownString(),
+				},
+			},
+			"onboard_manifest_version": schema.StringAttribute{
+				Description: "Latest CloudPilot onboard manifest version reported by the service (computed).",
+				Computed:    true,
+				PlanModifiers: []planmodifier.String{
+					useStateForUnknownString(),
+				},
+			},
+			"need_upgrade": schema.BoolAttribute{
+				Description: "Whether the CloudPilot service currently reports that this cluster needs an upgrade (computed).",
+				Computed:    true,
+				PlanModifiers: []planmodifier.Bool{
+					useStateForUnknownBool(),
+				},
+			},
 
 			"cluster_setting": schema.SingleNestedAttribute{
 				Description: "Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting.",

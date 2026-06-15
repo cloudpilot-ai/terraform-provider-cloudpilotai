@@ -7,7 +7,9 @@ description: |-
 
 # {{.Name}} ({{.Type}})
 
-Retrieves read-only information about an EKS cluster that is already registered with CloudPilot AI. Use this data source to query cluster status and agent information without making any changes.
+Retrieves read-only information about an EKS cluster that is already registered with CloudPilot AI. Use this data source to query cluster status, installed agent version, the latest CloudPilot onboard manifest version reported by the service, and whether CloudPilot currently recommends an upgrade, without making any changes.
+
+If the paired `cloudpilotai_eks_cluster` resource uses a custom `cluster_id`, provide the same `cluster_id` here so the data source reads that server-side cluster object directly instead of deriving the default ID from `cluster_name`, `region`, and `account_id`.
 
 ## Example Usage
 

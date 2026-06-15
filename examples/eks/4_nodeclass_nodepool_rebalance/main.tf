@@ -33,6 +33,16 @@ resource "cloudpilotai_eks_cluster" "example" {
 
   # --- Optional configurations with default values shown ---
 
+  # Cluster-level settings exposed by the CloudPilot AI service.
+  # Optional. Server defaults are shown explicitly for clarity.
+  cluster_setting = {
+    enable_node_repair  = true
+    enable_disk_monitor = true
+    discount            = 1
+    pre_run_command     = ""
+    post_run_command    = ""
+  }
+
   # Disable automatic uploading of workload information to CloudPilot AI
   # Optional. Default is false.
   disable_workload_uploading = false

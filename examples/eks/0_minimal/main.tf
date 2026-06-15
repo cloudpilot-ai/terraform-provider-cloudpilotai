@@ -24,6 +24,16 @@ resource "cloudpilotai_eks_cluster" "example" {
 
   only_install_agent = var.only_install_agent
   enable_rebalance   = var.enable_rebalance
+
+  # --- Cluster Settings ---
+  # Server defaults shown explicitly for clarity.
+  cluster_setting = {
+    enable_node_repair  = true
+    enable_disk_monitor = true
+    discount            = 1
+    pre_run_command     = ""
+    post_run_command    = ""
+  }
 }
 
 resource "cloudpilotai_workload_autoscaler" "example" {

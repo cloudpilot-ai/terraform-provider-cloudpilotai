@@ -149,6 +149,16 @@ func (f *fakeWorkloadConfigurationClient) UpdateWorkloadRebalanceConfiguration(_
 	return nil
 }
 
+type fakeAgentScriptClient struct {
+	agentSH         string
+	getAgentSHCalls int
+}
+
+func (f *fakeAgentScriptClient) GetAgentSH(bool) (string, error) {
+	f.getAgentSHCalls++
+	return f.agentSH, nil
+}
+
 func TestSyncWorkloadConfigurationPreservesRemoteFieldsWhenOmitted(t *testing.T) {
 	client := &fakeWorkloadConfigurationClient{
 		workloadConfig: &api.ClusterWorkloadSpec{
@@ -191,11 +201,66 @@ func TestSyncWorkloadConfigurationPreservesRemoteFieldsWhenOmitted(t *testing.T)
 	}
 }
 
+func TestInstallCloudpilotAIAgentComponentDoesNotNormalizeServerScript(t *testing.T) {
+	client := &fakeAgentScriptClient{
+		agentSH: strings.Join([]string{
+			`export AWS_PROFILE=manual-profile`,
+			`aws sts get-caller-identity --profile manual-profile`,
+		}, "\n"),
+	}
+	var executedSH string
+	var executedEnv map[string]string
+
+	err := installCloudpilotAIAgentComponent(
+		context.Background(),
+		client,
+		"/tmp/kubeconfig",
+		true,
+		map[string]string{"AWS_PROFILE": "terraform-profile"},
+		func(_ context.Context, sh string, env map[string]string) error {
+			executedSH = sh
+			executedEnv = env
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("installCloudpilotAIAgentComponent() error = %v", err)
+	}
+	if executedSH != client.agentSH {
+		t.Fatalf("executed shell = %q, want original agent script %q", executedSH, client.agentSH)
+	}
+	if !strings.Contains(executedSH, "manual-profile") {
+		t.Fatalf("executed shell should preserve manual profile override: %q", executedSH)
+	}
+	if !strings.Contains(executedSH, "--profile manual-profile") {
+		t.Fatalf("executed shell should preserve aws profile flag: %q", executedSH)
+	}
+	if executedEnv["AWS_PROFILE"] != "terraform-profile" {
+		t.Fatalf("AWS_PROFILE = %q, want terraform-profile", executedEnv["AWS_PROFILE"])
+	}
+	if executedEnv["KUBECONFIG"] != "/tmp/kubeconfig" {
+		t.Fatalf("KUBECONFIG = %q, want /tmp/kubeconfig", executedEnv["KUBECONFIG"])
+	}
+	if client.getAgentSHCalls != 1 {
+		t.Fatalf("GetAgentSH calls = %d, want 1", client.getAgentSHCalls)
+	}
+}
+
 type fakeClusterUpgradeClient struct {
 	summary           *api.ClusterCostsSummary
 	upgradeSH         string
 	getClusterCalls   int
 	getUpgradeSHCalls int
+}
+
+type fakeRebalanceScriptClient struct {
+	rebalanceSH         string
+	getRebalanceSHCalls int
+}
+
+func (f *fakeRebalanceScriptClient) GetRebalanceSH(string) (string, error) {
+	f.getRebalanceSHCalls++
+	return f.rebalanceSH, nil
 }
 
 func (f *fakeClusterUpgradeClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
@@ -291,6 +356,125 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 	}
 	if client.getUpgradeSHCalls != 1 {
 		t.Fatalf("GetClusterUpgradeSH calls = %d, want 1", client.getUpgradeSHCalls)
+	}
+}
+
+func TestInstallCloudpilotAIRebalanceComponentStripsTerraformManagedOverridesFromServerScript(t *testing.T) {
+	client := &fakeRebalanceScriptClient{
+		rebalanceSH: strings.Join([]string{
+			`export AWS_PROFILE=manual-profile`,
+			`CUSTOM_NODE_ROLE=manual-role kubectl get nodes`,
+			`aws sts get-caller-identity --profile manual-profile`,
+		}, "\n"),
+	}
+	var executedSH string
+	var executedEnv map[string]string
+
+	err := installCloudpilotAIRebalanceComponent(
+		context.Background(),
+		client,
+		"cluster-1",
+		"/tmp/kubeconfig",
+		"terraform-role",
+		map[string]string{"AWS_PROFILE": "terraform-profile"},
+		func(_ context.Context, sh string, env map[string]string) error {
+			executedSH = sh
+			executedEnv = env
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("installCloudpilotAIRebalanceComponent() error = %v", err)
+	}
+	if strings.Contains(executedSH, "manual-profile") {
+		t.Fatalf("executed shell still contains manual profile override: %q", executedSH)
+	}
+	if strings.Contains(executedSH, "manual-role") {
+		t.Fatalf("executed shell still contains manual role override: %q", executedSH)
+	}
+	if strings.Contains(executedSH, "--profile") {
+		t.Fatalf("executed shell still contains aws profile flag: %q", executedSH)
+	}
+	if !strings.Contains(executedSH, "aws sts get-caller-identity") {
+		t.Fatalf("executed shell lost aws command body: %q", executedSH)
+	}
+	if executedEnv["AWS_PROFILE"] != "terraform-profile" {
+		t.Fatalf("AWS_PROFILE = %q, want terraform-profile", executedEnv["AWS_PROFILE"])
+	}
+	if executedEnv["CUSTOM_NODE_ROLE"] != "terraform-role" {
+		t.Fatalf("CUSTOM_NODE_ROLE = %q, want terraform-role", executedEnv["CUSTOM_NODE_ROLE"])
+	}
+	if client.getRebalanceSHCalls != 1 {
+		t.Fatalf("GetRebalanceSH calls = %d, want 1", client.getRebalanceSHCalls)
+	}
+}
+
+func TestUpgradeCloudpilotAIComponentsIfNeededStripsAssumeRoleCredentialOverridesFromServerScript(t *testing.T) {
+	client := &fakeClusterUpgradeClient{
+		summary: &api.ClusterCostsSummary{NeedUpgrade: true},
+		upgradeSH: strings.Join([]string{
+			`unset AWS_ACCESS_KEY_ID AWS_SECRET_ACCESS_KEY AWS_SESSION_TOKEN AWS_ROLE_ARN KEEP_ME`,
+			`export AWS_ACCESS_KEY_ID=manual`,
+			`export AWS_SECRET_ACCESS_KEY=manual-secret`,
+			`export AWS_SESSION_TOKEN=manual-token`,
+			`AWS_ROLE_ARN=arn:aws:iam::123456789012:role/manual aws sts get-caller-identity`,
+		}, "\n"),
+	}
+	var executedSH string
+	var executedEnv map[string]string
+
+	upgraded, err := upgradeCloudpilotAIComponentsIfNeeded(
+		context.Background(),
+		client,
+		"cluster-1",
+		"/tmp/kubeconfig",
+		"terraform-role",
+		map[string]string{
+			"AWS_ACCESS_KEY_ID":     "AKIA_TEST",
+			"AWS_SECRET_ACCESS_KEY": "secret",
+			"AWS_SESSION_TOKEN":     "token",
+		},
+		func(_ context.Context, sh string, env map[string]string) error {
+			executedSH = sh
+			executedEnv = env
+			return nil
+		},
+	)
+	if err != nil {
+		t.Fatalf("upgradeCloudpilotAIComponentsIfNeeded() error = %v", err)
+	}
+	if !upgraded {
+		t.Fatalf("upgradeCloudpilotAIComponentsIfNeeded() upgraded = false, want true")
+	}
+	if strings.Contains(executedSH, "AWS_ACCESS_KEY_ID=manual") {
+		t.Fatalf("executed shell still contains manual access key override: %q", executedSH)
+	}
+	if strings.Contains(executedSH, "AWS_SECRET_ACCESS_KEY=manual-secret") {
+		t.Fatalf("executed shell still contains manual secret override: %q", executedSH)
+	}
+	if strings.Contains(executedSH, "AWS_SESSION_TOKEN=manual-token") {
+		t.Fatalf("executed shell still contains manual session token override: %q", executedSH)
+	}
+	if strings.Contains(executedSH, "unset AWS_ACCESS_KEY_ID") || strings.Contains(executedSH, "unset AWS_SECRET_ACCESS_KEY") || strings.Contains(executedSH, "unset AWS_SESSION_TOKEN") || strings.Contains(executedSH, "unset AWS_ROLE_ARN") {
+		t.Fatalf("executed shell still contains managed unset names: %q", executedSH)
+	}
+	if !strings.Contains(executedSH, "unset KEEP_ME") {
+		t.Fatalf("executed shell should preserve unrelated unset names: %q", executedSH)
+	}
+	if !strings.Contains(executedSH, "aws sts get-caller-identity") {
+		t.Fatalf("executed shell lost aws command body: %q", executedSH)
+	}
+	if executedEnv["AWS_ACCESS_KEY_ID"] != "AKIA_TEST" {
+		t.Fatalf("AWS_ACCESS_KEY_ID = %q, want AKIA_TEST", executedEnv["AWS_ACCESS_KEY_ID"])
+	}
+	if executedEnv["AWS_SECRET_ACCESS_KEY"] != "secret" {
+		t.Fatalf("AWS_SECRET_ACCESS_KEY = %q, want secret", executedEnv["AWS_SECRET_ACCESS_KEY"])
+	}
+	if executedEnv["AWS_SESSION_TOKEN"] != "token" {
+		t.Fatalf("AWS_SESSION_TOKEN = %q, want token", executedEnv["AWS_SESSION_TOKEN"])
+	}
+	if executedEnv["CUSTOM_NODE_ROLE"] != "terraform-role" {
+		t.Fatalf("CUSTOM_NODE_ROLE = %q, want terraform-role", executedEnv["CUSTOM_NODE_ROLE"])
 	}
 }
 
