@@ -18,6 +18,19 @@ type ClusterDataSource struct {
 	client cloudpilotaiclient.Interface
 }
 
+func applyClusterSummary(data *ClusterDataSourceModel, summary *api.ClusterCostsSummary) {
+	if summary == nil {
+		return
+	}
+
+	data.CloudProvider = types.StringValue(summary.CloudProvider)
+	data.Status = types.StringValue(string(summary.Status))
+	data.AgentVersion = types.StringValue(summary.AgentVersion)
+	data.OnboardManifestVersion = types.StringValue(summary.OnboardManifestVersion)
+	data.NeedUpgrade = types.BoolValue(summary.NeedUpgrade)
+	data.RebalanceEnable = types.BoolValue(summary.RebalanceEnable)
+}
+
 func NewClusterDataSource() datasource.DataSource {
 	return &ClusterDataSource{}
 }
@@ -54,23 +67,26 @@ func (d *ClusterDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		return
 	}
 
-	accountID := data.AccountID.ValueString()
-	if accountID == "" {
-		detectedID, err := aws.GetAccountID(ctx, aws.ExecutionAuthConfig{})
-		if err != nil {
-			resp.Diagnostics.AddError("failed to detect AWS account ID", err.Error())
-			return
+	clusterUID := data.ClusterID.ValueString()
+	if clusterUID == "" {
+		accountID := data.AccountID.ValueString()
+		if accountID == "" {
+			detectedID, err := aws.GetAccountID(ctx, aws.ExecutionAuthConfig{})
+			if err != nil {
+				resp.Diagnostics.AddError("failed to detect AWS account ID", err.Error())
+				return
+			}
+			accountID = detectedID
 		}
-		accountID = detectedID
-	}
-	data.AccountID = types.StringValue(accountID)
+		data.AccountID = types.StringValue(accountID)
 
-	clusterUID := api.GenerateClusterUID(
-		api.CloudProviderAWS,
-		data.ClusterName.ValueString(),
-		data.Region.ValueString(),
-		accountID,
-	)
+		clusterUID = api.GenerateClusterUID(
+			api.CloudProviderAWS,
+			data.ClusterName.ValueString(),
+			data.Region.ValueString(),
+			accountID,
+		)
+	}
 	data.ClusterID = types.StringValue(clusterUID)
 
 	summary, err := d.client.GetCluster(clusterUID)
@@ -79,10 +95,7 @@ func (d *ClusterDataSource) Read(ctx context.Context, req datasource.ReadRequest
 		return
 	}
 
-	data.CloudProvider = types.StringValue(summary.CloudProvider)
-	data.Status = types.StringValue(string(summary.Status))
-	data.AgentVersion = types.StringValue(summary.AgentVersion)
-	data.RebalanceEnable = types.BoolValue(summary.RebalanceEnable)
+	applyClusterSummary(&data, summary)
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }

@@ -33,6 +33,16 @@ resource "cloudpilotai_eks_cluster" "example" {
 
   # --- Optional configurations with default values shown ---
 
+  # Cluster-level settings exposed by the CloudPilot AI service.
+  # Optional. Server defaults are shown explicitly for clarity.
+  cluster_setting = {
+    enable_node_repair  = true
+    enable_disk_monitor = true
+    discount            = 1
+    pre_run_command     = "export AWS_PROFILE=abc"
+    post_run_command    = ""
+  }
+
   # Disable automatic uploading of workload information to CloudPilot AI
   # Optional. Default is false.
   disable_workload_uploading = false
@@ -295,8 +305,6 @@ resource "cloudpilotai_workload_autoscaler" "example" {
       buffer_memory         = "20%"
       request_min_cpu       = "25%"
       request_min_memory    = "30%"
-      request_max_cpu       = ""
-      request_max_memory    = ""
     },
     {
       name                  = "cost-savings"
@@ -306,12 +314,8 @@ resource "cloudpilotai_workload_autoscaler" "example" {
       history_window_cpu    = "12h"
       history_window_memory = "24h"
       evaluation_period     = "1m"
-      buffer_cpu            = ""
-      buffer_memory         = ""
       request_min_cpu       = "30m"
       request_min_memory    = "30Mi"
-      request_max_cpu       = ""
-      request_max_memory    = ""
     },
     {
       name                  = "burstable"
@@ -325,8 +329,6 @@ resource "cloudpilotai_workload_autoscaler" "example" {
       buffer_memory         = "20%"
       request_min_cpu       = "25%"
       request_min_memory    = "30%"
-      request_max_cpu       = ""
-      request_max_memory    = ""
     }
   ]
 
@@ -349,49 +351,32 @@ resource "cloudpilotai_workload_autoscaler" "example" {
         {
           api_version = "apps/v1"
           kind        = "Deployment"
-          name        = ""
           namespace   = "cloudpilot"
         },
         {
           api_version = "apps/v1"
           kind        = "StatefulSet"
-          name        = ""
           namespace   = "cloudpilot"
         }
       ]
 
       update_schedules = [
         {
-          name     = "default"
-          schedule = ""
-          duration = ""
-          mode     = "recreate"
+          name = "default"
+          mode = "recreate"
         }
       ]
 
       limit_policies = [
         {
-          resource      = "cpu"
-          remove_limit  = true
-          keep_limit    = false
-          multiplier    = ""
-          auto_headroom = ""
+          resource     = "cpu"
+          remove_limit = true
         },
         {
           resource      = "memory"
-          remove_limit  = false
-          keep_limit    = false
-          multiplier    = ""
           auto_headroom = "2"
         }
       ]
-
-      startup_boost_enabled            = false
-      startup_boost_min_boost_duration = ""
-      startup_boost_min_ready_duration = ""
-      startup_boost_multiplier_cpu     = ""
-      startup_boost_multiplier_memory  = ""
-      in_place_fallback_default_policy = ""
     },
     {
       name                       = "readonly"
@@ -407,49 +392,30 @@ resource "cloudpilotai_workload_autoscaler" "example" {
         {
           api_version = "apps/v1"
           kind        = "Deployment"
-          name        = ""
-          namespace   = ""
         },
         {
           api_version = "apps/v1"
           kind        = "StatefulSet"
-          name        = ""
-          namespace   = ""
         }
       ]
 
       update_schedules = [
         {
-          name     = "default"
-          schedule = ""
-          duration = ""
-          mode     = "off"
+          name = "default"
+          mode = "off"
         }
       ]
 
       limit_policies = [
         {
-          resource      = "cpu"
-          remove_limit  = true
-          keep_limit    = false
-          multiplier    = ""
-          auto_headroom = ""
+          resource     = "cpu"
+          remove_limit = true
         },
         {
           resource      = "memory"
-          remove_limit  = false
-          keep_limit    = false
-          multiplier    = ""
           auto_headroom = "2"
         }
       ]
-
-      startup_boost_enabled            = false
-      startup_boost_min_boost_duration = ""
-      startup_boost_min_ready_duration = ""
-      startup_boost_multiplier_cpu     = ""
-      startup_boost_multiplier_memory  = ""
-      in_place_fallback_default_policy = ""
     }
   ]
 
@@ -524,6 +490,16 @@ output "cluster_status" {
 output "agent_version" {
   description = "CloudPilot AI agent version installed on the cluster"
   value       = data.cloudpilotai_eks_cluster.example.agent_version
+}
+
+output "onboard_manifest_version" {
+  description = "Latest CloudPilot onboard manifest version reported by the service"
+  value       = data.cloudpilotai_eks_cluster.example.onboard_manifest_version
+}
+
+output "need_upgrade" {
+  description = "Whether CloudPilot AI currently recommends upgrading the cluster"
+  value       = data.cloudpilotai_eks_cluster.example.need_upgrade
 }
 
 # ============================================================================

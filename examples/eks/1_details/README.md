@@ -87,7 +87,7 @@ See `terraform.tfvars.example` for all available optimization variables.
 
 This example also demonstrates the **read-only data sources**:
 
-- `data.cloudpilotai_eks_cluster` — Queries cluster status, agent version, and rebalance state.
+- `data.cloudpilotai_eks_cluster` — Queries cluster status, installed agent version, the latest CloudPilot onboard manifest version reported by the service, whether an upgrade is currently recommended, and rebalance state.
 - `data.cloudpilotai_workload_autoscaler` — Queries whether the Workload Autoscaler is enabled and installed.
 
 After `terraform apply`, view the queried information with:
@@ -95,6 +95,8 @@ After `terraform apply`, view the queried information with:
 ```bash
 terraform output cluster_status
 terraform output agent_version
+terraform output onboard_manifest_version
+terraform output need_upgrade
 terraform output wa_enabled
 terraform output wa_installed
 ```

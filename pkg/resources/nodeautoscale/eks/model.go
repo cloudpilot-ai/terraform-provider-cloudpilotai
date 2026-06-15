@@ -13,13 +13,16 @@ type AWSAssumeRoleModel struct {
 }
 
 type ClusterModel struct {
-	Kubeconfig    types.String                                 `tfsdk:"kubeconfig"`
-	AWSProfile    types.String                                 `tfsdk:"aws_profile"`
-	AWSAssumeRole customfield.NestedObject[AWSAssumeRoleModel] `tfsdk:"aws_assume_role"`
-	ClusterID     types.String                                 `tfsdk:"cluster_id"`
-	ClusterName   types.String                                 `tfsdk:"cluster_name"`
-	Region        types.String                                 `tfsdk:"region"`
-	AccountID     types.String                                 `tfsdk:"account_id"`
+	Kubeconfig             types.String                                 `tfsdk:"kubeconfig"`
+	AWSProfile             types.String                                 `tfsdk:"aws_profile"`
+	AWSAssumeRole          customfield.NestedObject[AWSAssumeRoleModel] `tfsdk:"aws_assume_role"`
+	ClusterID              types.String                                 `tfsdk:"cluster_id"`
+	ClusterName            types.String                                 `tfsdk:"cluster_name"`
+	Region                 types.String                                 `tfsdk:"region"`
+	AccountID              types.String                                 `tfsdk:"account_id"`
+	AgentVersion           types.String                                 `tfsdk:"agent_version"`
+	OnboardManifestVersion types.String                                 `tfsdk:"onboard_manifest_version"`
+	NeedUpgrade            types.Bool                                   `tfsdk:"need_upgrade"`
 
 	ClusterSetting customfield.NestedObject[ClusterSettingModel] `tfsdk:"cluster_setting"`
 

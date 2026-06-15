@@ -52,6 +52,100 @@ func (f *fakeReadAuthClient) GetCluster(string) (*api.ClusterCostsSummary, error
 	return nil, errors.New("client should not be reached before aws env validation")
 }
 
+type fakeClusterSummaryClient struct {
+	cloudpilotaiclient.Interface
+	summary         *api.ClusterCostsSummary
+	summaries       []*api.ClusterCostsSummary
+	err             error
+	onGetCluster    func()
+	getClusterCalls int
+}
+
+func (f *fakeClusterSummaryClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
+	f.getClusterCalls++
+	if f.onGetCluster != nil {
+		f.onGetCluster()
+	}
+	if f.err != nil {
+		return nil, f.err
+	}
+	if len(f.summaries) > 0 {
+		summary := f.summaries[0]
+		f.summaries = f.summaries[1:]
+		return summary, nil
+	}
+	return f.summary, nil
+}
+
+type fakeClusterSettingUpdateClient struct {
+	cloudpilotaiclient.Interface
+	setting *api.ClusterSetting
+}
+
+func (f *fakeClusterSettingUpdateClient) UpdateClusterSetting(_ string, setting *api.ClusterSetting) error {
+	f.setting = setting
+	return nil
+}
+
+type fakeReadClusterClient struct {
+	cloudpilotaiclient.Interface
+	summary                 *api.ClusterCostsSummary
+	getClusterErr           error
+	clusterSetting          *api.ClusterSetting
+	rebalanceConfiguration  *api.RebalanceConfig
+	workloadConfiguration   *api.ClusterWorkloadSpec
+	nodeClasses             api.RebalanceNodeClassList
+	nodePools               api.RebalanceNodePoolList
+	getClusterCalls         int
+	getClusterSettingCalls  int
+	getRebalanceConfigCalls int
+	getWorkloadConfigCalls  int
+	listNodeClassesCalls    int
+	listNodePoolsCalls      int
+}
+
+func (f *fakeReadClusterClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
+	f.getClusterCalls++
+	if f.getClusterErr != nil {
+		return nil, f.getClusterErr
+	}
+	return f.summary, nil
+}
+
+func (f *fakeReadClusterClient) GetClusterSetting(string) (*api.ClusterSetting, error) {
+	f.getClusterSettingCalls++
+	if f.clusterSetting != nil {
+		return f.clusterSetting, nil
+	}
+	return &api.ClusterSetting{}, nil
+}
+
+func (f *fakeReadClusterClient) GetRebalanceConfiguration(string) (*api.RebalanceConfig, error) {
+	f.getRebalanceConfigCalls++
+	if f.rebalanceConfiguration != nil {
+		return f.rebalanceConfiguration, nil
+	}
+	return &api.RebalanceConfig{}, nil
+}
+
+func (f *fakeReadClusterClient) GetWorkloadRebalanceConfiguration(string) (*api.ClusterWorkloadSpec, error) {
+	f.getWorkloadConfigCalls++
+	if f.workloadConfiguration != nil {
+		return f.workloadConfiguration, nil
+	}
+	return &api.ClusterWorkloadSpec{}, nil
+}
+
+func (f *fakeReadClusterClient) ListNodeClasses(string) (api.RebalanceNodeClassList, error) {
+	f.listNodeClassesCalls++
+	return f.nodeClasses, nil
+}
+
+func (f *fakeReadClusterClient) ListNodePools(string) (api.RebalanceNodePoolList, error) {
+	f.listNodePoolsCalls++
+	return f.nodePools, nil
+}
+
 func TestSortedValuesByName(t *testing.T) {
 	items := map[string]namedItem{
 		"p2p":                {name: "p2p"},
@@ -327,6 +421,568 @@ func TestNodePoolMinimumInstanceFilterAttributesHaveNoDefault(t *testing.T) {
 	}
 	if len(memoryMinAttr.Int64PlanModifiers()) == 0 {
 		t.Fatalf("instance_memory_min should preserve null state in the plan")
+	}
+}
+
+func TestSchemaExposesUpgradeStatusReadOnlyFields(t *testing.T) {
+	s := Schema(context.Background())
+
+	agentVersionAttr, ok := s.Attributes["agent_version"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("agent_version attribute has unexpected type %T", s.Attributes["agent_version"])
+	}
+	if !agentVersionAttr.IsComputed() {
+		t.Fatalf("agent_version should be computed")
+	}
+	if agentVersionAttr.IsOptional() {
+		t.Fatalf("agent_version should not be optional")
+	}
+
+	onboardAttr, ok := s.Attributes["onboard_manifest_version"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("onboard_manifest_version attribute has unexpected type %T", s.Attributes["onboard_manifest_version"])
+	}
+	if !onboardAttr.IsComputed() {
+		t.Fatalf("onboard_manifest_version should be computed")
+	}
+	if onboardAttr.IsOptional() {
+		t.Fatalf("onboard_manifest_version should not be optional")
+	}
+
+	needUpgradeAttr, ok := s.Attributes["need_upgrade"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("need_upgrade attribute has unexpected type %T", s.Attributes["need_upgrade"])
+	}
+	if !needUpgradeAttr.IsComputed() {
+		t.Fatalf("need_upgrade should be computed")
+	}
+	if needUpgradeAttr.IsOptional() {
+		t.Fatalf("need_upgrade should not be optional")
+	}
+}
+
+func TestNeedUpgradeUsesStateForUnknownBoolPlanModifier(t *testing.T) {
+	attr, ok := Schema(context.Background()).Attributes["need_upgrade"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("need_upgrade attribute has unexpected type %T", Schema(context.Background()).Attributes["need_upgrade"])
+	}
+	if len(attr.BoolPlanModifiers()) == 0 {
+		t.Fatalf("need_upgrade should have a bool plan modifier")
+	}
+}
+
+func TestUseStateForUnknownBoolPreservesPriorState(t *testing.T) {
+	resp := &schemaplanmodifier.BoolResponse{
+		PlanValue: types.BoolUnknown(),
+	}
+
+	useStateForUnknownBool().PlanModifyBool(context.Background(), schemaplanmodifier.BoolRequest{
+		State: tfsdk.State{
+			Raw: tftypes.NewValue(
+				tftypes.Object{
+					AttributeTypes: map[string]tftypes.Type{
+						"attr": tftypes.Bool,
+					},
+				},
+				map[string]tftypes.Value{
+					"attr": tftypes.NewValue(tftypes.Bool, true),
+				},
+			),
+		},
+		ConfigValue: types.BoolNull(),
+		StateValue:  types.BoolValue(true),
+		PlanValue:   types.BoolUnknown(),
+	}, resp)
+
+	if resp.PlanValue != types.BoolValue(true) {
+		t.Fatalf("PlanValue = %#v, want prior state true", resp.PlanValue)
+	}
+}
+
+func TestApplyClusterSummaryStatusPopulatesUpgradeFields(t *testing.T) {
+	data := &ClusterModel{}
+
+	applyClusterSummaryStatus(data, &api.ClusterCostsSummary{
+		AgentVersion:           "v1.18.6",
+		OnboardManifestVersion: "v1.18.7",
+		NeedUpgrade:            true,
+	})
+
+	if data.AgentVersion != types.StringValue("v1.18.6") {
+		t.Fatalf("AgentVersion = %#v, want v1.18.6", data.AgentVersion)
+	}
+	if data.OnboardManifestVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("OnboardManifestVersion = %#v, want v1.18.7", data.OnboardManifestVersion)
+	}
+	if data.NeedUpgrade != types.BoolValue(true) {
+		t.Fatalf("NeedUpgrade = %#v, want true", data.NeedUpgrade)
+	}
+}
+
+func TestRefreshClusterSummaryStatusOverwritesStaleUpgradeFields(t *testing.T) {
+	data := &ClusterModel{}
+	applyClusterSummaryStatus(data, &api.ClusterCostsSummary{
+		AgentVersion:           "v1.18.6",
+		OnboardManifestVersion: "v1.18.7",
+		NeedUpgrade:            true,
+	})
+
+	client := &fakeClusterSummaryClient{
+		summaries: []*api.ClusterCostsSummary{
+			{
+				AgentVersion:           "v1.18.7",
+				OnboardManifestVersion: "v1.18.7",
+				NeedUpgrade:            false,
+			},
+		},
+	}
+
+	if err := refreshClusterSummaryStatus(data, client, "cluster-1"); err != nil {
+		t.Fatalf("refreshClusterSummaryStatus() error = %v", err)
+	}
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+	if data.AgentVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("AgentVersion = %#v, want v1.18.7", data.AgentVersion)
+	}
+	if data.OnboardManifestVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("OnboardManifestVersion = %#v, want v1.18.7", data.OnboardManifestVersion)
+	}
+	if data.NeedUpgrade != types.BoolValue(false) {
+		t.Fatalf("NeedUpgrade = %#v, want false", data.NeedUpgrade)
+	}
+}
+
+func TestRunUpgradeActionAndRefreshClusterSummaryRefreshesAfterUpgrade(t *testing.T) {
+	calls := make([]string, 0, 2)
+	data := &ClusterModel{}
+	client := &fakeClusterSummaryClient{
+		summary: &api.ClusterCostsSummary{
+			AgentVersion:           "v1.18.6",
+			OnboardManifestVersion: "v1.18.7",
+			NeedUpgrade:            true,
+		},
+		onGetCluster: func() {
+			calls = append(calls, "refresh")
+		},
+	}
+
+	applyClusterSummaryStatus(data, client.summary)
+
+	upgradeAction := func() error {
+		calls = append(calls, "upgrade")
+		client.summary = &api.ClusterCostsSummary{
+			AgentVersion:           "v1.18.7",
+			OnboardManifestVersion: "v1.18.7",
+			NeedUpgrade:            false,
+		}
+		return nil
+	}
+
+	if err := runUpgradeActionAndRefreshClusterSummary(data, client, "cluster-1", upgradeAction); err != nil {
+		t.Fatalf("runUpgradeActionAndRefreshClusterSummary() error = %v", err)
+	}
+
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+	if len(calls) != 2 || calls[0] != "upgrade" || calls[1] != "refresh" {
+		t.Fatalf("call order = %v, want [upgrade refresh]", calls)
+	}
+	if data.AgentVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("AgentVersion = %#v, want v1.18.7", data.AgentVersion)
+	}
+	if data.OnboardManifestVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("OnboardManifestVersion = %#v, want v1.18.7", data.OnboardManifestVersion)
+	}
+	if data.NeedUpgrade != types.BoolValue(false) {
+		t.Fatalf("NeedUpgrade = %#v, want false", data.NeedUpgrade)
+	}
+}
+
+func TestModifyPlanRefreshesUpgradeStatusFromRemoteSummary(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterSummaryClient{
+		summary: &api.ClusterCostsSummary{
+			AgentVersion:           "v1.18.6",
+			OnboardManifestVersion: "v1.18.7",
+			NeedUpgrade:            true,
+		},
+	}
+
+	plan := tfsdk.Plan{Schema: Schema(ctx)}
+	planDiags := plan.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringUnknown(),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringNull(),
+		OnboardManifestVersion: types.StringNull(),
+		NeedUpgrade:            types.BoolNull(),
+	})
+	if planDiags.HasError() {
+		t.Fatalf("plan.Set() diagnostics = %v", planDiags)
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	stateDiags := state.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringValue("server-imported-id"),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringValue("123456789012"),
+		OnboardManifestVersion: types.StringValue("old-manifest"),
+		NeedUpgrade:            types.BoolValue(false),
+	})
+	if stateDiags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", stateDiags)
+	}
+
+	resp := &resource.ModifyPlanResponse{
+		Plan: tfsdk.Plan{Schema: Schema(ctx)},
+	}
+	(&Cluster{client: client}).ModifyPlan(ctx, resource.ModifyPlanRequest{
+		Plan:  plan,
+		State: state,
+	}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("ModifyPlan() diagnostics = %v", resp.Diagnostics)
+	}
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+
+	var got ClusterModel
+	getDiags := resp.Plan.Get(ctx, &got)
+	if getDiags.HasError() {
+		t.Fatalf("resp.Plan.Get() diagnostics = %v", getDiags)
+	}
+	if got.OnboardManifestVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("OnboardManifestVersion = %#v, want v1.18.7", got.OnboardManifestVersion)
+	}
+	if got.NeedUpgrade != types.BoolValue(true) {
+		t.Fatalf("NeedUpgrade = %#v, want true", got.NeedUpgrade)
+	}
+}
+
+func TestModifyPlanLeavesUpgradeStatusUnknownWhenUpgradeWillRun(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterSummaryClient{
+		summary: &api.ClusterCostsSummary{
+			AgentVersion:           "v1.20.0",
+			OnboardManifestVersion: "v1.20.1",
+			NeedUpgrade:            true,
+		},
+	}
+
+	plan := tfsdk.Plan{Schema: Schema(ctx)}
+	planDiags := plan.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringUnknown(),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringNull(),
+		EnableUpgrade:          types.BoolValue(true),
+		AgentVersion:           types.StringValue("v1.20.0"),
+		OnboardManifestVersion: types.StringValue("v1.20.1"),
+		NeedUpgrade:            types.BoolValue(true),
+	})
+	if planDiags.HasError() {
+		t.Fatalf("plan.Set() diagnostics = %v", planDiags)
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	stateDiags := state.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringValue("server-imported-id"),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringValue("123456789012"),
+		EnableUpgrade:          types.BoolValue(true),
+		AgentVersion:           types.StringValue("v1.20.0"),
+		OnboardManifestVersion: types.StringValue("v1.20.1"),
+		NeedUpgrade:            types.BoolValue(true),
+	})
+	if stateDiags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", stateDiags)
+	}
+
+	resp := &resource.ModifyPlanResponse{
+		Plan: tfsdk.Plan{Schema: Schema(ctx)},
+	}
+	(&Cluster{client: client}).ModifyPlan(ctx, resource.ModifyPlanRequest{
+		Plan:  plan,
+		State: state,
+	}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("ModifyPlan() diagnostics = %v", resp.Diagnostics)
+	}
+
+	var got ClusterModel
+	getDiags := resp.Plan.Get(ctx, &got)
+	if getDiags.HasError() {
+		t.Fatalf("resp.Plan.Get() diagnostics = %v", getDiags)
+	}
+	if !got.AgentVersion.IsUnknown() {
+		t.Fatalf("AgentVersion = %#v, want unknown", got.AgentVersion)
+	}
+	if !got.OnboardManifestVersion.IsUnknown() {
+		t.Fatalf("OnboardManifestVersion = %#v, want unknown", got.OnboardManifestVersion)
+	}
+	if !got.NeedUpgrade.IsUnknown() {
+		t.Fatalf("NeedUpgrade = %#v, want unknown", got.NeedUpgrade)
+	}
+}
+
+func TestModifyPlanSkipsRefreshWhenClusterNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterSummaryClient{
+		err: cloudpilotaiclient.ErrNotFound,
+	}
+
+	plan := tfsdk.Plan{Schema: Schema(ctx)}
+	planDiags := plan.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringUnknown(),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringNull(),
+		AgentVersion:           types.StringValue("planned-agent"),
+		OnboardManifestVersion: types.StringValue("planned-manifest"),
+		NeedUpgrade:            types.BoolValue(true),
+	})
+	if planDiags.HasError() {
+		t.Fatalf("plan.Set() diagnostics = %v", planDiags)
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	stateDiags := state.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringValue("server-imported-id"),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringValue("123456789012"),
+		AgentVersion:           types.StringValue("state-agent"),
+		OnboardManifestVersion: types.StringValue("state-manifest"),
+		NeedUpgrade:            types.BoolValue(false),
+	})
+	if stateDiags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", stateDiags)
+	}
+
+	resp := &resource.ModifyPlanResponse{
+		Plan: plan,
+	}
+	(&Cluster{client: client}).ModifyPlan(ctx, resource.ModifyPlanRequest{
+		Plan:  plan,
+		State: state,
+	}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("ModifyPlan() diagnostics = %v", resp.Diagnostics)
+	}
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+
+	var got ClusterModel
+	getDiags := resp.Plan.Get(ctx, &got)
+	if getDiags.HasError() {
+		t.Fatalf("resp.Plan.Get() diagnostics = %v", getDiags)
+	}
+	if got.AgentVersion != types.StringValue("planned-agent") {
+		t.Fatalf("AgentVersion = %#v, want planned-agent", got.AgentVersion)
+	}
+	if got.OnboardManifestVersion != types.StringValue("planned-manifest") {
+		t.Fatalf("OnboardManifestVersion = %#v, want planned-manifest", got.OnboardManifestVersion)
+	}
+	if got.NeedUpgrade != types.BoolValue(true) {
+		t.Fatalf("NeedUpgrade = %#v, want true", got.NeedUpgrade)
+	}
+}
+
+func TestReadRefreshesUpgradeStatusFromRemoteSummary(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeReadClusterClient{
+		summary: &api.ClusterCostsSummary{
+			AgentVersion:           "v1.18.6",
+			OnboardManifestVersion: "v1.18.7",
+			NeedUpgrade:            true,
+		},
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringValue("cluster-1"),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringValue("123456789012"),
+		Kubeconfig:             types.StringValue("/tmp/kubeconfig"),
+		AgentVersion:           types.StringValue("old-agent"),
+		OnboardManifestVersion: types.StringValue("old-manifest"),
+		NeedUpgrade:            types.BoolValue(false),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	resp := &resource.ReadResponse{
+		State: tfsdk.State{Schema: Schema(ctx)},
+	}
+	(&Cluster{client: client}).Read(ctx, resource.ReadRequest{State: state}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read() diagnostics = %v", resp.Diagnostics)
+	}
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+
+	var got ClusterModel
+	getDiags := resp.State.Get(ctx, &got)
+	if getDiags.HasError() {
+		t.Fatalf("resp.State.Get() diagnostics = %v", getDiags)
+	}
+	if got.AgentVersion != types.StringValue("v1.18.6") {
+		t.Fatalf("AgentVersion = %#v, want v1.18.6", got.AgentVersion)
+	}
+	if got.OnboardManifestVersion != types.StringValue("v1.18.7") {
+		t.Fatalf("OnboardManifestVersion = %#v, want v1.18.7", got.OnboardManifestVersion)
+	}
+	if got.NeedUpgrade != types.BoolValue(true) {
+		t.Fatalf("NeedUpgrade = %#v, want true", got.NeedUpgrade)
+	}
+}
+
+func TestReadKeepsStateWhenClusterNotFound(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeReadClusterClient{
+		getClusterErr: cloudpilotaiclient.ErrNotFound,
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &ClusterModel{
+		ClusterID:              types.StringValue("cluster-1"),
+		ClusterName:            types.StringValue("demo"),
+		Region:                 types.StringValue("us-east-2"),
+		AccountID:              types.StringValue("123456789012"),
+		Kubeconfig:             types.StringValue("/tmp/kubeconfig"),
+		AgentVersion:           types.StringValue("state-agent"),
+		OnboardManifestVersion: types.StringValue("state-manifest"),
+		NeedUpgrade:            types.BoolValue(true),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	resp := &resource.ReadResponse{
+		State: tfsdk.State{Schema: Schema(ctx)},
+	}
+	(&Cluster{client: client}).Read(ctx, resource.ReadRequest{State: state}, resp)
+
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Read() diagnostics = %v", resp.Diagnostics)
+	}
+	if client.getClusterCalls != 1 {
+		t.Fatalf("GetCluster calls = %d, want 1", client.getClusterCalls)
+	}
+
+	var got ClusterModel
+	getDiags := resp.State.Get(ctx, &got)
+	if getDiags.HasError() {
+		t.Fatalf("resp.State.Get() diagnostics = %v", getDiags)
+	}
+	if got.ClusterID != types.StringValue("cluster-1") {
+		t.Fatalf("ClusterID = %#v, want cluster-1", got.ClusterID)
+	}
+	if got.AgentVersion != types.StringValue("state-agent") {
+		t.Fatalf("AgentVersion = %#v, want state-agent", got.AgentVersion)
+	}
+	if got.OnboardManifestVersion != types.StringValue("state-manifest") {
+		t.Fatalf("OnboardManifestVersion = %#v, want state-manifest", got.OnboardManifestVersion)
+	}
+	if got.NeedUpgrade != types.BoolValue(true) {
+		t.Fatalf("NeedUpgrade = %#v, want true", got.NeedUpgrade)
+	}
+}
+
+func TestUpgradeStatusSchemaModifiersPreservePriorState(t *testing.T) {
+	s := Schema(context.Background())
+
+	needUpgradeAttr, ok := s.Attributes["need_upgrade"].(schema.BoolAttribute)
+	if !ok {
+		t.Fatalf("need_upgrade attribute has unexpected type %T", s.Attributes["need_upgrade"])
+	}
+	boolModifiers := needUpgradeAttr.BoolPlanModifiers()
+	if len(boolModifiers) == 0 {
+		t.Fatalf("need_upgrade should have a bool plan modifier")
+	}
+
+	boolResp := &schemaplanmodifier.BoolResponse{
+		PlanValue: types.BoolUnknown(),
+	}
+	boolModifiers[0].PlanModifyBool(context.Background(), schemaplanmodifier.BoolRequest{
+		State: tfsdk.State{
+			Raw: tftypes.NewValue(
+				tftypes.Object{
+					AttributeTypes: map[string]tftypes.Type{
+						"need_upgrade": tftypes.Bool,
+					},
+				},
+				map[string]tftypes.Value{
+					"need_upgrade": tftypes.NewValue(tftypes.Bool, true),
+				},
+			),
+		},
+		ConfigValue: types.BoolNull(),
+		StateValue:  types.BoolValue(true),
+		PlanValue:   types.BoolUnknown(),
+	}, boolResp)
+	if boolResp.PlanValue != types.BoolValue(true) {
+		t.Fatalf("need_upgrade PlanValue = %#v, want prior state true", boolResp.PlanValue)
+	}
+
+	stringTests := []struct {
+		name  string
+		value string
+	}{
+		{name: "agent_version", value: "v1.2.3"},
+		{name: "onboard_manifest_version", value: "manifest-2026-06-15"},
+	}
+
+	for _, tt := range stringTests {
+		t.Run(tt.name, func(t *testing.T) {
+			attr, ok := s.Attributes[tt.name].(schema.StringAttribute)
+			if !ok {
+				t.Fatalf("%s attribute has unexpected type %T", tt.name, s.Attributes[tt.name])
+			}
+			modifiers := attr.StringPlanModifiers()
+			if len(modifiers) == 0 {
+				t.Fatalf("%s should have a string plan modifier", tt.name)
+			}
+
+			resp := &schemaplanmodifier.StringResponse{
+				PlanValue: types.StringUnknown(),
+			}
+			modifiers[0].PlanModifyString(context.Background(), schemaplanmodifier.StringRequest{
+				State: tfsdk.State{
+					Raw: tftypes.NewValue(
+						tftypes.Object{
+							AttributeTypes: map[string]tftypes.Type{
+								tt.name: tftypes.String,
+							},
+						},
+						map[string]tftypes.Value{
+							tt.name: tftypes.NewValue(tftypes.String, tt.value),
+						},
+					),
+				},
+				ConfigValue: types.StringNull(),
+				StateValue:  types.StringValue(tt.value),
+				PlanValue:   types.StringUnknown(),
+			}, resp)
+
+			if resp.PlanValue != types.StringValue(tt.value) {
+				t.Fatalf("%s PlanValue = %#v, want prior state %q", tt.name, resp.PlanValue, tt.value)
+			}
+		})
 	}
 }
 
@@ -721,6 +1377,31 @@ func TestHydratePostWriteStateRefreshesConfiguredClusterSetting(t *testing.T) {
 	}
 	if value.PreRunCommand.IsUnknown() || value.PostRunCommand.IsUnknown() {
 		t.Fatalf("cluster setting string siblings should not remain unknown")
+	}
+}
+
+func TestSyncClusterSettingSendsEmptyPreAndPostCommands(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterSettingUpdateClient{}
+	data := ClusterModel{
+		ClusterSetting: customfield.NewObjectMust(ctx, &ClusterSettingModel{
+			PreRunCommand:  types.StringValue(""),
+			PostRunCommand: types.StringValue(""),
+		}),
+	}
+
+	if err := (&Cluster{client: client}).syncClusterSetting(ctx, &data, "cluster-1"); err != nil {
+		t.Fatalf("syncClusterSetting() error = %v", err)
+	}
+
+	if client.setting == nil {
+		t.Fatalf("UpdateClusterSetting was not called")
+	}
+	if client.setting.PreRunCommand == nil || *client.setting.PreRunCommand != "" {
+		t.Fatalf("PreRunCommand = %#v, want empty string pointer", client.setting.PreRunCommand)
+	}
+	if client.setting.PostRunCommand == nil || *client.setting.PostRunCommand != "" {
+		t.Fatalf("PostRunCommand = %#v, want empty string pointer", client.setting.PostRunCommand)
 	}
 }
 

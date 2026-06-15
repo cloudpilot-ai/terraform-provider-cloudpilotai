@@ -28,6 +28,14 @@ type workloadConfigurationClient interface {
 	UpdateWorkloadRebalanceConfiguration(clusterID string, workload api.Workload) error
 }
 
+type agentScriptClient interface {
+	GetAgentSH(disableWorkloadUploading bool) (string, error)
+}
+
+type rebalanceScriptClient interface {
+	GetRebalanceSH(clusterID string) (string, error)
+}
+
 type clusterUpgradeClient interface {
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
 	GetClusterUpgradeSH(clusterID string) (string, error)
@@ -35,23 +43,40 @@ type clusterUpgradeClient interface {
 
 func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
 ) error {
+	return installCloudpilotAIAgentComponent(ctx, client, kubeconfigPath, disableWorkloadUploading, awsEnv, ExecuteSH)
+}
+
+func installCloudpilotAIAgentComponent(ctx context.Context, client agentScriptClient, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
+	execute func(context.Context, string, map[string]string) error,
+) error {
 	agentSH, err := client.GetAgentSH(disableWorkloadUploading)
 	if err != nil {
 		return err
 	}
 
-	return ExecuteSH(ctx, agentSH, buildShellEnv(kubeconfigPath, nil, awsEnv))
+	return execute(ctx, agentSH, buildShellEnv(kubeconfigPath, nil, awsEnv))
 }
 
 func InstallCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilotaiclient.Interface,
 	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+) error {
+	return installCloudpilotAIRebalanceComponent(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
+}
+
+func installCloudpilotAIRebalanceComponent(ctx context.Context, client rebalanceScriptClient,
+	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+	execute func(context.Context, string, map[string]string) error,
 ) error {
 	rebalanceSH, err := client.GetRebalanceSH(clusterUID)
 	if err != nil {
 		return err
 	}
 
-	return ExecuteSH(ctx, rebalanceSH, buildShellEnv(kubeconfigPath, map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}, awsEnv))
+	extra := map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}
+	env := buildShellEnv(kubeconfigPath, extra, awsEnv)
+	rebalanceSH = NormalizeManagedScript(rebalanceSH, NewManagedScriptOverrideConfig(extra, awsEnv))
+
+	return execute(ctx, rebalanceSH, env)
 }
 
 func UpgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
@@ -77,7 +102,9 @@ func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUp
 		return false, err
 	}
 
-	env := buildShellEnv(kubeconfigPath, map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}, awsEnv)
+	extra := map[string]string{"CUSTOM_NODE_ROLE": customNodeRole}
+	env := buildShellEnv(kubeconfigPath, extra, awsEnv)
+	upgradeSH = NormalizeManagedScript(upgradeSH, NewManagedScriptOverrideConfig(extra, awsEnv))
 	if err := execute(ctx, upgradeSH, env); err != nil {
 		return false, err
 	}

@@ -10,6 +10,10 @@ func useStateForUnknownInt64() planmodifier.Int64 {
 	return useStateForUnknownInt64Modifier{}
 }
 
+func useStateForUnknownBool() planmodifier.Bool {
+	return useStateForUnknownBoolModifier{}
+}
+
 func useStateForUnknownString() planmodifier.String {
 	return useStateForUnknownStringModifier{}
 }
@@ -19,6 +23,7 @@ func useStateForUnknownNonNullString() planmodifier.String {
 }
 
 type useStateForUnknownInt64Modifier struct{}
+type useStateForUnknownBoolModifier struct{}
 type useStateForUnknownStringModifier struct{}
 type useStateForUnknownNonNullStringModifier struct{}
 
@@ -27,6 +32,14 @@ func (m useStateForUnknownInt64Modifier) Description(_ context.Context) string {
 }
 
 func (m useStateForUnknownInt64Modifier) MarkdownDescription(_ context.Context) string {
+	return "Preserve the prior state value when the planned value is unknown."
+}
+
+func (m useStateForUnknownBoolModifier) Description(_ context.Context) string {
+	return "Preserve the prior state value when the planned value is unknown."
+}
+
+func (m useStateForUnknownBoolModifier) MarkdownDescription(_ context.Context) string {
 	return "Preserve the prior state value when the planned value is unknown."
 }
 
@@ -47,6 +60,22 @@ func (m useStateForUnknownNonNullStringModifier) MarkdownDescription(_ context.C
 }
 
 func (m useStateForUnknownInt64Modifier) PlanModifyInt64(_ context.Context, req planmodifier.Int64Request, resp *planmodifier.Int64Response) {
+	if req.State.Raw.IsNull() {
+		return
+	}
+
+	if !req.PlanValue.IsUnknown() {
+		return
+	}
+
+	if req.ConfigValue.IsUnknown() {
+		return
+	}
+
+	resp.PlanValue = req.StateValue
+}
+
+func (m useStateForUnknownBoolModifier) PlanModifyBool(_ context.Context, req planmodifier.BoolRequest, resp *planmodifier.BoolResponse) {
 	if req.State.Raw.IsNull() {
 		return
 	}

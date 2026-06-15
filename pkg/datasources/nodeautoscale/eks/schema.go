@@ -25,7 +25,8 @@ func Schema(_ context.Context) schema.Schema {
 			},
 
 			"cluster_id": schema.StringAttribute{
-				Description: "CloudPilot AI cluster identifier.",
+				Description: "CloudPilot AI cluster identifier. When provided, this override is used directly and the data source does not derive the default ID from cluster_name, region, and account_id.",
+				Optional:    true,
 				Computed:    true,
 			},
 			"cloud_provider": schema.StringAttribute{
@@ -38,6 +39,14 @@ func Schema(_ context.Context) schema.Schema {
 			},
 			"agent_version": schema.StringAttribute{
 				Description: "Version of the CloudPilot AI agent installed on the cluster.",
+				Computed:    true,
+			},
+			"onboard_manifest_version": schema.StringAttribute{
+				Description: "Latest CloudPilot onboard manifest version reported by the service.",
+				Computed:    true,
+			},
+			"need_upgrade": schema.BoolAttribute{
+				Description: "Whether CloudPilot currently reports that this cluster needs an upgrade.",
 				Computed:    true,
 			},
 			"rebalance_enable": schema.BoolAttribute{
