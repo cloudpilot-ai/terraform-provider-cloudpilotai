@@ -237,6 +237,42 @@ func TestSchemaExposesAWSAssumeRoleNestedAttribute(t *testing.T) {
 	}
 }
 
+func TestTemplateAttributesAreDeprecated(t *testing.T) {
+	s := Schema(context.Background())
+
+	for _, name := range []string{"workload_templates", "nodeclass_templates", "nodepool_templates"} {
+		attr, ok := s.Attributes[name].(schema.ListNestedAttribute)
+		if !ok {
+			t.Fatalf("%s attribute has unexpected type %T", name, s.Attributes[name])
+		}
+		if attr.DeprecationMessage == "" {
+			t.Fatalf("%s should be deprecated", name)
+		}
+	}
+}
+
+func TestTemplateNameFieldsAreDeprecated(t *testing.T) {
+	s := Schema(context.Background())
+
+	workloadsAttr := s.Attributes["workloads"].(schema.ListNestedAttribute)
+	workloadTemplateName := workloadsAttr.NestedObject.Attributes["template_name"].(schema.StringAttribute)
+	if workloadTemplateName.DeprecationMessage == "" {
+		t.Fatalf("workloads.template_name should be deprecated")
+	}
+
+	nodeclassesAttr := s.Attributes["nodeclasses"].(schema.ListNestedAttribute)
+	nodeclassTemplateName := nodeclassesAttr.NestedObject.Attributes["template_name"].(schema.StringAttribute)
+	if nodeclassTemplateName.DeprecationMessage == "" {
+		t.Fatalf("nodeclasses.template_name should be deprecated")
+	}
+
+	nodepoolsAttr := s.Attributes["nodepools"].(schema.ListNestedAttribute)
+	nodepoolTemplateName := nodepoolsAttr.NestedObject.Attributes["template_name"].(schema.StringAttribute)
+	if nodepoolTemplateName.DeprecationMessage == "" {
+		t.Fatalf("nodepools.template_name should be deprecated")
+	}
+}
+
 func TestExecutionAuthConfigFromClusterModelReadsAssumeRoleAndProfile(t *testing.T) {
 	ctx := context.Background()
 	data := ClusterModel{

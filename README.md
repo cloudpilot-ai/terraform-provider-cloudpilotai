@@ -13,6 +13,8 @@ Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation 
 - **Workload cost optimization** (rebalance, spot-friendly, min non-spot replicas)
 - **Seamless AWS CLI and kubeconfig integration**
 
+For reusable node/workload template composition on EKS, prefer the [`cloudpilot-ai/eks/cloudpilotai`](https://registry.terraform.io/modules/cloudpilot-ai/eks/cloudpilotai/latest) module. The provider's own `*_templates` and `template_name` fields remain available for compatibility today, but they are deprecated and planned for removal in a future major provider release.
+
 ---
 
 ## Getting Started
@@ -35,7 +37,7 @@ See the [`examples/eks/`](examples/eks/) directory for EKS configurations, order
 | Example | Description | Use Case |
 |---------|-------------|----------|
 | [`0_minimal`](examples/eks/0_minimal/) | Minimal setup with Node Autoscaler and Workload Autoscaler | Quick start: installs both autoscalers, enables optimization for `cloudpilot` namespace, no rebalance |
-| [`1_details`](examples/eks/1_details/) | Full-featured reference with all options | Production setup with workload templates, nodeclasses, nodepools, Workload Autoscaler, and data sources |
+| [`1_details`](examples/eks/1_details/) | Full-featured reference with all options | Production setup covering the full provider surface, including deprecated provider-side template inputs, Workload Autoscaler, and data sources |
 | [`2_read-only_access`](examples/eks/2_read-only_access/) | Agent-only installation | Testing or monitoring without any optimization changes |
 | [`3_basic_rebalance`](examples/eks/3_basic_rebalance/) | Basic rebalance configuration | Simple cost optimization with rebalancing |
 | [`4_nodeclass_nodepool_rebalance`](examples/eks/4_nodeclass_nodepool_rebalance/) | Custom nodeclass and nodepool | Advanced node management with instance filtering and disruption controls |

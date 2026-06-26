@@ -9,6 +9,8 @@ description: |-
 
 Manages an EKS cluster registered with CloudPilot AI. This resource handles the full lifecycle: installing the CloudPilot AI agent, configuring rebalance settings, and managing node pools and node classes.
 
+~> **Note:** Provider-side `workload_templates`, `nodeclass_templates`, `nodepool_templates`, and per-object `template_name` fields are deprecated. For reusable template composition, prefer the [`cloudpilot-ai/eks/cloudpilotai`](https://registry.terraform.io/modules/cloudpilot-ai/eks/cloudpilotai/latest) module, which renders shared config before it reaches the provider.
+
 ## Example Usage
 
 ```terraform
@@ -146,14 +148,14 @@ When the Terraform provider runs cluster-scoped rebalance or upgrade scripts its
 - `enable_rebalance` (Boolean) Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
 - `enable_upgrade` (Boolean) Enable upgrading CloudPilot AI components through the cluster upgrade script. The provider checks whether the cluster needs upgrade first, and only runs the upgrade when required.
 - `kubeconfig` (String) Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates a kubeconfig that includes the required exec auth for aws_profile and aws_assume_role.
-- `nodeclass_templates` (Attributes List) NodeClass templates configuration (see [below for nested schema](#nestedatt--nodeclass_templates))
+- `nodeclass_templates` (Attributes List, Deprecated) NodeClass templates configuration (see [below for nested schema](#nestedatt--nodeclass_templates))
 - `nodeclasses` (Attributes List) NodeClasses configuration (no change if not set) (see [below for nested schema](#nestedatt--nodeclasses))
-- `nodepool_templates` (Attributes List) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepool_templates))
+- `nodepool_templates` (Attributes List, Deprecated) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepool_templates))
 - `nodepools` (Attributes List) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepools))
 - `only_install_agent` (Boolean) Only install the CloudPilot AI agent without additional configuration
 - `restore_node_number` (Number) Number of nodes to provision from the original node group when destroying the CloudPilot AI resource. Set to 0 (the default) to leave the cluster in its current optimized state without restoring original nodes. Set to a positive integer to restore that many nodes before uninstalling. Only effective when `skip_restore` is false.
 - `skip_restore` (Boolean) When set to true, skip the node restore step during resource destruction. The cluster will be uninstalled without restoring original nodes first. Takes precedence over `restore_node_number`.
-- `workload_templates` (Attributes List) Workload templates configuration (no change if not set) (see [below for nested schema](#nestedatt--workload_templates))
+- `workload_templates` (Attributes List, Deprecated) Workload templates configuration (no change if not set) (see [below for nested schema](#nestedatt--workload_templates))
 - `workloads` (Attributes List) Workloads configuration (no change if not set) (see [below for nested schema](#nestedatt--workloads))
 
 ### Read-Only
@@ -192,7 +194,7 @@ Optional:
 
 Required:
 
-- `template_name` (String) NodeClass Template Name
+- `template_name` (String, Deprecated) NodeClass Template Name
 
 Optional:
 
@@ -268,7 +270,7 @@ Optional:
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--subnet_selector_terms))
 - `system_disk_size_gib` (Number) Each provisioned node's system storage size. Do not combine with block_device_mappings on the same NodeClass.
-- `template_name` (String) NodeVlass Template Name
+- `template_name` (String, Deprecated) NodeVlass Template Name
 - `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData.
 
 <a id="nestedatt--nodeclasses--block_device_mappings"></a>
@@ -316,7 +318,7 @@ Optional:
 
 Required:
 
-- `template_name` (String) NodePool Template Name
+- `template_name` (String, Deprecated) NodePool Template Name
 
 Optional:
 
@@ -378,7 +380,7 @@ Optional:
 - `origin_nodepool_json` (String) The origin nodepool json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.
 - `provision_priority` (Number) The priority level of this nodepool. A larger number means a higher priority.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepools--taints))
-- `template_name` (String) NodePool Template Name
+- `template_name` (String, Deprecated) NodePool Template Name
 - `zone` (List of String) Each provisioned node will located in the configured zone, formatted as us-west-1a,us-west-1b.
 
 <a id="nestedatt--nodepools--taints"></a>
@@ -400,7 +402,7 @@ Optional:
 
 Required:
 
-- `template_name` (String) Workload Template Name
+- `template_name` (String, Deprecated) Workload Template Name
 
 Optional:
 
@@ -423,7 +425,7 @@ Optional:
 - `min_non_spot_replicas` (Number) Min non spot replicas
 - `rebalance_able` (Boolean) Rebalance able
 - `spot_friendly` (Boolean) Spot friendly
-- `template_name` (String) Workload Template Name
+- `template_name` (String, Deprecated) Workload Template Name
 
 ## Import
 

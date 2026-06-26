@@ -162,14 +162,16 @@ func Schema(ctx context.Context) schema.Schema {
 			"workloads":          commonschemas.WorkloadSchema(ctx),
 
 			"nodeclass_templates": schema.ListNestedAttribute{
-				Description: "NodeClass templates configuration",
-				Optional:    true,
-				CustomType:  customfield.NewNestedObjectListType[api.EC2NodeClassTemplateModel](ctx),
+				Description:        "NodeClass templates configuration",
+				Optional:           true,
+				DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
+				CustomType:         customfield.NewNestedObjectListType[api.EC2NodeClassTemplateModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"template_name": schema.StringAttribute{
-							Description: "NodeClass Template Name",
-							Required:    true,
+							Description:        "NodeClass Template Name",
+							Required:           true,
+							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 					}, nodeClassTemplateSchema(ctx)),
 				},
@@ -187,8 +189,9 @@ func Schema(ctx context.Context) schema.Schema {
 						},
 
 						"template_name": schema.StringAttribute{
-							Description: "NodeVlass Template Name",
-							Optional:    true,
+							Description:        "NodeVlass Template Name",
+							Optional:           true,
+							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 
 						"origin_nodeclass_json": schema.StringAttribute{
@@ -200,14 +203,16 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"nodepool_templates": schema.ListNestedAttribute{
-				Description: "NodePools configuration (no change if not set)",
-				Optional:    true,
-				CustomType:  customfield.NewNestedObjectListType[api.EC2NodePoolTemplateModel](ctx),
+				Description:        "NodePools configuration (no change if not set)",
+				Optional:           true,
+				DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
+				CustomType:         customfield.NewNestedObjectListType[api.EC2NodePoolTemplateModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"template_name": schema.StringAttribute{
-							Description: "NodePool Template Name",
-							Required:    true,
+							Description:        "NodePool Template Name",
+							Required:           true,
+							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 					}, nodePoolTemplateSchema(ctx)),
 				},
@@ -225,8 +230,9 @@ func Schema(ctx context.Context) schema.Schema {
 						},
 
 						"template_name": schema.StringAttribute{
-							Description: "NodePool Template Name",
-							Optional:    true,
+							Description:        "NodePool Template Name",
+							Optional:           true,
+							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 
 						"origin_nodepool_json": schema.StringAttribute{
