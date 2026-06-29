@@ -52,6 +52,11 @@ resource "cloudpilotai_eks_cluster" "example" {
   # Optional. Default is false.
   enable_upgrade = false
 
+  # Deprecated compatibility note:
+  # Provider-side template composition remains available for existing configs,
+  # but new reusable-template setups should prefer the
+  # cloudpilot-ai/eks/cloudpilotai module.
+
   # Define custom workload templates for different application types
   # Optional
   workload_templates = [

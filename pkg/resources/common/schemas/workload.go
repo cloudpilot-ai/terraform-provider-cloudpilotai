@@ -32,8 +32,9 @@ func WorkloadSchema(ctx context.Context) schema.ListNestedAttribute {
 				},
 
 				"template_name": schema.StringAttribute{
-					Description: "Workload Template Name",
-					Optional:    true,
+					Description:        "Workload Template Name",
+					Optional:           true,
+					DeprecationMessage: ProviderSideTemplateDeprecationMessage,
 				},
 			}, workloadTemplateSchema()),
 		},
@@ -42,14 +43,16 @@ func WorkloadSchema(ctx context.Context) schema.ListNestedAttribute {
 
 func WorkloadTemplateSchema(ctx context.Context) schema.ListNestedAttribute {
 	return schema.ListNestedAttribute{
-		Description: "Workload templates configuration (no change if not set)",
-		Optional:    true,
-		CustomType:  customfield.NewNestedObjectListType[api.WorkloadTemplateModel](ctx),
+		Description:        "Workload templates configuration (no change if not set)",
+		Optional:           true,
+		DeprecationMessage: ProviderSideTemplateDeprecationMessage,
+		CustomType:         customfield.NewNestedObjectListType[api.WorkloadTemplateModel](ctx),
 		NestedObject: schema.NestedAttributeObject{
 			Attributes: lo.Assign(map[string]schema.Attribute{
 				"template_name": schema.StringAttribute{
-					Description: "Workload Template Name",
-					Required:    true,
+					Description:        "Workload Template Name",
+					Required:           true,
+					DeprecationMessage: ProviderSideTemplateDeprecationMessage,
 				},
 			}, workloadTemplateSchema()),
 		},

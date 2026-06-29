@@ -9,6 +9,8 @@ description: |-
 
 Manages an EKS cluster registered with CloudPilot AI. This resource handles the full lifecycle: installing the CloudPilot AI agent, configuring rebalance settings, and managing node pools and node classes.
 
+~> **Note:** Provider-side `workload_templates`, `nodeclass_templates`, `nodepool_templates`, and per-object `template_name` fields are deprecated. For reusable template composition, prefer the [`cloudpilot-ai/eks/cloudpilotai`](https://registry.terraform.io/modules/cloudpilot-ai/eks/cloudpilotai/latest) module, which renders shared config before it reaches the provider.
+
 ## Example Usage
 
 {{ tffile "examples/resources/cloudpilotai_eks_cluster/resource.tf" }}

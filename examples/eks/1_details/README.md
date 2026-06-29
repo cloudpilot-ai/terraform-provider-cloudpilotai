@@ -4,12 +4,15 @@ This example demonstrates a comprehensive configuration of a CloudPilot AI-manag
 
 **By default, only the CloudPilot AI agent is installed without enabling optimization.** You can enable optimization features by modifying the variables in `terraform.tfvars` and re-applying.
 
+> Provider-side `workload_templates`, `nodeclass_templates`, `nodepool_templates`, and `template_name` fields are deprecated.
+> For new reusable-template setups, prefer the [`cloudpilot-ai/eks/cloudpilotai`](https://registry.terraform.io/modules/cloudpilot-ai/eks/cloudpilotai/latest) module, which renders shared config before it reaches the provider.
+
 ## Features
 
 - Full EKS cluster management with CloudPilot AI integration
 - Agent and rebalance component installation and upgrades
-- Custom workload templates and workload-specific settings
-- Custom nodeclass and nodepool templates for reusability
+- Deprecated provider-side workload templates and workload-specific settings
+- Deprecated provider-side nodeclass and nodepool templates for reusability
 - Advanced node provisioning with instance filtering
 - Node restoration configuration for safe uninstall
 - **Workload Autoscaler** deployment with RecommendationPolicy and AutoscalingPolicy configuration
@@ -73,7 +76,7 @@ See `terraform.tfvars.example` for all available optimization variables.
 
 - **Agent Options**: `only_install_agent`, `enable_upgrade`, `disable_workload_uploading`
 - **Rebalance Features**: `enable_rebalance`
-- **Templates**: `workload_templates`, `nodeclass_templates`, `nodepool_templates`
+- **Deprecated Templates**: `workload_templates`, `nodeclass_templates`, `nodepool_templates`
 - **Custom Resources**: `workloads`, `nodeclasses`, `nodepools`
 - **Instance Filtering**: CPU/memory limits, instance families, availability zones
 
