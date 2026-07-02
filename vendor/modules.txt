@@ -95,7 +95,7 @@ github.com/cloudflare/circl/math/mlsbset
 github.com/cloudflare/circl/sign
 github.com/cloudflare/circl/sign/ed25519
 github.com/cloudflare/circl/sign/ed448
-# github.com/cloudpilot-ai/lib v0.0.0-20250523091623-5c8b4f42ff47
+# github.com/cloudpilot-ai/lib v0.0.0-20260616033607-e61ea13c902f
 ## explicit; go 1.23.4
 github.com/cloudpilot-ai/lib/pkg/alibabacloud/awslabs/operatorpkg/status
 github.com/cloudpilot-ai/lib/pkg/alibabacloud/karpenter-provider-alibabacloud/apis
@@ -109,12 +109,11 @@ github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis
 github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1
 github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1beta1
 github.com/cloudpilot-ai/lib/pkg/gcp/awslabs/operatorpkg/status
-github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis
-github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1
-github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1alpha1
-github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1beta1
 github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis
 github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis/v1alpha1
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1beta1
 # github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 ## explicit
 github.com/davecgh/go-spew/spew
@@ -281,10 +280,7 @@ github.com/hashicorp/terraform-plugin-framework/providerserver
 github.com/hashicorp/terraform-plugin-framework/resource
 github.com/hashicorp/terraform-plugin-framework/resource/identityschema
 github.com/hashicorp/terraform-plugin-framework/resource/schema
-github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault
 github.com/hashicorp/terraform-plugin-framework/resource/schema/defaults
-github.com/hashicorp/terraform-plugin-framework/resource/schema/int32default
-github.com/hashicorp/terraform-plugin-framework/resource/schema/int64default
 github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier
 github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault
 github.com/hashicorp/terraform-plugin-framework/schema/validator
