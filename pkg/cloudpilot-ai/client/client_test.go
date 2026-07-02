@@ -140,3 +140,117 @@ func TestClientGetRebalanceConfigurationSpoofsBrowserUserAgent(t *testing.T) {
 		t.Fatalf("GetRebalanceConfiguration() error = %v", err)
 	}
 }
+
+func TestClientGetAgentSHPassesProviderAndClusterName(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/agent/sh" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("provider"); got != "gcp" {
+			t.Fatalf("provider = %q", got)
+		}
+		if got := r.URL.Query().Get("cluster_name"); got != "test-gke" {
+			t.Fatalf("cluster_name = %q", got)
+		}
+		if got := r.URL.Query().Get("disable_workload_uploading"); got != "true" {
+			t.Fatalf("disable_workload_uploading = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(api.ResponseBody{Data: "echo ok"})
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetAgentSH("gcp", "test-gke", true); err != nil {
+		t.Fatalf("GetAgentSH() error = %v", err)
+	}
+}
+
+func TestClientGetRebalanceSHPassesProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/rebalance/clusters/cluster-1/sh" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("provider"); got != "gcp" {
+			t.Fatalf("provider = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(api.ResponseBody{Data: "echo rebalance"})
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetRebalanceSH("cluster-1", "gcp"); err != nil {
+		t.Fatalf("GetRebalanceSH() error = %v", err)
+	}
+}
+
+func TestClientGetClusterUpgradeSHPassesProvider(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/api/v1/clusters/cluster-1/upgrade/sh" {
+			t.Fatalf("path = %s", r.URL.Path)
+		}
+		if got := r.URL.Query().Get("provider"); got != "gcp" {
+			t.Fatalf("provider = %q", got)
+		}
+		_ = json.NewEncoder(w).Encode(api.ResponseBody{Data: "echo upgrade"})
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetClusterUpgradeSH("cluster-1", "gcp"); err != nil {
+		t.Fatalf("GetClusterUpgradeSH() error = %v", err)
+	}
+}
+
+func TestClientGetAgentSHRequiresProviderAndClusterName(t *testing.T) {
+	serverCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalled = true
+		t.Fatalf("unexpected request: %s", r.URL.String())
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetAgentSH("", "test-gke", true); err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+	if _, err := c.GetAgentSH("gcp", "", true); err == nil {
+		t.Fatal("expected error for missing cluster_name")
+	}
+	if serverCalled {
+		t.Fatal("server should not be called when validation fails")
+	}
+}
+
+func TestClientGetRebalanceSHRequiresProvider(t *testing.T) {
+	serverCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalled = true
+		t.Fatalf("unexpected request: %s", r.URL.String())
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetRebalanceSH("cluster-1", ""); err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+	if serverCalled {
+		t.Fatal("server should not be called when validation fails")
+	}
+}
+
+func TestClientGetClusterUpgradeSHRequiresProvider(t *testing.T) {
+	serverCalled := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		serverCalled = true
+		t.Fatalf("unexpected request: %s", r.URL.String())
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	if _, err := c.GetClusterUpgradeSH("cluster-1", ""); err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+	if serverCalled {
+		t.Fatal("server should not be called when validation fails")
+	}
+}

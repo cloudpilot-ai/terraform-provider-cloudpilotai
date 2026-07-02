@@ -1,13 +1,13 @@
 
 # CloudPilot AI Terraform Provider
 
-Easily manage Amazon EKS clusters and workloads with CloudPilot AI's automation and cost optimization. This provider enables seamless integration of CloudPilot AI's agent, workload rebalancing, and node pool management into your Terraform workflow.
+Easily manage Amazon EKS and Google Kubernetes Engine clusters and workloads with CloudPilot AI's automation and cost optimization. This provider enables seamless integration of CloudPilot AI's agent, workload rebalancing, and node pool management into your Terraform workflow.
 
 ---
 
 ## Features
 
-- **Provision and manage EKS clusters** with CloudPilot AI integration
+- **Provision and manage EKS and GKE clusters** with CloudPilot AI integration
 - **Automated agent and rebalance component installation**
 - **Node pool and node class management** (including custom Karpenter JSON)
 - **Workload cost optimization** (rebalance, spot-friendly, min non-spot replicas)
@@ -26,6 +26,7 @@ For reusable node/workload template composition on EKS, prefer the [`cloudpilot-
   - **Terraform-only CI/CD:** If your Terraform run already has AWS base credentials or OIDC, set `aws_assume_role` on `cloudpilotai_eks_cluster` to make CloudPilot assume the same target role for its AWS CLI and kubeconfig operations.
   - **Local development:** `aws_profile` remains available as the source-credential fallback, and generated kubeconfigs preserve that profile for later `kubectl` and `helm` calls.
 - **[Kubectl](https://kubernetes.io/docs/tasks/tools)** - For cluster operations and component management
+- **[gcloud CLI](https://cloud.google.com/sdk/docs/install)** - Required for GKE-related operations such as generating kubeconfig and running CloudPilot install scripts against GKE clusters
 - **CloudPilot AI API key** - See [CloudPilot AI API Key Documentation](https://docs.cloudpilot.ai/guide/getting_started/get_apikeys) for setup instructions
 
 ---
@@ -33,6 +34,8 @@ For reusable node/workload template composition on EKS, prefer the [`cloudpilot-
 ## Example Usage
 
 See the [`examples/eks/`](examples/eks/) directory for EKS configurations, ordered from minimal to full-featured.
+
+See the [`examples/gke/`](examples/gke/) directory for GKE configurations.
 
 | Example | Description | Use Case |
 |---------|-------------|----------|
@@ -48,6 +51,8 @@ Each example folder contains:
 - `variables.tf` — variable declarations
 - `terraform.tfvars.example` — sample variable values (copy to `terraform.tfvars` to use)
 - `README.md` — usage instructions
+
+For GKE, use `cloudpilotai_gke_cluster` for cluster registration, agent install, GCP node autoscaler management, and typed nodeclass/nodepool configuration, then attach the platform-neutral `cloudpilotai_workload_autoscaler` resource to the resulting `cluster_id`. The `cluster_uid` input for GKE should come from `kubectl get ns kube-system -o jsonpath='{.metadata.uid}'`.
 
 ---
 

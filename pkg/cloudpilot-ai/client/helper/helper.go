@@ -18,6 +18,17 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
+func validateProviderAwareScriptInputs(provider, clusterName string, requireClusterName bool) error {
+	if provider == "" {
+		return fmt.Errorf("provider is required for provider-aware script fetch")
+	}
+	if requireClusterName && clusterName == "" {
+		return fmt.Errorf("clusterName is required for provider-aware agent script fetch")
+	}
+
+	return nil
+}
+
 type rebalanceConfigurationClient interface {
 	GetRebalanceConfiguration(clusterID string) (*api.RebalanceConfig, error)
 	UpdateRebalanceConfiguration(clusterID string, config *api.RebalanceConfig) error
@@ -29,27 +40,33 @@ type workloadConfigurationClient interface {
 }
 
 type agentScriptClient interface {
-	GetAgentSH(disableWorkloadUploading bool) (string, error)
+	GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error)
 }
 
 type rebalanceScriptClient interface {
-	GetRebalanceSH(clusterID string) (string, error)
+	GetRebalanceSH(clusterID, provider string) (string, error)
 }
 
 type clusterUpgradeClient interface {
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
-	GetClusterUpgradeSH(clusterID string) (string, error)
+	GetClusterUpgradeSH(clusterID, provider string) (string, error)
 }
 
-func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
+func InstallCloudpilotAIAgentComponent(ctx context.Context, client cloudpilotaiclient.Interface,
+	provider, clusterName, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
 ) error {
-	return installCloudpilotAIAgentComponent(ctx, client, kubeconfigPath, disableWorkloadUploading, awsEnv, ExecuteSH)
+	return installCloudpilotAIAgentComponent(ctx, client, provider, clusterName, kubeconfigPath, disableWorkloadUploading, awsEnv, ExecuteSH)
 }
 
-func installCloudpilotAIAgentComponent(ctx context.Context, client agentScriptClient, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
+func installCloudpilotAIAgentComponent(ctx context.Context, client agentScriptClient,
+	provider, clusterName, kubeconfigPath string, disableWorkloadUploading bool, awsEnv map[string]string,
 	execute func(context.Context, string, map[string]string) error,
 ) error {
-	agentSH, err := client.GetAgentSH(disableWorkloadUploading)
+	if err := validateProviderAwareScriptInputs(provider, clusterName, true); err != nil {
+		return err
+	}
+
+	agentSH, err := client.GetAgentSH(provider, clusterName, disableWorkloadUploading)
 	if err != nil {
 		return err
 	}
@@ -58,16 +75,20 @@ func installCloudpilotAIAgentComponent(ctx context.Context, client agentScriptCl
 }
 
 func InstallCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilotaiclient.Interface,
-	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+	clusterUID, provider, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 ) error {
-	return installCloudpilotAIRebalanceComponent(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
+	return installCloudpilotAIRebalanceComponent(ctx, client, clusterUID, provider, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
 }
 
 func installCloudpilotAIRebalanceComponent(ctx context.Context, client rebalanceScriptClient,
-	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+	clusterUID, provider, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 	execute func(context.Context, string, map[string]string) error,
 ) error {
-	rebalanceSH, err := client.GetRebalanceSH(clusterUID)
+	if err := validateProviderAwareScriptInputs(provider, "", false); err != nil {
+		return err
+	}
+
+	rebalanceSH, err := client.GetRebalanceSH(clusterUID, provider)
 	if err != nil {
 		return err
 	}
@@ -80,15 +101,19 @@ func installCloudpilotAIRebalanceComponent(ctx context.Context, client rebalance
 }
 
 func UpgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
-	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+	clusterUID, provider, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 ) (bool, error) {
-	return upgradeCloudpilotAIComponentsIfNeeded(ctx, client, clusterUID, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
+	return upgradeCloudpilotAIComponentsIfNeeded(ctx, client, clusterUID, provider, kubeconfigPath, customNodeRole, awsEnv, ExecuteSH)
 }
 
 func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUpgradeClient,
-	clusterUID, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
+	clusterUID, provider, kubeconfigPath, customNodeRole string, awsEnv map[string]string,
 	execute func(context.Context, string, map[string]string) error,
 ) (bool, error) {
+	if err := validateProviderAwareScriptInputs(provider, "", false); err != nil {
+		return false, err
+	}
+
 	cluster, err := client.GetCluster(clusterUID)
 	if err != nil {
 		return false, err
@@ -97,7 +122,7 @@ func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUp
 		return false, nil
 	}
 
-	upgradeSH, err := client.GetClusterUpgradeSH(clusterUID)
+	upgradeSH, err := client.GetClusterUpgradeSH(clusterUID, provider)
 	if err != nil {
 		return false, err
 	}
@@ -110,6 +135,27 @@ func upgradeCloudpilotAIComponentsIfNeeded(ctx context.Context, client clusterUp
 	}
 
 	return true, nil
+}
+
+func RestoreCloudpilotAIRebalanceComponent(ctx context.Context, client cloudpilotaiclient.Interface,
+	clusterUID, provider, kubeconfigPath string, awsEnv map[string]string,
+) error {
+	return RestoreCloudpilotAIRebalanceComponentWithEnv(ctx, client, clusterUID, provider, kubeconfigPath, nil, awsEnv)
+}
+
+func RestoreCloudpilotAIRebalanceComponentWithEnv(ctx context.Context, client cloudpilotaiclient.Interface,
+	clusterUID, provider, kubeconfigPath string, extraEnv, awsEnv map[string]string,
+) error {
+	if err := validateProviderAwareScriptInputs(provider, "", false); err != nil {
+		return err
+	}
+
+	restoreSH, err := client.GetClusterRestoreSH(clusterUID, provider)
+	if err != nil {
+		return err
+	}
+
+	return ExecuteSH(ctx, restoreSH, buildShellEnv(kubeconfigPath, extraEnv, awsEnv))
 }
 
 const DeleteOptimizedNodesSH = `for node in $(kubectl get node -l node.cloudpilot.ai/managed=true 2>/dev/null | grep -v 'No resources found' | tail -n +2 | awk '{print $1}'); do

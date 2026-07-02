@@ -2,10 +2,12 @@ package helper
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	customfield "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 )
@@ -49,6 +51,17 @@ func TestSyncRebalanceConfigurationFirstTerraformEnableUsesNodeMode(t *testing.T
 	}
 	if client.updatedConfig.RebalanceType != api.RebalanceTypeNode {
 		t.Fatalf("RebalanceType = %q, want %q", client.updatedConfig.RebalanceType, api.RebalanceTypeNode)
+	}
+}
+
+func TestIsWorkloadAutoscalerInstallNotReadyError(t *testing.T) {
+	notReadyErr := fmt.Errorf("failed to execute SH: stdout: CloudPilot AI Workload Autoscaler is not ready, please check the state")
+	if !IsWorkloadAutoscalerInstallNotReadyError(notReadyErr) {
+		t.Fatal("expected Workload Autoscaler install not-ready error to be recognized")
+	}
+
+	if IsWorkloadAutoscalerInstallNotReadyError(fmt.Errorf("failed to execute SH: helm install failed")) {
+		t.Fatal("unexpectedly recognized unrelated install error")
 	}
 }
 
@@ -150,12 +163,18 @@ func (f *fakeWorkloadConfigurationClient) UpdateWorkloadRebalanceConfiguration(_
 }
 
 type fakeAgentScriptClient struct {
-	agentSH         string
-	getAgentSHCalls int
+	agentSH                 string
+	getAgentSHCalls         int
+	lastProvider            string
+	lastClusterName         string
+	lastDisableUploadingArg bool
 }
 
-func (f *fakeAgentScriptClient) GetAgentSH(bool) (string, error) {
+func (f *fakeAgentScriptClient) GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error) {
 	f.getAgentSHCalls++
+	f.lastProvider = provider
+	f.lastClusterName = clusterName
+	f.lastDisableUploadingArg = disableWorkloadUploading
 	return f.agentSH, nil
 }
 
@@ -214,6 +233,8 @@ func TestInstallCloudpilotAIAgentComponentDoesNotNormalizeServerScript(t *testin
 	err := installCloudpilotAIAgentComponent(
 		context.Background(),
 		client,
+		api.CloudProviderAWS,
+		"test-eks",
 		"/tmp/kubeconfig",
 		true,
 		map[string]string{"AWS_PROFILE": "terraform-profile"},
@@ -241,26 +262,95 @@ func TestInstallCloudpilotAIAgentComponentDoesNotNormalizeServerScript(t *testin
 	if executedEnv["KUBECONFIG"] != "/tmp/kubeconfig" {
 		t.Fatalf("KUBECONFIG = %q, want /tmp/kubeconfig", executedEnv["KUBECONFIG"])
 	}
+	if client.lastProvider != api.CloudProviderAWS {
+		t.Fatalf("provider = %q, want %q", client.lastProvider, api.CloudProviderAWS)
+	}
+	if client.lastClusterName != "test-eks" {
+		t.Fatalf("clusterName = %q, want %q", client.lastClusterName, "test-eks")
+	}
+	if !client.lastDisableUploadingArg {
+		t.Fatalf("disableWorkloadUploading = %v, want true", client.lastDisableUploadingArg)
+	}
 	if client.getAgentSHCalls != 1 {
 		t.Fatalf("GetAgentSH calls = %d, want 1", client.getAgentSHCalls)
 	}
 }
 
+func TestInstallCloudpilotAIAgentComponentRequiresProviderAndClusterName(t *testing.T) {
+	t.Run("missing provider", func(t *testing.T) {
+		client := &fakeAgentScriptClient{agentSH: "echo agent"}
+
+		err := installCloudpilotAIAgentComponent(
+			context.Background(),
+			client,
+			"",
+			"test-eks",
+			"/tmp/kubeconfig",
+			true,
+			nil,
+			func(context.Context, string, map[string]string) error { return nil },
+		)
+		if err == nil {
+			t.Fatal("expected error for missing provider")
+		}
+		if client.getAgentSHCalls != 0 {
+			t.Fatalf("GetAgentSH calls = %d, want 0", client.getAgentSHCalls)
+		}
+	})
+
+	t.Run("missing cluster name", func(t *testing.T) {
+		client := &fakeAgentScriptClient{agentSH: "echo agent"}
+
+		err := installCloudpilotAIAgentComponent(
+			context.Background(),
+			client,
+			api.CloudProviderGCP,
+			"",
+			"/tmp/kubeconfig",
+			true,
+			nil,
+			func(context.Context, string, map[string]string) error { return nil },
+		)
+		if err == nil {
+			t.Fatal("expected error for missing cluster name")
+		}
+		if client.getAgentSHCalls != 0 {
+			t.Fatalf("GetAgentSH calls = %d, want 0", client.getAgentSHCalls)
+		}
+	})
+}
+
 type fakeClusterUpgradeClient struct {
-	summary           *api.ClusterCostsSummary
-	upgradeSH         string
-	getClusterCalls   int
-	getUpgradeSHCalls int
+	summary             *api.ClusterCostsSummary
+	upgradeSH           string
+	getClusterCalls     int
+	getUpgradeSHCalls   int
+	lastUpgradeProvider string
 }
 
 type fakeRebalanceScriptClient struct {
-	rebalanceSH         string
-	getRebalanceSHCalls int
+	rebalanceSH           string
+	getRebalanceSHCalls   int
+	lastRebalanceProvider string
 }
 
-func (f *fakeRebalanceScriptClient) GetRebalanceSH(string) (string, error) {
+type fakeRestoreScriptClient struct {
+	cloudpilotaiclient.Interface
+	restoreSH           string
+	getRestoreSHCalls   int
+	lastRestoreProvider string
+}
+
+func (f *fakeRebalanceScriptClient) GetRebalanceSH(_ string, provider string) (string, error) {
 	f.getRebalanceSHCalls++
+	f.lastRebalanceProvider = provider
 	return f.rebalanceSH, nil
+}
+
+func (f *fakeRestoreScriptClient) GetClusterRestoreSH(_ string, provider string) (string, error) {
+	f.getRestoreSHCalls++
+	f.lastRestoreProvider = provider
+	return f.restoreSH, nil
 }
 
 func (f *fakeClusterUpgradeClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
@@ -268,8 +358,9 @@ func (f *fakeClusterUpgradeClient) GetCluster(string) (*api.ClusterCostsSummary,
 	return f.summary, nil
 }
 
-func (f *fakeClusterUpgradeClient) GetClusterUpgradeSH(string) (string, error) {
+func (f *fakeClusterUpgradeClient) GetClusterUpgradeSH(_ string, provider string) (string, error) {
 	f.getUpgradeSHCalls++
+	f.lastUpgradeProvider = provider
 	return f.upgradeSH, nil
 }
 
@@ -283,6 +374,7 @@ func TestUpgradeCloudpilotAIComponentsIfNeededSkipsWhenClusterDoesNotNeedUpgrade
 		context.Background(),
 		client,
 		"cluster-1",
+		api.CloudProviderAWS,
 		"/tmp/kubeconfig",
 		"",
 		map[string]string{},
@@ -317,6 +409,7 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 		context.Background(),
 		client,
 		"cluster-1",
+		api.CloudProviderAWS,
 		"/tmp/kubeconfig",
 		"custom-node-role",
 		map[string]string{
@@ -357,6 +450,30 @@ func TestUpgradeCloudpilotAIComponentsIfNeededRunsUpgradeScriptWithExpectedEnv(t
 	if client.getUpgradeSHCalls != 1 {
 		t.Fatalf("GetClusterUpgradeSH calls = %d, want 1", client.getUpgradeSHCalls)
 	}
+	if client.lastUpgradeProvider != api.CloudProviderAWS {
+		t.Fatalf("provider = %q, want %q", client.lastUpgradeProvider, api.CloudProviderAWS)
+	}
+}
+
+func TestInstallCloudpilotAIRebalanceComponentRequiresProvider(t *testing.T) {
+	client := &fakeRebalanceScriptClient{rebalanceSH: "echo rebalance"}
+
+	err := installCloudpilotAIRebalanceComponent(
+		context.Background(),
+		client,
+		"cluster-1",
+		"",
+		"/tmp/kubeconfig",
+		"terraform-role",
+		nil,
+		func(context.Context, string, map[string]string) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+	if client.getRebalanceSHCalls != 0 {
+		t.Fatalf("GetRebalanceSH calls = %d, want 0", client.getRebalanceSHCalls)
+	}
 }
 
 func TestInstallCloudpilotAIRebalanceComponentStripsTerraformManagedOverridesFromServerScript(t *testing.T) {
@@ -374,6 +491,7 @@ func TestInstallCloudpilotAIRebalanceComponentStripsTerraformManagedOverridesFro
 		context.Background(),
 		client,
 		"cluster-1",
+		api.CloudProviderAWS,
 		"/tmp/kubeconfig",
 		"terraform-role",
 		map[string]string{"AWS_PROFILE": "terraform-profile"},
@@ -407,6 +525,35 @@ func TestInstallCloudpilotAIRebalanceComponentStripsTerraformManagedOverridesFro
 	if client.getRebalanceSHCalls != 1 {
 		t.Fatalf("GetRebalanceSH calls = %d, want 1", client.getRebalanceSHCalls)
 	}
+	if client.lastRebalanceProvider != api.CloudProviderAWS {
+		t.Fatalf("provider = %q, want %q", client.lastRebalanceProvider, api.CloudProviderAWS)
+	}
+}
+
+func TestRestoreCloudpilotAIRebalanceComponentWithEnvPassesRestoreOverrides(t *testing.T) {
+	client := &fakeRestoreScriptClient{restoreSH: `test "$RESTORE_DESIRED_SIZE" = "2" && test "$RESTORE_DESIRED_SIZE_GENERAL_POOL" = "3"`}
+
+	err := RestoreCloudpilotAIRebalanceComponentWithEnv(
+		context.Background(),
+		client,
+		"cluster-1",
+		api.CloudProviderGCP,
+		"/tmp/kubeconfig",
+		map[string]string{
+			"RESTORE_DESIRED_SIZE":              "2",
+			"RESTORE_DESIRED_SIZE_GENERAL_POOL": "3",
+		},
+		nil,
+	)
+	if err != nil {
+		t.Fatalf("RestoreCloudpilotAIRebalanceComponentWithEnv() error = %v", err)
+	}
+	if client.getRestoreSHCalls != 1 {
+		t.Fatalf("GetClusterRestoreSH calls = %d, want 1", client.getRestoreSHCalls)
+	}
+	if client.lastRestoreProvider != api.CloudProviderGCP {
+		t.Fatalf("provider = %q, want %q", client.lastRestoreProvider, api.CloudProviderGCP)
+	}
 }
 
 func TestUpgradeCloudpilotAIComponentsIfNeededStripsAssumeRoleCredentialOverridesFromServerScript(t *testing.T) {
@@ -427,6 +574,7 @@ func TestUpgradeCloudpilotAIComponentsIfNeededStripsAssumeRoleCredentialOverride
 		context.Background(),
 		client,
 		"cluster-1",
+		api.CloudProviderAWS,
 		"/tmp/kubeconfig",
 		"terraform-role",
 		map[string]string{
@@ -475,6 +623,39 @@ func TestUpgradeCloudpilotAIComponentsIfNeededStripsAssumeRoleCredentialOverride
 	}
 	if executedEnv["CUSTOM_NODE_ROLE"] != "terraform-role" {
 		t.Fatalf("CUSTOM_NODE_ROLE = %q, want terraform-role", executedEnv["CUSTOM_NODE_ROLE"])
+	}
+	if client.lastUpgradeProvider != api.CloudProviderAWS {
+		t.Fatalf("provider = %q, want %q", client.lastUpgradeProvider, api.CloudProviderAWS)
+	}
+}
+
+func TestUpgradeCloudpilotAIComponentsIfNeededRequiresProvider(t *testing.T) {
+	client := &fakeClusterUpgradeClient{
+		summary:   &api.ClusterCostsSummary{NeedUpgrade: true},
+		upgradeSH: "echo upgrade",
+	}
+
+	upgraded, err := upgradeCloudpilotAIComponentsIfNeeded(
+		context.Background(),
+		client,
+		"cluster-1",
+		"",
+		"/tmp/kubeconfig",
+		"terraform-role",
+		nil,
+		func(context.Context, string, map[string]string) error { return nil },
+	)
+	if err == nil {
+		t.Fatal("expected error for missing provider")
+	}
+	if upgraded {
+		t.Fatal("upgraded = true, want false")
+	}
+	if client.getClusterCalls != 0 {
+		t.Fatalf("GetCluster calls = %d, want 0", client.getClusterCalls)
+	}
+	if client.getUpgradeSHCalls != 0 {
+		t.Fatalf("GetClusterUpgradeSH calls = %d, want 0", client.getUpgradeSHCalls)
 	}
 }
 

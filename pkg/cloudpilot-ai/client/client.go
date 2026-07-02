@@ -16,6 +16,17 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 )
 
+func validateProviderAwareScriptRequest(provider, clusterName string, requireClusterName bool) error {
+	if provider == "" {
+		return fmt.Errorf("provider is required for provider-aware script request")
+	}
+	if requireClusterName && clusterName == "" {
+		return fmt.Errorf("cluster_name is required for provider-aware agent script request")
+	}
+
+	return nil
+}
+
 type Interface interface {
 	// cluster
 	GetCluster(clusterID string) (*api.ClusterCostsSummary, error)
@@ -25,10 +36,10 @@ type Interface interface {
 	DeleteCluster(clusterID string) error
 
 	// sh
-	GetAgentSH(disableWorkloadUploading bool) (string, error)
-	GetClusterRestoreSH(clusterID string) (string, error)
-	GetClusterUpgradeSH(clusterID string) (string, error)
-	GetRebalanceSH(clusterID string) (string, error)
+	GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error)
+	GetClusterRestoreSH(clusterID, provider string) (string, error)
+	GetClusterUpgradeSH(clusterID, provider string) (string, error)
+	GetRebalanceSH(clusterID, provider string) (string, error)
 	GetClusterUninstallSH(clusterID, clusterName, provider, region string) (string, error)
 
 	// rebalance configuration
@@ -126,9 +137,22 @@ func (c *Client) DeleteCluster(clusterID string) error {
 	return nil
 }
 
-func (c *Client) GetAgentSH(disableWorkloadUploading bool) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/agent/sh?disable_workload_uploading=%s", c.Endpoint, strconv.FormatBool(disableWorkloadUploading))
-	sh, err := doJSON[string](c, http.MethodGet, url, nil)
+func (c *Client) GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error) {
+	if err := validateProviderAwareScriptRequest(provider, clusterName, true); err != nil {
+		return "", err
+	}
+
+	values := url.Values{}
+	values.Set("disable_workload_uploading", strconv.FormatBool(disableWorkloadUploading))
+	values.Set("provider", provider)
+	values.Set("cluster_name", clusterName)
+
+	reqURL := fmt.Sprintf("%s/api/v1/agent/sh", c.Endpoint)
+	if encoded := values.Encode(); encoded != "" {
+		reqURL = fmt.Sprintf("%s?%s", reqURL, encoded)
+	}
+
+	sh, err := doJSON[string](c, http.MethodGet, reqURL, nil)
 	if err != nil {
 		klog.Errorf("GetAgentSH failed: %v", err)
 		return "", err
@@ -137,8 +161,8 @@ func (c *Client) GetAgentSH(disableWorkloadUploading bool) (string, error) {
 	return sh, nil
 }
 
-func (c *Client) GetClusterRestoreSH(clusterID string) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/clusters/%s/restore/sh", c.Endpoint, clusterID)
+func (c *Client) GetClusterRestoreSH(clusterID, provider string) (string, error) {
+	url := fmt.Sprintf("%s/api/v1/clusters/%s/restore/sh?provider=%s", c.Endpoint, clusterID, url.QueryEscape(provider))
 	out, err := doJSON[string](c, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -147,9 +171,15 @@ func (c *Client) GetClusterRestoreSH(clusterID string) (string, error) {
 	return out, nil
 }
 
-func (c *Client) GetClusterUpgradeSH(clusterID string) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/clusters/%s/upgrade/sh", c.Endpoint, clusterID)
-	out, err := doJSON[string](c, http.MethodGet, url, nil)
+func (c *Client) GetClusterUpgradeSH(clusterID, provider string) (string, error) {
+	if err := validateProviderAwareScriptRequest(provider, "", false); err != nil {
+		return "", err
+	}
+
+	reqURL := fmt.Sprintf("%s/api/v1/clusters/%s/upgrade/sh", c.Endpoint, clusterID)
+	reqURL = fmt.Sprintf("%s?%s", reqURL, url.Values{"provider": []string{provider}}.Encode())
+
+	out, err := doJSON[string](c, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err
 	}
@@ -169,9 +199,15 @@ func (c *Client) GetClusterUninstallSH(clusterID, clusterName, provider, region 
 	return out, nil
 }
 
-func (c *Client) GetRebalanceSH(clusterID string) (string, error) {
-	url := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/sh", c.Endpoint, clusterID)
-	out, err := doJSON[string](c, http.MethodGet, url, nil)
+func (c *Client) GetRebalanceSH(clusterID, provider string) (string, error) {
+	if err := validateProviderAwareScriptRequest(provider, "", false); err != nil {
+		return "", err
+	}
+
+	reqURL := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/sh", c.Endpoint, clusterID)
+	reqURL = fmt.Sprintf("%s?%s", reqURL, url.Values{"provider": []string{provider}}.Encode())
+
+	out, err := doJSON[string](c, http.MethodGet, reqURL, nil)
 	if err != nil {
 		return "", err
 	}

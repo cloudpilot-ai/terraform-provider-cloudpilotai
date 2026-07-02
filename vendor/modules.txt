@@ -108,6 +108,13 @@ github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1
 github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis
 github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1
 github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1beta1
+github.com/cloudpilot-ai/lib/pkg/gcp/awslabs/operatorpkg/status
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1alpha1
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1beta1
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis
+github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis/v1alpha1
 # github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 ## explicit
 github.com/davecgh/go-spew/spew

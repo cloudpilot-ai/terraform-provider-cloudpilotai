@@ -45,6 +45,7 @@ type RegisterClusterResponse struct {
 const (
 	CloudProviderAWS          = "aws"
 	CloudProviderAlibabaCloud = "alibabacloud"
+	CloudProviderGCP          = "gcp"
 )
 
 func GenerateClusterUID(cloudProvider, clusterName, region, accountID string) string {
@@ -54,6 +55,9 @@ func GenerateClusterUID(cloudProvider, clusterName, region, accountID string) st
 		data = fmt.Sprintf("%s/%s/%s/%s",
 			cloudProvider, clusterName, region, accountID)
 	case CloudProviderAlibabaCloud:
+		data = fmt.Sprintf("%s/%s/%s/%s",
+			cloudProvider, clusterName, region, accountID)
+	case CloudProviderGCP:
 		data = fmt.Sprintf("%s/%s/%s/%s",
 			cloudProvider, clusterName, region, accountID)
 	default:

@@ -5,12 +5,19 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-log/tflog"
+	"k8s.io/apimachinery/pkg/util/wait"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+)
+
+var (
+	recommendationPolicyDeleteRetryInterval = 2 * time.Second
+	recommendationPolicyDeleteRetryTimeout  = 30 * time.Second
 )
 
 func InstallWorkloadAutoscaler(ctx context.Context, client cloudpilotaiclient.Interface,
@@ -34,6 +41,10 @@ func InstallWorkloadAutoscaler(ctx context.Context, client cloudpilotaiclient.In
 	}
 
 	return ExecuteSH(ctx, sh, env)
+}
+
+func IsWorkloadAutoscalerInstallNotReadyError(err error) bool {
+	return err != nil && strings.Contains(err.Error(), "CloudPilot AI Workload Autoscaler is not ready")
 }
 
 const waitWorkloadAutoscalerResourcesCleanedSH = `while true; do
@@ -123,8 +134,15 @@ func DeleteStaleRecommendationPolicies(ctx context.Context, client cloudpilotaic
 					continue
 				}
 				if strings.Contains(err.Error(), "in use") {
-					tflog.Warn(ctx, fmt.Sprintf("skipping deletion of recommendation policy %s: %v", name, err))
-					continue
+					retryErr := deleteRecommendationPolicyWithRetry(ctx, client, clusterID, name)
+					if retryErr == nil {
+						continue
+					}
+					if strings.Contains(retryErr.Error(), "in use") {
+						tflog.Warn(ctx, fmt.Sprintf("skipping deletion of recommendation policy %s: %v", name, retryErr))
+						continue
+					}
+					return fmt.Errorf("failed to delete recommendation policy %s: %w", name, retryErr)
 				}
 				return fmt.Errorf("failed to delete recommendation policy %s: %w", name, err)
 			}
@@ -132,6 +150,29 @@ func DeleteStaleRecommendationPolicies(ctx context.Context, client cloudpilotaic
 	}
 
 	return nil
+}
+
+func deleteRecommendationPolicyWithRetry(ctx context.Context, client cloudpilotaiclient.Interface, clusterID, name string) error {
+	var lastInUseErr error
+	err := wait.PollUntilContextTimeout(ctx, recommendationPolicyDeleteRetryInterval, recommendationPolicyDeleteRetryTimeout, true, func(ctx context.Context) (bool, error) {
+		err := client.DeleteRecommendationPolicy(clusterID, name)
+		if err == nil {
+			return true, nil
+		}
+		if strings.Contains(err.Error(), "not found") {
+			return true, nil
+		}
+		if strings.Contains(err.Error(), "in use") {
+			lastInUseErr = err
+			tflog.Info(ctx, fmt.Sprintf("recommendation policy %s is still in use, retrying deletion", name))
+			return false, nil
+		}
+		return false, err
+	})
+	if err != nil && lastInUseErr != nil {
+		return lastInUseErr
+	}
+	return err
 }
 
 func ApplyAutoscalingPolicies(ctx context.Context, client cloudpilotaiclient.Interface, clusterID string,
