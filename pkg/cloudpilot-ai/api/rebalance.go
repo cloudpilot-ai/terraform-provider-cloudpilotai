@@ -10,6 +10,8 @@ import (
 	alibabacloudcorev1 "github.com/cloudpilot-ai/lib/pkg/alibabacloud/karpenter/apis/v1"
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
+	gcpproviderv1alpha1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis/v1alpha1"
+	gcpcorev1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
@@ -69,16 +71,19 @@ type ClusterWorkloadSpec struct {
 type RebalanceNodePool struct {
 	EC2NodePool *EC2NodePool `json:"ec2NodePool"`
 	ECSNodePool *ECSNodePool `json:"ecsNodePool"`
+	GCENodePool *GCENodePool `json:"gceNodePool"`
 }
 
 type RebalanceNodeClass struct {
 	EC2NodeClass *EC2NodeClass `json:"ec2NodeClass"`
 	ECSNodeClass *ECSNodeClass `json:"ecsNodeClass"`
+	GCENodeClass *GCENodeClass `json:"gceNodeClass"`
 }
 
 type RebalanceNodeClassList struct {
 	EC2NodeClasses []EC2NodeClass `json:"ec2NodeClasses"`
 	ECSNodeClasses []ECSNodeClass `json:"ecsNodeClasses"`
+	GCENodeClasses []GCENodeClass `json:"gceNodeClasses"`
 }
 
 type EC2NodePool struct {
@@ -92,6 +97,7 @@ type EC2NodePool struct {
 type RebalanceNodePoolList struct {
 	EC2NodePools []EC2NodePool `json:"ec2NodePools"`
 	ECSNodePools []ECSNodePool `json:"ecsNodePools"`
+	GCENodePools []GCENodePool `json:"gceNodePools"`
 }
 
 type EC2NodeClass struct {
@@ -110,6 +116,21 @@ type ECSNodePool struct {
 type ECSNodeClass struct {
 	Name          string                                         `json:"name"`
 	NodeClassSpec *alibabacloudproviderv1alpha1.ECSNodeClassSpec `json:"nodeClassSpec"`
+}
+
+type GCENodePool struct {
+	Name                   string                  `json:"name"`
+	Enable                 bool                    `json:"enable"`
+	EnableImageAccelerator bool                    `json:"enableImageAccelerator"`
+	NodePoolSpec           *gcpcorev1.NodePoolSpec `json:"nodePoolSpec"`
+	rawJSON                []byte                  `json:"-"`
+}
+
+type GCENodeClass struct {
+	Name                   string                                `json:"name"`
+	EnableImageAccelerator bool                                  `json:"enableImageAccelerator"`
+	NodeClassSpec          *gcpproviderv1alpha1.GCENodeClassSpec `json:"nodeClassSpec"`
+	rawJSON                []byte                                `json:"-"`
 }
 
 func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassModel, error) {

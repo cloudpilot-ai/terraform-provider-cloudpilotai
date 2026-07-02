@@ -242,7 +242,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		// 1. install cloudpilot ai agent component
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
+			api.CloudProviderAWS, data.ClusterName.ValueString(), shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -276,7 +276,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 			// 1.2. install cloudpilot ai rebalance component
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
 			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
+				clusterUID, api.CloudProviderAWS, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to install CloudPilot AI rebalance component",
 					err.Error(),
@@ -299,7 +299,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgradeAction = func() error {
 			upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
+				clusterUID, api.CloudProviderAWS, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
 			if err != nil {
 				return err
 			}
@@ -411,7 +411,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	if !agentExist {
 		tflog.Info(ctx, "installing CloudPilot AI agent component")
 		if err := helper.InstallCloudpilotAIAgentComponent(ctx, c.client,
-			shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
+			api.CloudProviderAWS, data.ClusterName.ValueString(), shellKubeconfig, boolValueOrDefault(data.DisableWorkloadUploading, false), awsEnv); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to install CloudPilot AI agent component",
 				err.Error(),
@@ -441,7 +441,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		if rebalanceConfig != nil && rebalanceConfig.LastComponentsActiveTime.IsZero() {
 			tflog.Info(ctx, "installing CloudPilot AI rebalance component")
 			if err := helper.InstallCloudpilotAIRebalanceComponent(ctx, c.client,
-				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
+				clusterUID, api.CloudProviderAWS, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv); err != nil {
 				resp.Diagnostics.AddError(
 					"failed to install CloudPilot AI rebalance component",
 					err.Error(),
@@ -464,7 +464,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	if boolValueOrDefault(data.EnableUpgrade, false) {
 		upgradeAction = func() error {
 			upgraded, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(ctx, c.client,
-				clusterUID, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
+				clusterUID, api.CloudProviderAWS, shellKubeconfig, data.CustomNodeRole.ValueString(), awsEnv)
 			if err != nil {
 				return err
 			}
@@ -1104,10 +1104,14 @@ func mergeClusterSettingFromAPI(setting *ClusterSettingModel, remote *api.Cluste
 		setting.Discount = types.Float64Value(*remote.Discount)
 	}
 	if remote.PreRunCommand != nil {
-		setting.PreRunCommand = types.StringValue(*remote.PreRunCommand)
+		if *remote.PreRunCommand != "" || !setting.PreRunCommand.IsNull() {
+			setting.PreRunCommand = types.StringValue(*remote.PreRunCommand)
+		}
 	}
 	if remote.PostRunCommand != nil {
-		setting.PostRunCommand = types.StringValue(*remote.PostRunCommand)
+		if *remote.PostRunCommand != "" || !setting.PostRunCommand.IsNull() {
+			setting.PostRunCommand = types.StringValue(*remote.PostRunCommand)
+		}
 	}
 }
 
@@ -1559,13 +1563,33 @@ func preserveManagedMap(ctx context.Context, stateVal, remoteVal customfield.Map
 	if stateVal.IsNull() {
 		return customfield.NullMap[types.String](ctx)
 	}
+
+	stateValues, diags := stateVal.Value(ctx)
+	if diags.HasError() {
+		return remoteVal
+	}
 	if remoteVal.IsNull() || remoteVal.IsUnknown() {
-		values, diags := stateVal.Value(ctx)
-		if !diags.HasError() && len(values) == 0 {
+		if len(stateValues) == 0 {
 			return stateVal
 		}
+		return remoteVal
 	}
-	return remoteVal
+
+	remoteValues, diags := remoteVal.Value(ctx)
+	if diags.HasError() {
+		return remoteVal
+	}
+
+	filtered := make(map[string]types.String, len(stateValues))
+	for key, stateValue := range stateValues {
+		if remoteValue, ok := remoteValues[key]; ok {
+			filtered[key] = remoteValue
+			continue
+		}
+		filtered[key] = stateValue
+	}
+
+	return customfield.NewMapMust[types.String](ctx, filtered)
 }
 
 func preserveManagedObjectList[T any](ctx context.Context, stateVal, remoteVal customfield.NestedObjectList[T]) customfield.NestedObjectList[T] {

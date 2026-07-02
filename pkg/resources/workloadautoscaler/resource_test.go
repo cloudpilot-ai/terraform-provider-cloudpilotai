@@ -2,12 +2,20 @@ package workloadautoscaler
 
 import (
 	"context"
+	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
+	"time"
 
+	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
+	"github.com/hashicorp/terraform-plugin-framework/tfsdk"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/common/gkeaccess"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
@@ -27,6 +35,57 @@ func (f *fakePostWriteStateHydratorClient) ListRecommendationPolicies(string) ([
 
 func (f *fakePostWriteStateHydratorClient) ListAutoscalingPolicies(string) ([]api.AutoscalingPolicyResource, error) {
 	return f.autoscalingPolicies, nil
+}
+
+type fakeWorkloadAutoscalerClient struct {
+	cloudpilotaiclient.Interface
+	summary           *api.ClusterCostsSummary
+	nodeClasses       api.RebalanceNodeClassList
+	deletedAPs        []string
+	deletedRPs        []string
+	updatedWAConfigs  []*api.WAConfiguration
+	deleteAPErrs      map[string]error
+	deleteRPErrs      map[string]error
+	deleteRPSequences map[string][]error
+}
+
+func (f *fakeWorkloadAutoscalerClient) GetCluster(string) (*api.ClusterCostsSummary, error) {
+	if f.summary != nil {
+		return f.summary, nil
+	}
+	return &api.ClusterCostsSummary{}, nil
+}
+
+func (f *fakeWorkloadAutoscalerClient) ListNodeClasses(string) (api.RebalanceNodeClassList, error) {
+	return f.nodeClasses, nil
+}
+
+func (f *fakeWorkloadAutoscalerClient) DeleteAutoscalingPolicy(_ string, name string) error {
+	if err := f.deleteAPErrs[name]; err != nil {
+		return err
+	}
+	f.deletedAPs = append(f.deletedAPs, name)
+	return nil
+}
+
+func (f *fakeWorkloadAutoscalerClient) DeleteRecommendationPolicy(_ string, name string) error {
+	if seq := f.deleteRPSequences[name]; len(seq) > 0 {
+		err := seq[0]
+		f.deleteRPSequences[name] = seq[1:]
+		if err != nil {
+			return err
+		}
+	}
+	if err := f.deleteRPErrs[name]; err != nil {
+		return err
+	}
+	f.deletedRPs = append(f.deletedRPs, name)
+	return nil
+}
+
+func (f *fakeWorkloadAutoscalerClient) UpdateWAConfiguration(_ string, cfg *api.WAConfiguration) error {
+	f.updatedWAConfigs = append(f.updatedWAConfigs, cfg)
+	return nil
 }
 
 func autoscalingPolicyWithServerDefaults(name, recommendationPolicyName string) api.AutoscalingPolicyResource {
@@ -348,5 +407,336 @@ func TestShouldSkipBackendInstallCheckForStateBackfill(t *testing.T) {
 
 	if !shouldSkipBackendInstallCheckForStateBackfill(data, state) {
 		t.Fatalf("expected kubeconfig-only state backfill to skip backend install check")
+	}
+}
+
+func TestFillMissingParametersDoesNotPersistGeneratedKubeconfig(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeWorkloadAutoscalerClient{
+		summary: &api.ClusterCostsSummary{
+			ClusterInfo: api.ClusterInfo{
+				ClusterName:   "demo-gke",
+				Region:        "us-central1",
+				CloudProvider: api.CloudProviderGCP,
+			},
+		},
+		nodeClasses: api.RebalanceNodeClassList{
+			GCENodeClasses: []api.GCENodeClass{{
+				Name: "cloudpilot",
+				NodeClassSpec: &api.GCENodeClassSpec{
+					NetworkConfig: &api.GCENetworkConfig{
+						Subnetwork: "projects/test-project/regions/us-central1/subnetworks/default",
+					},
+				},
+			}},
+		},
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+	}()
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, clusterName, region, projectID, kubeconfigPath string) error {
+		if clusterName != "demo-gke" || region != "us-central1" || projectID != "test-project" {
+			t.Fatalf("unexpected kubeconfig discovery inputs: %s %s %s", clusterName, region, projectID)
+		}
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	data := WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringValue(""),
+	}
+
+	kubeconfigPath, err := (&WorkloadAutoscaler{client: client}).fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if filepath.Base(kubeconfigPath) != "test-project_us-central1_demo-gke_kubeconfig" {
+		t.Fatalf("kubeconfigPath = %q, want inferred GKE kubeconfig", kubeconfigPath)
+	}
+	if data.Kubeconfig.ValueString() != "" {
+		t.Fatalf("Kubeconfig = %q, want omitted/default value preserved", data.Kubeconfig.ValueString())
+	}
+}
+
+func TestFillMissingParametersPersistsGeneratedKubeconfigForImport(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeWorkloadAutoscalerClient{
+		summary: &api.ClusterCostsSummary{
+			ClusterInfo: api.ClusterInfo{
+				ClusterName:   "demo-gke",
+				Region:        "us-central1",
+				CloudProvider: api.CloudProviderGCP,
+			},
+		},
+		nodeClasses: api.RebalanceNodeClassList{
+			GCENodeClasses: []api.GCENodeClass{{
+				Name: "cloudpilot",
+				NodeClassSpec: &api.GCENodeClassSpec{
+					NetworkConfig: &api.GCENetworkConfig{
+						Subnetwork: "projects/test-project/regions/us-central1/subnetworks/default",
+					},
+				},
+			}},
+		},
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+	}()
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, _, _, _, kubeconfigPath string) error {
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	data := WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringValue(""),
+	}
+
+	kubeconfigPath, err := (&WorkloadAutoscaler{client: client}).fillMissingParameters(ctx, &data, true)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if data.Kubeconfig.ValueString() != kubeconfigPath {
+		t.Fatalf("Kubeconfig = %q, want persisted %q", data.Kubeconfig.ValueString(), kubeconfigPath)
+	}
+}
+
+func TestWorkloadAutoscalerDeleteInfersGKEKubeconfig(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeWorkloadAutoscalerClient{
+		summary: &api.ClusterCostsSummary{
+			ClusterInfo: api.ClusterInfo{
+				ClusterName:   "demo-gke",
+				Region:        "us-central1",
+				CloudProvider: api.CloudProviderGCP,
+			},
+		},
+		nodeClasses: api.RebalanceNodeClassList{
+			GCENodeClasses: []api.GCENodeClass{{
+				Name: "cloudpilot",
+				NodeClassSpec: &api.GCENodeClassSpec{
+					NetworkConfig: &api.GCENetworkConfig{
+						Subnetwork: "projects/test-project/regions/us-central1/subnetworks/default",
+					},
+				},
+			}},
+		},
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+	}()
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, clusterName, region, projectID, kubeconfigPath string) error {
+		if clusterName != "demo-gke" || region != "us-central1" || projectID != "test-project" {
+			t.Fatalf("unexpected kubeconfig discovery inputs: %s %s %s", clusterName, region, projectID)
+		}
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	originalUninstall := uninstallWorkloadAutoscaler
+	defer func() {
+		uninstallWorkloadAutoscaler = originalUninstall
+	}()
+
+	var gotKubeconfig string
+	uninstallWorkloadAutoscaler = func(_ context.Context, _ cloudpilotaiclient.Interface, _ string, kubeconfigPath string) error {
+		gotKubeconfig = kubeconfigPath
+		return nil
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringNull(),
+		RecommendationPolicies: customfield.NewObjectListMust(ctx, []api.RecommendationPolicyModel{{
+			Name:                types.StringValue("balanced"),
+			HistoryWindowCPU:    types.StringValue("24h"),
+			HistoryWindowMemory: types.StringValue("24h"),
+			EvaluationPeriod:    types.StringValue("1h"),
+		}}),
+		AutoscalingPolicies: customfield.NewObjectListMust(ctx, []api.AutoscalingPolicyModel{{
+			Name:                     types.StringValue("cloudpilot"),
+			RecommendationPolicyName: types.StringValue("balanced"),
+		}}),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	resp := &resource.DeleteResponse{}
+	(&WorkloadAutoscaler{client: client}).Delete(ctx, resource.DeleteRequest{State: state}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Delete() diagnostics = %v", resp.Diagnostics)
+	}
+
+	if filepath.Base(gotKubeconfig) != "test-project_us-central1_demo-gke_kubeconfig" {
+		t.Fatalf("uninstall kubeconfig = %q, want inferred GKE kubeconfig", gotKubeconfig)
+	}
+	if len(client.deletedAPs) != 1 || client.deletedAPs[0] != "cloudpilot" {
+		t.Fatalf("deleted autoscaling policies = %#v, want [cloudpilot]", client.deletedAPs)
+	}
+	if len(client.deletedRPs) != 1 || client.deletedRPs[0] != "balanced" {
+		t.Fatalf("deleted recommendation policies = %#v, want [balanced]", client.deletedRPs)
+	}
+	if len(client.updatedWAConfigs) != 1 || client.updatedWAConfigs[0] == nil || client.updatedWAConfigs[0].WorkloadAutoscalerInstalled == nil || *client.updatedWAConfigs[0].WorkloadAutoscalerInstalled {
+		t.Fatalf("updated WA configs = %#v, want installed=false", client.updatedWAConfigs)
+	}
+}
+
+func TestWorkloadAutoscalerDeleteRetriesRecommendationPolicyStillInUse(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeWorkloadAutoscalerClient{
+		summary: &api.ClusterCostsSummary{
+			ClusterInfo: api.ClusterInfo{
+				CloudProvider: api.CloudProviderGCP,
+				ClusterName:   "demo-gke",
+				Region:        "us-central1",
+			},
+		},
+		nodeClasses: api.RebalanceNodeClassList{
+			GCENodeClasses: []api.GCENodeClass{{
+				Name: "cloudpilot",
+				NodeClassSpec: &api.GCENodeClassSpec{
+					NetworkConfig: &api.GCENetworkConfig{
+						Subnetwork: "projects/test-project/regions/us-central1/subnetworks/default",
+					},
+				},
+			}},
+		},
+		deleteRPSequences: map[string][]error{
+			"balanced": {fmt.Errorf("RecommendationPolicy in use"), nil},
+		},
+	}
+
+	originalInterval := recommendationPolicyDeleteRetryInterval
+	originalTimeout := recommendationPolicyDeleteRetryTimeout
+	defer func() {
+		recommendationPolicyDeleteRetryInterval = originalInterval
+		recommendationPolicyDeleteRetryTimeout = originalTimeout
+	}()
+	recommendationPolicyDeleteRetryInterval = time.Millisecond
+	recommendationPolicyDeleteRetryTimeout = 50 * time.Millisecond
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+	}()
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, _, _, _, kubeconfigPath string) error {
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	originalUninstall := uninstallWorkloadAutoscaler
+	defer func() {
+		uninstallWorkloadAutoscaler = originalUninstall
+	}()
+	uninstallWorkloadAutoscaler = func(_ context.Context, _ cloudpilotaiclient.Interface, _ string, _ string) error {
+		return nil
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringNull(),
+		RecommendationPolicies: customfield.NewObjectListMust(ctx, []api.RecommendationPolicyModel{{
+			Name:                types.StringValue("balanced"),
+			HistoryWindowCPU:    types.StringValue("24h"),
+			HistoryWindowMemory: types.StringValue("24h"),
+			EvaluationPeriod:    types.StringValue("1h"),
+		}}),
+		AutoscalingPolicies: customfield.NewObjectListMust(ctx, []api.AutoscalingPolicyModel{{
+			Name:                     types.StringValue("cloudpilot"),
+			RecommendationPolicyName: types.StringValue("balanced"),
+		}}),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	resp := &resource.DeleteResponse{}
+	(&WorkloadAutoscaler{client: client}).Delete(ctx, resource.DeleteRequest{State: state}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Delete() diagnostics should not contain errors: %v", resp.Diagnostics)
+	}
+	if resp.Diagnostics.WarningsCount() != 0 {
+		t.Fatalf("Delete() diagnostics should not contain warnings: %v", resp.Diagnostics)
+	}
+	if len(client.deletedAPs) != 1 || client.deletedAPs[0] != "cloudpilot" {
+		t.Fatalf("deleted autoscaling policies = %#v, want [cloudpilot]", client.deletedAPs)
+	}
+	if len(client.deletedRPs) != 1 || client.deletedRPs[0] != "balanced" {
+		t.Fatalf("deleted recommendation policies = %#v, want [balanced]", client.deletedRPs)
+	}
+}
+
+func TestWorkloadAutoscalerDeleteWarnsAndContinuesWhenRemotePolicyDeletionFails(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeWorkloadAutoscalerClient{
+		summary: &api.ClusterCostsSummary{
+			ClusterInfo: api.ClusterInfo{
+				CloudProvider: api.CloudProviderGCP,
+				ClusterName:   "demo-gke",
+				Region:        "us-central1",
+			},
+		},
+		nodeClasses: api.RebalanceNodeClassList{
+			GCENodeClasses: []api.GCENodeClass{{
+				Name: "cloudpilot",
+				NodeClassSpec: &api.GCENodeClassSpec{
+					NetworkConfig: &api.GCENetworkConfig{
+						Subnetwork: "projects/test-project/regions/us-central1/subnetworks/default",
+					},
+				},
+			}},
+		},
+		deleteAPErrs: map[string]error{"cloudpilot": fmt.Errorf("remote ap delete failed")},
+		deleteRPErrs: map[string]error{"balanced": fmt.Errorf("remote rp delete failed")},
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+	}()
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, _, _, _, kubeconfigPath string) error {
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	originalUninstall := uninstallWorkloadAutoscaler
+	defer func() {
+		uninstallWorkloadAutoscaler = originalUninstall
+	}()
+	uninstallWorkloadAutoscaler = func(_ context.Context, _ cloudpilotaiclient.Interface, _ string, _ string) error {
+		return nil
+	}
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringNull(),
+		RecommendationPolicies: customfield.NewObjectListMust(ctx, []api.RecommendationPolicyModel{{
+			Name:                types.StringValue("balanced"),
+			HistoryWindowCPU:    types.StringValue("24h"),
+			HistoryWindowMemory: types.StringValue("24h"),
+			EvaluationPeriod:    types.StringValue("1h"),
+		}}),
+		AutoscalingPolicies: customfield.NewObjectListMust(ctx, []api.AutoscalingPolicyModel{{
+			Name:                     types.StringValue("cloudpilot"),
+			RecommendationPolicyName: types.StringValue("balanced"),
+		}}),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	resp := &resource.DeleteResponse{}
+	(&WorkloadAutoscaler{client: client}).Delete(ctx, resource.DeleteRequest{State: state}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Delete() diagnostics should not contain errors: %v", resp.Diagnostics)
+	}
+	if resp.Diagnostics.WarningsCount() < 2 {
+		t.Fatalf("expected remote policy delete warnings, got %d", resp.Diagnostics.WarningsCount())
 	}
 }

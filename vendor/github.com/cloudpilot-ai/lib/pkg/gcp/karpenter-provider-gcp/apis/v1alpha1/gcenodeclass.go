@@ -1,0 +1,474 @@
+/*
+Copyright 2024 The CloudPilot AI Authors.
+
+Licensed under the Apache License, Version 2.0 (the "License");
+you may not use this file except in compliance with the License.
+You may obtain a copy of the License at
+
+    http://www.apache.org/licenses/LICENSE-2.0
+
+Unless required by applicable law or agreed to in writing, software
+distributed under the License is distributed on an "AS IS" BASIS,
+WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+See the License for the specific language governing permissions and
+limitations under the License.
+*/
+
+package v1alpha1
+
+import (
+	"fmt"
+	"log"
+	"strings"
+
+	"github.com/mitchellh/hashstructure/v2"
+	"github.com/samber/lo"
+	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+)
+
+// GCENodeClassSpec is the top level specification for the GCP Karpenter Provider.
+// This will contain the configuration necessary to launch instances in GCP.
+type GCENodeClassSpec struct {
+	// ServiceAccount is the GCP IAM service account email to assign to the instance
+	// +kubebuilder:validation:Pattern=`^[^@]+@(developer\.gserviceaccount\.com|[^@]+\.iam\.gserviceaccount\.com)$`
+	// +optional
+	ServiceAccount string `json:"serviceAccount,omitempty"`
+	// Disk defines the disks to attach to the provisioned instance.
+	// +kubebuilder:validation:MaxItems=10
+	// +optional
+	Disks []Disk `json:"disks,omitempty"`
+	// ImageSelectorTerms is a list of or image selector terms. The terms are ORed.
+	// +kubebuilder:validation:XValidation:message="each term must set exactly one of: alias, id, or family (with channel or version)",rule="self.all(x, has(x.alias) || has(x.id) || has(x.family))"
+	// +kubebuilder:validation:XValidation:message="channel: and version: latest cannot both appear in the same imageSelectorTerms",rule="!(self.exists(t, has(t.channel)) && self.exists(t, has(t.family) && t.family == 'ContainerOptimizedOS' && has(t.version) && t.version == 'latest'))"
+	// +kubebuilder:validation:MinItems:=1
+	// +kubebuilder:validation:MaxItems:=30
+	// +required
+	ImageSelectorTerms []ImageSelectorTerm `json:"imageSelectorTerms" hash:"ignore"`
+	// ImageFamily dictates the instance template used when generating launch templates.
+	// If no ImageSelectorTerms alias is specified, this field is required.
+	// +kubebuilder:validation:Enum:={Ubuntu,ContainerOptimizedOS}
+	// +optional
+	ImageFamily *string `json:"imageFamily,omitempty"`
+	// SubnetRangeName is the name of the subnetwork secondary IPv4 range from which
+	// to allocate pod IP addresses (alias IPs for pods). If not specified, the cluster's
+	// default pod secondary range (ClusterSecondaryRangeName from the cluster's IP
+	// allocation policy) is used.
+	// +kubebuilder:validation:MinLength=1
+	// +kubebuilder:validation:MaxLength=63
+	// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`
+	// +optional
+	SubnetRangeName *string `json:"subnetRangeName,omitempty"`
+	// KubeletConfiguration defines args to be used when configuring kubelet on provisioned nodes.
+	// They are a vswitch of the upstream types, recognizing not all options may be supported.
+	// Wherever possible, the types and names should reflect the upstream kubelet types.
+	// +kubebuilder:validation:XValidation:message="imageGCHighThresholdPercent must be greater than imageGCLowThresholdPercent",rule="has(self.imageGCHighThresholdPercent) && has(self.imageGCLowThresholdPercent) ?  self.imageGCHighThresholdPercent > self.imageGCLowThresholdPercent  : true"
+	// +kubebuilder:validation:XValidation:message="evictionSoft OwnerKey does not have a matching evictionSoftGracePeriod",rule="has(self.evictionSoft) ? self.evictionSoft.all(e, (e in self.evictionSoftGracePeriod)):true"
+	// +kubebuilder:validation:XValidation:message="evictionSoftGracePeriod OwnerKey does not have a matching evictionSoft",rule="has(self.evictionSoftGracePeriod) ? self.evictionSoftGracePeriod.all(e, (e in self.evictionSoft)):true"
+	// +optional
+	KubeletConfiguration *KubeletConfiguration `json:"kubeletConfiguration,omitempty"`
+	// Labels to be applied on GCE VM instance.
+	// +kubebuilder:validation:MaxProperties=20
+	// +kubebuilder:validation:XValidation:message="empty tag keys aren't supported",rule="self.all(k, k != '')"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching gce:gce-cluster-name",rule="self.all(k, k !='gce:gce-cluster-name')"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching kubernetes.io/cluster/",rule="self.all(k, !k.startsWith('kubernetes.io/cluster') )"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.sh/nodepool",rule="self.all(k, k != 'karpenter.sh/nodepool')"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.sh/nodeclaim",rule="self.all(k, k !='karpenter.sh/nodeclaim')"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.k8s.gcp/gcenodeclass",rule="self.all(k, k !='karpenter.k8s.gcp/gcenodeclass')"
+	// +optional
+	Labels map[string]string `json:"labels,omitempty"`
+	// Metadata contains key/value pairs to set as instance metadata
+	// +optional
+	Metadata map[string]string `json:"metadata,omitempty"`
+	// NetworkTags is a list of network tags to apply to the node.
+	// +kubebuilder:validation:MaxItems=20
+	// +optional
+	NetworkTags []NetworkTag `json:"networkTags,omitempty"`
+	// ShieldedInstanceConfig enables Shielded VM for provisioned nodes: Secure Boot,
+	// virtual TPM, and integrity monitoring.
+	// +optional
+	ShieldedInstanceConfig *ShieldedInstanceConfig `json:"shieldedInstanceConfig,omitempty"`
+	// ConfidentialInstanceType enables Confidential VM for provisioned nodes using the
+	// named technology (AMD SEV / SEV-SNP or Intel TDX), providing in-use memory
+	// encryption. Leave unset to disable. Only supported on specific machine families.
+	// +kubebuilder:validation:Enum=SEV;SEV_SNP;TDX
+	// +optional
+	ConfidentialInstanceType *string `json:"confidentialInstanceType,omitempty"`
+	// NetworkConfig allows overriding per-interface network settings for provisioned nodes.
+	// +optional
+	NetworkConfig *NetworkConfig `json:"networkConfig,omitempty"`
+	// AutoGPUTaint, when true, automatically applies nvidia.com/gpu=present:NoSchedule
+	// to any GPU node at provisioning time, regardless of the NodePool configuration.
+	// Disabled by default to preserve backward compatibility.
+	// +optional
+	AutoGPUTaint bool `json:"autoGPUTaint,omitempty"`
+	// GPUDriverVersion controls which NVIDIA driver version GKE installs on GPU nodes.
+	// Mirrors the GKE node pool gpu_driver_installation_config.gpu_driver_version field.
+	// Valid values: "default" (GKE-recommended stable), "latest" (newest, COS only),
+	// "disabled" (skip automatic installation).
+	// Ignored for non-GPU instance types.
+	// +kubebuilder:validation:Enum=default;latest;disabled
+	// +kubebuilder:default=default
+	// +optional
+	GPUDriverVersion string `json:"gpuDriverVersion,omitempty"`
+}
+
+// NetworkConfig holds network settings for provisioned nodes.
+// The shape mirrors the Terraform google_container_node_pool network_config block
+// so that operators already familiar with GKE node pools can transfer that knowledge directly.
+type NetworkConfig struct {
+	// EnablePrivateNodes controls whether provisioned nodes have internal IP addresses only
+	// (no external IP). When unset, defaults to the cluster's EnablePrivateNodes setting.
+	// Mirrors GKE node pool network_config.enable_private_nodes.
+	// +optional
+	EnablePrivateNodes *bool `json:"enablePrivateNodes,omitempty"`
+	// Subnetwork is the subnetwork for the primary network interface.
+	// Format: projects/{project}/regions/{region}/subnetworks/{name}
+	// When unset, defaults to the cluster's primary subnetwork.
+	// Mirrors GKE node pool network_config.subnetwork.
+	// +optional
+	Subnetwork string `json:"subnetwork,omitempty"`
+	// AdditionalNetworkInterfaces adds secondary network interfaces to provisioned nodes.
+	// Each entry must specify a subnetwork.
+	// Mirrors GKE node pool network_config.additional_node_network_configs.
+	// +kubebuilder:validation:MaxItems=7
+	// +optional
+	AdditionalNetworkInterfaces []AdditionalNetworkInterface `json:"additionalNetworkInterfaces,omitempty"`
+}
+
+// AdditionalNetworkInterface defines a secondary network interface on provisioned nodes.
+// Mirrors an entry in GKE node pool network_config.additional_node_network_configs.
+type AdditionalNetworkInterface struct {
+	// Network is the VPC network for this interface.
+	// When unset, defaults to the cluster's network.
+	// +optional
+	Network string `json:"network,omitempty"`
+	// Subnetwork is the subnetwork for this interface. Required.
+	// +kubebuilder:validation:MinLength=1
+	Subnetwork string `json:"subnetwork"`
+}
+
+// ImageSelectorTerm defines selection logic for an image used by Karpenter to launch nodes.
+// Exactly one of alias, id, or family (with channel or version) must be set.
+// +kubebuilder:validation:XValidation:message="family requires either channel or version to be set",rule="!has(self.family) || has(self.channel) || has(self.version)"
+// +kubebuilder:validation:XValidation:message="channel and version require family to be set",rule="!(has(self.channel) || has(self.version)) || has(self.family)"
+// +kubebuilder:validation:XValidation:message="channel and version cannot both be set",rule="!(has(self.channel) && has(self.version))"
+// +kubebuilder:validation:XValidation:message="channel is only supported for family ContainerOptimizedOS",rule="!has(self.channel) || self.family == 'ContainerOptimizedOS'"
+// +kubebuilder:validation:XValidation:message="exactly one of alias, id, or family must be set",rule="(has(self.alias) ? 1 : 0) + (has(self.id) ? 1 : 0) + (has(self.family) ? 1 : 0) == 1"
+// +kubebuilder:validation:XValidation:message="ContainerOptimizedOS version must be 'latest' or 'milestone.build.build.build' (e.g. '125.19216.104.126')",rule="!has(self.version) || !has(self.family) || self.family != 'ContainerOptimizedOS' || self.version == 'latest' || self.version.matches('^[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+$')"
+// +kubebuilder:validation:XValidation:message="Ubuntu2404 version must be 'latest' or 'vYYYYMMDD' (e.g. 'v20260416')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2404' || self.version == 'latest' || self.version.matches('^v[0-9]{8}$')"
+// +kubebuilder:validation:XValidation:message="Ubuntu2204 version must be 'latest' or 'vYYYYMMDD' (e.g. 'v20260416')",rule="!has(self.version) || !has(self.family) || self.family != 'Ubuntu2204' || self.version == 'latest' || self.version.matches('^v[0-9]{8}$')"
+// +kubebuilder:validation:XValidation:message="family 'Ubuntu' is not valid; use Ubuntu2404 for Ubuntu 24.04 or Ubuntu2204 for Ubuntu 22.04",rule="!has(self.family) || self.family != 'Ubuntu'"
+type ImageSelectorTerm struct {
+	// Deprecated: use Family with Channel or Version instead.
+	// Alias specifies which GKE image to select.
+	// Valid families include: ContainerOptimizedOS, Ubuntu
+	// +kubebuilder:validation:XValidation:message="'alias' is improperly formatted, must match the format 'family@version'",rule="self.matches('^[a-zA-Z0-9]+@.+$')"
+	// +kubebuilder:validation:XValidation:message="family is not supported, must be one of the following: 'ContainerOptimizedOS,Ubuntu'",rule="self.find('^[^@]+') in ['ContainerOptimizedOS', 'Ubuntu']"
+	// +kubebuilder:validation:XValidation:message="ContainerOptimizedOS version must be 'latest' or 'milestone.build.build.build' (e.g. '125.19216.104.126')",rule="!self.startsWith('ContainerOptimizedOS@') || self.matches('^ContainerOptimizedOS@(latest|[0-9]+[.][0-9]+[.][0-9]+[.][0-9]+)$')"
+	// +kubebuilder:validation:XValidation:message="Ubuntu version must be 'latest' or 'vYYYYMMDD' (e.g. 'v20260416')",rule="!self.startsWith('Ubuntu@') || self.matches('^Ubuntu@(latest|v[0-9]{8})$')"
+	// +kubebuilder:validation:MaxLength=60
+	// +optional
+	Alias string `json:"alias,omitempty"`
+	// ID specifies a GKE image by its full resource URL.
+	// +kubebuilder:validation:XValidation:message="'id' is improperly formatted, must match the format 'id'",rule="self.matches('^.*$')"
+	// +kubebuilder:validation:MaxLength=160
+	// +optional
+	ID string `json:"id,omitempty"`
+	// Family specifies the OS image family. Required when using Channel or Version.
+	// Valid values: ContainerOptimizedOS, Ubuntu2404, Ubuntu2204.
+	// +kubebuilder:validation:Enum=ContainerOptimizedOS;Ubuntu2404;Ubuntu2204
+	// +optional
+	Family string `json:"family,omitempty"`
+	// Channel specifies the GKE release channel to follow. Only valid when Family is ContainerOptimizedOS.
+	// Use "cluster" to track the channel the cluster is enrolled in.
+	// +kubebuilder:validation:Enum=rapid;regular;stable;extended;cluster
+	// +optional
+	Channel string `json:"channel,omitempty"`
+	// Version pins the image to a specific version or "latest".
+	// For ContainerOptimizedOS: "latest" or "milestone.build.build.build" (e.g. "125.19216.104.126").
+	// For Ubuntu2404/Ubuntu2204: "latest" or "vYYYYMMDD" (e.g. "v20260416").
+	// +kubebuilder:validation:MaxLength=32
+	// +optional
+	Version string `json:"version,omitempty"`
+}
+
+/*
+Maintainers: JSON tags on every field below MUST match the upstream kubelet
+`kubelet/config/v1beta1.KubeletConfiguration` schema. The entire struct is
+JSON-marshaled and merged into the kubelet-config bootstrap metadata YAML
+at provisioning time (see pkg/providers/metadata/utils.go), so any field
+added here with a matching upstream JSON tag automatically takes effect at
+kubelet runtime without further plumbing. A consequence is that adding a new
+field also requires deciding whether scheduler bin-packing must agree with
+the field's runtime effect — only resource-reservation-like fields
+(systemReserved, kubeReserved, eviction*, podsPerCore) need additional
+scheduler overhead/capacity plumbing in pkg/providers/instancetype.
+*/
+
+// KubeletQuantity is a bounded kubelet resource quantity or percentage string.
+//
+// +kubebuilder:validation:MaxLength=64
+type KubeletQuantity string
+
+// KubeletConfiguration defines args to be used when configuring kubelet on provisioned nodes.
+// They are a vswitch of the upstream types, recognizing not all options may be supported.
+// Wherever possible, the types and names should reflect the upstream kubelet types.
+// https://pkg.go.dev/k8s.io/kubelet/config/v1beta1#KubeletConfiguration
+// https://github.com/kubernetes/kubernetes/blob/9f82d81e55cafdedab619ea25cabf5d42736dacf/cmd/kubelet/app/options/options.go#L53
+type KubeletConfiguration struct {
+	// clusterDNS is a list of IP addresses for the cluster DNS server.
+	// Note that not all providers may use all addresses.
+	//+optional
+	ClusterDNS []string `json:"clusterDNS,omitempty"`
+	// MaxPods is an override for the maximum number of pods that can run on
+	// a worker node instance.
+	// +kubebuilder:validation:Minimum:=0
+	// +optional
+	MaxPods *int32 `json:"maxPods,omitempty"`
+	// PodsPerCore is an override for the number of pods that can run on a worker node
+	// instance based on the number of cpu cores. This value cannot exceed MaxPods, so, if
+	// MaxPods is a lower value, that value will be used.
+	// +kubebuilder:validation:Minimum:=0
+	// +optional
+	PodsPerCore *int32 `json:"podsPerCore,omitempty"`
+	// SystemReserved contains resources reserved for OS system daemons and kernel memory.
+	// +kubebuilder:validation:XValidation:message="valid keys for systemReserved are ['cpu','memory','ephemeral-storage','pid']",rule="self.all(x, x=='cpu' || x=='memory' || x=='ephemeral-storage' || x=='pid')"
+	// +kubebuilder:validation:XValidation:message="systemReserved value cannot be a negative resource quantity",rule="self.all(x, !self[x].startsWith('-'))"
+	// +kubebuilder:validation:XValidation:message="systemReserved values must be a resource.Quantity",rule="self.all(x, self[x].matches('^(\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))))?$'))"
+	// +kubebuilder:validation:MaxProperties=10
+	// +optional
+	SystemReserved map[string]KubeletQuantity `json:"systemReserved,omitempty"`
+	// KubeReserved contains resources reserved for Kubernetes system components.
+	// +kubebuilder:validation:XValidation:message="valid keys for kubeReserved are ['cpu','memory','ephemeral-storage','pid']",rule="self.all(x, x=='cpu' || x=='memory' || x=='ephemeral-storage' || x=='pid')"
+	// +kubebuilder:validation:XValidation:message="kubeReserved value cannot be a negative resource quantity",rule="self.all(x, !self[x].startsWith('-'))"
+	// +kubebuilder:validation:XValidation:message="kubeReserved values must be a resource.Quantity",rule="self.all(x, self[x].matches('^(\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))))?$'))"
+	// +kubebuilder:validation:MaxProperties=10
+	// +optional
+	KubeReserved map[string]KubeletQuantity `json:"kubeReserved,omitempty"`
+	// EvictionHard is the map of signal names to quantities that define hard eviction thresholds
+	// +kubebuilder:validation:XValidation:message="valid keys for evictionHard are ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available']",rule="self.all(x, x in ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available'])"
+	// +kubebuilder:validation:XValidation:message="evictionHard values must be a percentage or a resource.Quantity",rule="self.all(x, self[x].matches('^((\\\\d{1,2}(\\\\.\\\\d{1,2})?|100(\\\\.0{1,2})?)%|(\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))))?)$'))"
+	// +kubebuilder:validation:MaxProperties=10
+	// +optional
+	EvictionHard map[string]KubeletQuantity `json:"evictionHard,omitempty"`
+	// EvictionSoft is the map of signal names to quantities that define soft eviction thresholds
+	// +kubebuilder:validation:XValidation:message="valid keys for evictionSoft are ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available']",rule="self.all(x, x in ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available'])"
+	// +kubebuilder:validation:XValidation:message="evictionSoft values must be a percentage or a resource.Quantity",rule="self.all(x, self[x].matches('^((\\\\d{1,2}(\\\\.\\\\d{1,2})?|100(\\\\.0{1,2})?)%|(\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))(([KMGTPE]i)|[numkMGTPE]|([eE](\\\\+|-)?(([0-9]+(\\\\.[0-9]*)?)|(\\\\.[0-9]+))))?)$'))"
+	// +kubebuilder:validation:MaxProperties=10
+	// +optional
+	EvictionSoft map[string]KubeletQuantity `json:"evictionSoft,omitempty"`
+	// EvictionSoftGracePeriod is the map of signal names to quantities that define grace periods for each eviction signal
+	// +kubebuilder:validation:XValidation:message="valid keys for evictionSoftGracePeriod are ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available']",rule="self.all(x, x in ['memory.available','nodefs.available','nodefs.inodesFree','imagefs.available','imagefs.inodesFree','pid.available'])"
+	// +kubebuilder:validation:MaxProperties=10
+	// +optional
+	EvictionSoftGracePeriod map[string]metav1.Duration `json:"evictionSoftGracePeriod,omitempty"`
+	// EvictionMaxPodGracePeriod is the maximum allowed grace period (in seconds) to use when terminating pods in
+	// response to soft eviction thresholds being met.
+	// +optional
+	EvictionMaxPodGracePeriod *int32 `json:"evictionMaxPodGracePeriod,omitempty"`
+	// ImageGCHighThresholdPercent is the percent of disk usage after which image
+	// garbage collection is always run. The percent is calculated by dividing this
+	// field value by 100, so this field must be between 0 and 100, inclusive.
+	// When specified, the value must be greater than ImageGCLowThresholdPercent.
+	// +kubebuilder:validation:Minimum:=0
+	// +kubebuilder:validation:Maximum:=100
+	// +optional
+	ImageGCHighThresholdPercent *int32 `json:"imageGCHighThresholdPercent,omitempty"`
+	// ImageGCLowThresholdPercent is the percent of disk usage before which image
+	// garbage collection is never run. Lowest disk usage to garbage collect to.
+	// The percent is calculated by dividing this field value by 100,
+	// so the field value must be between 0 and 100, inclusive.
+	// When specified, the value must be less than imageGCHighThresholdPercent
+	// +kubebuilder:validation:Minimum:=0
+	// +kubebuilder:validation:Maximum:=100
+	// +optional
+	ImageGCLowThresholdPercent *int32 `json:"imageGCLowThresholdPercent,omitempty"`
+	// CPUCFSQuota enables CPU CFS quota enforcement for containers that specify CPU limits.
+	// +optional
+	CPUCFSQuota *bool `json:"cpuCFSQuota,omitempty"`
+}
+
+// +kubebuilder:validation:XValidation:message="provisionedIOPS is only applicable for pd-extreme, hyperdisk-balanced, hyperdisk-balanced-high-availability, and hyperdisk-extreme",rule="!has(self.provisionedIOPS) || self.category in ['pd-extreme', 'hyperdisk-balanced', 'hyperdisk-balanced-high-availability', 'hyperdisk-extreme']"
+// +kubebuilder:validation:XValidation:message="provisionedThroughput is only applicable for hyperdisk-balanced, hyperdisk-balanced-high-availability, hyperdisk-throughput, and hyperdisk-ml",rule="!has(self.provisionedThroughput) || self.category in ['hyperdisk-balanced', 'hyperdisk-balanced-high-availability', 'hyperdisk-throughput', 'hyperdisk-ml']"
+// +kubebuilder:validation:XValidation:message="provisionedIOPS and provisionedThroughput must both be set or both be unset for hyperdisk-balanced and hyperdisk-balanced-high-availability",rule="!(self.category in ['hyperdisk-balanced', 'hyperdisk-balanced-high-availability']) || (has(self.provisionedIOPS) == has(self.provisionedThroughput))"
+type Disk struct {
+	// SizeGiB is the size of the disk. Unit: GiB
+	// +kubebuilder:validation:XValidation:message="size invalid",rule="self >= 10"
+	// +optional
+	SizeGiB int32 `json:"sizeGiB"`
+	// The category of the disk (e.g., pd-standard, pd-balanced, pd-ssd, pd-extreme).
+	// +optional
+	Category DiskCategory `json:"category,omitempty"`
+	// Indicates that this is a boot disk.
+	// +optional
+	Boot bool `json:"boot"`
+	// SecondaryBootImage is the secondary boot disk image name (e.g. global/images/DISK_IMAGE_NAME).
+	// +optional
+	SecondaryBootImage string `json:"secondaryBootImage,omitempty"`
+	// SecondaryBootMode is the secondary boot disk mode (e.g. CONTAINER_IMAGE_CACHE).
+	// +optional
+	SecondaryBootMode SecondaryBootDiskMode `json:"secondaryBootMode,omitempty"`
+	// KMSKeyName is the Cloud KMS key to use for disk encryption.
+	// Format: projects/{project}/locations/{region}/keyRings/{keyring}/cryptoKeys/{key}
+	// Optionally, you can specify a version: projects/{project}/locations/{region}/keyRings/{keyring}/cryptoKeys/{key}/cryptoKeyVersions/{version}
+	// +kubebuilder:validation:Pattern=`^projects/[^/]+/locations/[^/]+/keyRings/[^/]+/cryptoKeys/[^/]+(/cryptoKeyVersions/[^/]+)?$`
+	// +optional
+	KMSKeyName string `json:"kmsKeyName,omitempty"`
+	// KMSKeyServiceAccount is the service account to use for accessing the KMS key.
+	// If not specified, the Compute Engine default service account will be used.
+	// +kubebuilder:validation:Pattern=`^[^@]+@(developer\.gserviceaccount\.com|[^@]+\.iam\.gserviceaccount\.com)$`
+	// +optional
+	KMSKeyServiceAccount string `json:"kmsKeyServiceAccount,omitempty"`
+	// ProvisionedIOPS is the number of I/O operations per second to provision for the disk.
+	// Applicable for: pd-extreme (2,500–120,000), hyperdisk-balanced (3,000–160,000),
+	// hyperdisk-balanced-high-availability (up to 100,000), and hyperdisk-extreme (up to 350,000).
+	// +optional
+	ProvisionedIOPS *int64 `json:"provisionedIOPS,omitempty"`
+	// ProvisionedThroughput is the throughput in MiB/s to provision for the disk.
+	// Applicable for: hyperdisk-balanced (140–2,400 MiB/s), hyperdisk-balanced-high-availability (up to 1,200 MiB/s),
+	// hyperdisk-throughput (up to 2,400 MiB/s), and hyperdisk-ml (up to 1,200,000 MiB/s).
+	// +optional
+	ProvisionedThroughput *int64 `json:"provisionedThroughput,omitempty"`
+}
+
+// DiskCategory represents a disk category type
+// +kubebuilder:validation:Enum=hyperdisk-balanced;hyperdisk-balanced-high-availability;hyperdisk-extreme;hyperdisk-ml;hyperdisk-throughput;local-ssd;pd-balanced;pd-extreme;pd-ssd;pd-standard
+type DiskCategory string
+
+// SecondaryBootDiskMode is the mode of the secondary boot disk.
+// +kubebuilder:validation:Enum=MODE_UNSPECIFIED;CONTAINER_IMAGE_CACHE
+type SecondaryBootDiskMode string
+
+// NetworkTag represents a single GCE network tag value.
+// Network tags must be RFC1035 compliant, start with a lowercase letter, and contain only
+// lowercase letters, digits, and hyphens.
+// +kubebuilder:validation:Pattern=`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`
+// +kubebuilder:validation:MinLength=1
+// +kubebuilder:validation:MaxLength=63
+type NetworkTag string
+
+// ShieldedInstanceConfig defines the Shielded VM options for a GCE instance.
+type ShieldedInstanceConfig struct {
+	// EnableSecureBoot defines whether the instance has Secure Boot enabled.
+	// +optional
+	EnableSecureBoot *bool `json:"enableSecureBoot,omitempty"`
+	// EnableVtpm defines whether the instance has the vTPM enabled.
+	// +optional
+	EnableVtpm *bool `json:"enableVtpm,omitempty"`
+	// EnableIntegrityMonitoring defines whether the instance has integrity monitoring enabled.
+	// +optional
+	EnableIntegrityMonitoring *bool `json:"enableIntegrityMonitoring,omitempty"`
+}
+
+// GCENodeClass is the Schema for the GCENodeClass API
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+// +kubebuilder:resource:path=gcenodeclasses,scope=Cluster,categories=karpenter,shortName={gcenc,gcencs}
+// +kubebuilder:printcolumn:name="Ready",type="string",JSONPath=".status.conditions[?(@.type==\"Ready\")].status",description=""
+// +kubebuilder:printcolumn:name="Age",type="date",JSONPath=".metadata.creationTimestamp",description=""
+// +kubebuilder:subresource:status
+type GCENodeClass struct {
+	metav1.TypeMeta   `json:",inline"`
+	metav1.ObjectMeta `json:"metadata,omitempty"`
+
+	Spec   GCENodeClassSpec   `json:"spec,omitempty"`
+	Status GCENodeClassStatus `json:"status,omitempty"`
+}
+
+const (
+	KubeletMaxPods = 110
+
+	// We need to bump the GCENodeClassHashVersion when we make an update to the GCENodeClass CRD under these conditions:
+	// 1. A field changes its default value for an existing field that is already hashed
+	// 2. A field is added to the hash calculation with an already-set value
+	// 3. A field is removed from the hash calculations
+	GCENodeClassHashVersion = "v4"
+)
+
+func (in *GCENodeClass) Hash() string {
+	return fmt.Sprint(lo.Must(hashstructure.Hash([]interface{}{
+		in.Spec,
+		in.ImageFamily(),
+	}, hashstructure.FormatV2, &hashstructure.HashOptions{
+		SlicesAsSets:    true,
+		IgnoreZeroValue: true,
+		ZeroNil:         true,
+	})))
+}
+
+// GCENodeClassList contains a list of GCENodeClass
+// +k8s:deepcopy-gen:interfaces=k8s.io/apimachinery/pkg/runtime.Object
+type GCENodeClassList struct {
+	metav1.TypeMeta `json:",inline"`
+	metav1.ListMeta `json:"metadata,omitempty"`
+	Items           []GCENodeClass `json:"items"`
+}
+
+func (in *GCENodeClass) ImageFamily() string {
+	if in.Spec.ImageFamily != nil {
+		return *in.Spec.ImageFamily
+	}
+	if alias := in.Alias(); alias != nil {
+		return alias.Family
+	}
+	// Scan family-based ImageSelectorTerms. Ubuntu2404 and Ubuntu2204 both map to
+	// ImageFamilyUbuntu so downstream code (PatchKubeEnvForOSType) keeps working.
+	for _, term := range in.Spec.ImageSelectorTerms {
+		switch term.Family {
+		case ImageFamilyContainerOptimizedOS:
+			return ImageFamilyContainerOptimizedOS
+		case ImageFamilyUbuntu2404, ImageFamilyUbuntu2204:
+			return ImageFamilyUbuntu
+		}
+	}
+	return ImageFamilyCustom
+}
+
+type Alias struct {
+	Family  string
+	Version string
+}
+
+func (in *GCENodeClass) Alias() *Alias {
+	term, ok := lo.Find(in.Spec.ImageSelectorTerms, func(term ImageSelectorTerm) bool {
+		return term.Alias != ""
+	})
+	if !ok {
+		return nil
+	}
+	return &Alias{
+		Family:  imageFamilyFromAlias(term.Alias),
+		Version: imageVersionFromAlias(term.Alias),
+	}
+}
+
+func imageFamilyFromAlias(alias string) string {
+	components := strings.Split(alias, "@")
+	if len(components) != 2 {
+		log.Fatalf("failed to parse AMI alias %q, invalid format", alias)
+	}
+	family, ok := lo.Find([]string{
+		ImageFamilyUbuntu,
+		ImageFamilyContainerOptimizedOS,
+	}, func(family string) bool {
+		return family == components[0]
+	})
+	if !ok {
+		log.Fatalf("%q is an invalid alias family", components[0])
+	}
+	return family
+}
+
+func imageVersionFromAlias(alias string) string {
+	components := strings.Split(alias, "@")
+	if len(components) != 2 {
+		log.Fatalf("failed to parse image alias %q, invalid format", alias)
+	}
+	return components[1]
+}
+
+func (in *GCENodeClass) GetMaxPods() int32 {
+	if in.Spec.KubeletConfiguration != nil && in.Spec.KubeletConfiguration.MaxPods != nil {
+		return *in.Spec.KubeletConfiguration.MaxPods
+	}
+	return KubeletMaxPods
+}

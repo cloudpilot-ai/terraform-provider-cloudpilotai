@@ -1,0 +1,9 @@
+cloudpilot_api_endpoint = "https://api.cloudpilot.ai"
+cloudpilot_api_key      = "cp_..."
+
+cluster_name         = "my-gke-cluster"
+region               = "us-central1"
+project_id           = "my-gcp-project"
+cluster_uid          = "kube-system-namespace-uid"
+cluster_location     = "us-central1"
+node_service_account = "nodes@my-gcp-project.iam.gserviceaccount.com"

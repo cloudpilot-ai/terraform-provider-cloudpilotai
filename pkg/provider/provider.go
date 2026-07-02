@@ -16,8 +16,10 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/consts"
 	eksds "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/nodeautoscale/eks"
+	gkeds "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/nodeautoscale/gke"
 	wads "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/datasources/workloadautoscaler"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/nodeautoscale/eks"
+	gke "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/nodeautoscale/gke"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/workloadautoscaler"
 )
 
@@ -96,6 +98,7 @@ func (p *CloudpilotaiProvider) Configure(ctx context.Context, req provider.Confi
 func (p *CloudpilotaiProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
 	return []func() datasource.DataSource{
 		eksds.NewClusterDataSource,
+		gkeds.NewClusterDataSource,
 		wads.NewWorkloadAutoscalerDataSource,
 	}
 }
@@ -108,6 +111,7 @@ func (p *CloudpilotaiProvider) Metadata(ctx context.Context, req provider.Metada
 func (p *CloudpilotaiProvider) Resources(ctx context.Context) []func() resource.Resource {
 	return []func() resource.Resource{
 		eks.NewCluster,
+		gke.NewCluster,
 		workloadautoscaler.NewWorkloadAutoscaler,
 	}
 }

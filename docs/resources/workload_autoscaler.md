@@ -132,7 +132,7 @@ The `kubeconfig` you pass must already contain working auth for the target Kuber
 - `enable_node_agent` (Boolean) Whether to enable the Node Agent DaemonSet for per-node metrics collection.
 - `enable_preempted_pod_gc` (Boolean) Enable garbage collection for preempted pods.
 - `enable_proactive` (Attributes List) List of workload filters to enable proactive optimization. Each entry selects workloads by the specified filters and enables proactive update for them. (see [below for nested schema](#nestedatt--enable_proactive))
-- `kubeconfig` (String) Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import. The kubeconfig must already be able to authenticate to the target cluster. For EKS, using cloudpilotai_eks_cluster.this.kubeconfig satisfies this requirement.
+- `kubeconfig` (String) Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import. For imported GKE clusters, the provider can often auto-generate kubeconfig from discovered cluster metadata; for EKS, using cloudpilotai_eks_cluster.this.kubeconfig satisfies this requirement.
 - `limiter_burst` (Number) Workload Autoscaler rate-limit burst. Server requires a positive value.
 - `limiter_quota_per_window` (Number) Workload Autoscaler rate-limit quota per limiter window. Server requires a positive value.
 - `limiter_window_seconds` (Number) Workload Autoscaler limiter window in seconds. Server requires a positive value.

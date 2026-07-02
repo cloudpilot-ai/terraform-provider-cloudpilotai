@@ -9,3 +9,11 @@ func TestGenerateClusterUIDMatchesServerAlgorithm(t *testing.T) {
 		t.Fatalf("got cluster ID %q, want %q", got, want)
 	}
 }
+
+func TestGenerateClusterUIDSupportsGCP(t *testing.T) {
+	got := GenerateClusterUID("gcp", "test-gke", "us-central1", "gke-cluster-uid-123")
+	want := "0afb8050-e986-517e-8310-e83e668a659e"
+	if got != want {
+		t.Fatalf("got cluster ID %q, want %q", got, want)
+	}
+}

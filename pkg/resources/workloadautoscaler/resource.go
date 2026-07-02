@@ -15,12 +15,20 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client/helper"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/common/gkeaccess"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 var (
 	_ resource.Resource                = &WorkloadAutoscaler{}
 	_ resource.ResourceWithImportState = &WorkloadAutoscaler{}
+)
+
+var uninstallWorkloadAutoscaler = helper.UninstallWorkloadAutoscaler
+
+var (
+	recommendationPolicyDeleteRetryInterval = 2 * time.Second
+	recommendationPolicyDeleteRetryTimeout  = 30 * time.Second
 )
 
 type WorkloadAutoscaler struct {
@@ -78,8 +86,13 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 		return
 	}
 
+	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
+		return
+	}
+
 	clusterID := data.ClusterID.ValueString()
-	kubeconfigPath := data.Kubeconfig.ValueString()
 	if kubeconfigPath == "" {
 		resp.Diagnostics.AddError(
 			"kubeconfig is required",
@@ -106,13 +119,22 @@ func (w *WorkloadAutoscaler) Create(ctx context.Context, req resource.CreateRequ
 			stringValueOrDefault(data.StorageClass, ""),
 			boolValueOrDefault(data.EnableNodeAgent, true),
 		); err != nil {
-			resp.Diagnostics.AddError(
-				"failed to install Workload Autoscaler",
-				err.Error(),
-			)
-			return
+			if helper.IsWorkloadAutoscalerInstallNotReadyError(err) {
+				tflog.Warn(ctx, fmt.Sprintf("Workload Autoscaler install script reported not ready after Helm install; continuing with provider readiness checks: %v", err))
+				resp.Diagnostics.AddWarning(
+					"Workload Autoscaler install is still becoming ready",
+					"The install script reported that the Workload Autoscaler was not ready immediately after Helm install. Terraform will continue and use provider-side readiness/configuration checks.",
+				)
+			} else {
+				resp.Diagnostics.AddError(
+					"failed to install Workload Autoscaler",
+					err.Error(),
+				)
+				return
+			}
+		} else {
+			tflog.Info(ctx, "installed Workload Autoscaler successfully")
 		}
-		tflog.Info(ctx, "installed Workload Autoscaler successfully")
 	}
 
 	// 2. Enable WA configuration on the backend
@@ -162,6 +184,12 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
+	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
+		return
+	}
+
 	// Read previous state to know which resources were previously tracked
 	var state WorkloadAutoscalerModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -191,7 +219,7 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 	}
 
 	if needReinstall {
-		if data.Kubeconfig.ValueString() == "" {
+		if kubeconfigPath == "" {
 			resp.Diagnostics.AddError(
 				"kubeconfig is required",
 				"The kubeconfig attribute must be set when Workload Autoscaler installation is needed.",
@@ -200,17 +228,26 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		}
 		tflog.Info(ctx, "upgrading CloudPilot AI Workload Autoscaler")
 		if err := helper.InstallWorkloadAutoscaler(ctx, w.client,
-			data.Kubeconfig.ValueString(),
+			kubeconfigPath,
 			stringValueOrDefault(data.StorageClass, ""),
 			boolValueOrDefault(data.EnableNodeAgent, true),
 		); err != nil {
-			resp.Diagnostics.AddError(
-				"failed to upgrade Workload Autoscaler",
-				err.Error(),
-			)
-			return
+			if helper.IsWorkloadAutoscalerInstallNotReadyError(err) {
+				tflog.Warn(ctx, fmt.Sprintf("Workload Autoscaler upgrade script reported not ready after Helm install; continuing with provider readiness checks: %v", err))
+				resp.Diagnostics.AddWarning(
+					"Workload Autoscaler upgrade is still becoming ready",
+					"The upgrade script reported that the Workload Autoscaler was not ready immediately after Helm upgrade. Terraform will continue and use provider-side readiness/configuration checks.",
+				)
+			} else {
+				resp.Diagnostics.AddError(
+					"failed to upgrade Workload Autoscaler",
+					err.Error(),
+				)
+				return
+			}
+		} else {
+			tflog.Info(ctx, "upgraded Workload Autoscaler successfully")
 		}
-		tflog.Info(ctx, "upgraded Workload Autoscaler successfully")
 	} else {
 		tflog.Info(ctx, "Workload Autoscaler install settings unchanged and component already installed, skipping upgrade")
 	}
@@ -327,6 +364,12 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 	if err := hydratePostWriteState(ctx, w.client, clusterID, &data); err != nil {
 		resp.Diagnostics.AddError("failed to hydrate Workload Autoscaler state after read", err.Error())
 		return
+	}
+	if err := w.maybeHydrateExecutionAccess(ctx, &data, isImport); err != nil {
+		resp.Diagnostics.AddWarning(
+			"skipped GKE kubeconfig auto-discovery",
+			fmt.Sprintf("The provider could not auto-generate kubeconfig during read: %s", err),
+		)
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -503,6 +546,29 @@ func orderByState[T any](stateItems []T, serverByName map[string]T, getName func
 	return result
 }
 
+func deleteRecommendationPolicy(ctx context.Context, client cloudpilotaiclient.Interface, clusterID, name string) error {
+	var lastInUseErr error
+	err := wait.PollUntilContextTimeout(ctx, recommendationPolicyDeleteRetryInterval, recommendationPolicyDeleteRetryTimeout, true, func(ctx context.Context) (bool, error) {
+		err := client.DeleteRecommendationPolicy(clusterID, name)
+		if err == nil {
+			return true, nil
+		}
+		if strings.Contains(err.Error(), "not found") {
+			return true, nil
+		}
+		if strings.Contains(err.Error(), "in use") {
+			lastInUseErr = err
+			tflog.Info(ctx, fmt.Sprintf("recommendation policy %s is still in use, retrying deletion", name))
+			return false, nil
+		}
+		return false, err
+	})
+	if err != nil && lastInUseErr != nil {
+		return lastInUseErr
+	}
+	return err
+}
+
 func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var data WorkloadAutoscalerModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &data)...)
@@ -510,7 +576,14 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 
+	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
+		return
+	}
+
 	clusterID := data.ClusterID.ValueString()
+	var deferredRecommendationPolicies []string
 
 	// 1. Delete only Terraform-tracked autoscaling policies (they reference recommendation policies)
 	if !data.AutoscalingPolicies.IsNullOrUnknown() {
@@ -526,11 +599,11 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 				if strings.Contains(err.Error(), "not found") {
 					continue
 				}
-				resp.Diagnostics.AddError(
-					fmt.Sprintf("failed to delete autoscaling policy %s", name),
+				resp.Diagnostics.AddWarning(
+					fmt.Sprintf("skipped deletion of autoscaling policy %s", name),
 					err.Error(),
 				)
-				return
+				continue
 			}
 		}
 	}
@@ -550,23 +623,21 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 					continue
 				}
 				if strings.Contains(err.Error(), "in use") {
-					resp.Diagnostics.AddWarning(
-						fmt.Sprintf("skipped deletion of recommendation policy %s", name),
-						"RecommendationPolicy is still in use by an AutoscalingPolicy. It was not deleted.",
-					)
+					tflog.Info(ctx, fmt.Sprintf("recommendation policy %s is still in use, deferring deletion until after Workload Autoscaler uninstall", name))
+					deferredRecommendationPolicies = append(deferredRecommendationPolicies, name)
 					continue
 				}
-				resp.Diagnostics.AddError(
-					fmt.Sprintf("failed to delete recommendation policy %s", name),
+				resp.Diagnostics.AddWarning(
+					fmt.Sprintf("skipped deletion of recommendation policy %s", name),
 					err.Error(),
 				)
-				return
+				continue
 			}
 		}
 	}
 
 	// 3. Disable Workload Autoscaler, wait for resources cleanup, then helm uninstall
-	if data.Kubeconfig.ValueString() == "" {
+	if kubeconfigPath == "" {
 		resp.Diagnostics.AddError(
 			"kubeconfig is required",
 			"The kubeconfig attribute must be set for delete operations.",
@@ -574,12 +645,33 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 		return
 	}
 	tflog.Info(ctx, "uninstalling Workload Autoscaler")
-	if err := helper.UninstallWorkloadAutoscaler(ctx, w.client, clusterID, data.Kubeconfig.ValueString()); err != nil {
+	if err := uninstallWorkloadAutoscaler(ctx, w.client, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to uninstall Workload Autoscaler",
 			err.Error(),
 		)
 		return
+	}
+
+	for _, name := range deferredRecommendationPolicies {
+		tflog.Info(ctx, fmt.Sprintf("deleting deferred recommendation policy: %s", name))
+		if err := deleteRecommendationPolicy(ctx, w.client, clusterID, name); err != nil {
+			if strings.Contains(err.Error(), "not found") {
+				continue
+			}
+			if strings.Contains(err.Error(), "in use") {
+				resp.Diagnostics.AddWarning(
+					fmt.Sprintf("skipped deletion of recommendation policy %s", name),
+					"RecommendationPolicy is still in use by an AutoscalingPolicy. It was not deleted.",
+				)
+				continue
+			}
+			resp.Diagnostics.AddWarning(
+				fmt.Sprintf("skipped deletion of recommendation policy %s", name),
+				err.Error(),
+			)
+			continue
+		}
 	}
 
 	// 4. Update backend configuration
@@ -591,6 +683,37 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 	}
 
 	tflog.Info(ctx, "deleted Workload Autoscaler resource successfully")
+}
+
+func (w *WorkloadAutoscaler) fillMissingParameters(ctx context.Context, data *WorkloadAutoscalerModel, persistGeneratedKubeconfig bool) (string, error) {
+	originalKubeconfig := stringValue(data.Kubeconfig)
+	info := gkeaccess.AccessInfo{
+		ClusterID:  stringValue(data.ClusterID),
+		Kubeconfig: originalKubeconfig,
+	}
+
+	summary, err := w.client.GetCluster(info.ClusterID)
+	if err != nil {
+		return "", err
+	}
+	if summary == nil || summary.CloudProvider != api.CloudProviderGCP {
+		return originalKubeconfig, nil
+	}
+
+	info.ClusterName = summary.ClusterName
+	info.Region = summary.Region
+	if err := gkeaccess.EnsureKubeconfigAvailable(ctx, w.client, &info, nil); err != nil {
+		return "", err
+	}
+	if info.Kubeconfig != "" && (persistGeneratedKubeconfig || originalKubeconfig != "") {
+		data.Kubeconfig = types.StringValue(info.Kubeconfig)
+	}
+	return info.Kubeconfig, nil
+}
+
+func (w *WorkloadAutoscaler) maybeHydrateExecutionAccess(ctx context.Context, data *WorkloadAutoscalerModel, persistGeneratedKubeconfig bool) error {
+	_, err := w.fillMissingParameters(ctx, data, persistGeneratedKubeconfig)
+	return err
 }
 
 func (w *WorkloadAutoscaler) syncPolicies(ctx context.Context, data *WorkloadAutoscalerModel, clusterID string,
@@ -746,6 +869,13 @@ func boolValueOrDefault(value types.Bool, fallback bool) bool {
 func stringValueOrDefault(value types.String, fallback string) string {
 	if !isManagedString(value) {
 		return fallback
+	}
+	return value.ValueString()
+}
+
+func stringValue(value types.String) string {
+	if value.IsNull() || value.IsUnknown() {
+		return ""
 	}
 	return value.ValueString()
 }
