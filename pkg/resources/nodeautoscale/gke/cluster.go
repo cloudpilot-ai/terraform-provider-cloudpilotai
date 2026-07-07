@@ -30,8 +30,10 @@ var (
 const clusterReadyPollTimeout = 5 * time.Minute
 
 var uninstallCloudpilotAIAgentComponent = helper.UninstallCloudpilotAIAgentComponent
-var restoreCloudpilotAIAfterUninstall = helper.RestoreCloudpilotAIRebalanceComponentWithEnv
+var restoreCloudpilotAIRebalanceComponent = helper.RestoreCloudpilotAIRebalanceComponentWithEnv
 var installCloudpilotAIAgentComponent = helper.InstallCloudpilotAIAgentComponent
+var uninstallWorkloadAutoscaler = helper.UninstallWorkloadAutoscaler
+var deleteCloudpilotNamespace = helper.DeleteCloudpilotNamespace
 
 type Cluster struct {
 	client cloudpilotaiclient.Interface
@@ -676,32 +678,46 @@ func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, cluster
 		return err
 	}
 
-	if err := uninstallCloudpilotAIAgentComponent(
-		ctx,
-		c.client,
-		clusterUID,
-		data.ClusterName.ValueString(),
-		api.CloudProviderGCP,
-		data.Region.ValueString(),
-		data.Kubeconfig.ValueString(),
-		nil,
-	); err != nil {
-		return fmt.Errorf("failed to uninstall cloudpilot agent component: %w", err)
-	}
-
 	restoreEnv, err := restoreEnvFromClusterModel(ctx, *data)
 	if err != nil {
 		return fmt.Errorf("failed to parse gke restore configuration: %w", err)
 	}
+
+	nodesRestored := false
 	switch {
 	case boolValue(data.SkipRestore):
 		tflog.Info(ctx, "skip_restore is true, skipping gke node pool restore step")
 	case len(restoreEnv) == 0:
 		tflog.Info(ctx, "restore_node_number is 0 and no per-pool restore sizes are configured, leaving cluster in its current optimized state")
 	default:
-		tflog.Info(ctx, "restoring regular gke node pools after CloudPilot uninstall")
-		if err := restoreCloudpilotAIAfterUninstall(ctx, c.client, clusterUID, api.CloudProviderGCP, data.Kubeconfig.ValueString(), restoreEnv, nil); err != nil {
-			return fmt.Errorf("failed to restore gke node pools after uninstall: %w", err)
+		tflog.Info(ctx, "restoring regular gke node pools before CloudPilot uninstall")
+		if err := restoreCloudpilotAIRebalanceComponent(ctx, c.client, clusterUID, api.CloudProviderGCP, data.Kubeconfig.ValueString(), restoreEnv, nil); err != nil {
+			return fmt.Errorf("failed to restore gke node pools before uninstall: %w", err)
+		}
+
+		tflog.Info(ctx, "gke node pools were restored, running full uninstall flow")
+		if err := uninstallCloudpilotAIAgentComponent(
+			ctx,
+			c.client,
+			clusterUID,
+			data.ClusterName.ValueString(),
+			api.CloudProviderGCP,
+			data.Region.ValueString(),
+			data.Kubeconfig.ValueString(),
+			nil,
+		); err != nil {
+			return fmt.Errorf("failed to uninstall cloudpilot agent component: %w", err)
+		}
+		nodesRestored = true
+	}
+
+	if !nodesRestored {
+		tflog.Info(ctx, "gke node pools were not restored, uninstalling Workload Autoscaler and deleting cloudpilot namespace")
+		if err := uninstallWorkloadAutoscaler(ctx, c.client, clusterUID, data.Kubeconfig.ValueString()); err != nil {
+			return fmt.Errorf("failed to uninstall workload autoscaler: %w", err)
+		}
+		if err := deleteCloudpilotNamespace(ctx, data.Kubeconfig.ValueString(), nil); err != nil {
+			return fmt.Errorf("failed to delete cloudpilot namespace: %w", err)
 		}
 	}
 
