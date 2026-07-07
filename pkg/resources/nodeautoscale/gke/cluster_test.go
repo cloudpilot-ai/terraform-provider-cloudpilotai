@@ -166,6 +166,34 @@ func (f *fakeClusterClient) DeleteCluster(clusterID string) error {
 	return nil
 }
 
+func stubGKEDeleteHooks(t *testing.T) {
+	t.Helper()
+
+	originalUninstall := uninstallCloudpilotAIAgentComponent
+	originalRestore := restoreCloudpilotAIRebalanceComponent
+	originalWAUninstall := uninstallWorkloadAutoscaler
+	originalDeleteNamespace := deleteCloudpilotNamespace
+	t.Cleanup(func() {
+		uninstallCloudpilotAIAgentComponent = originalUninstall
+		restoreCloudpilotAIRebalanceComponent = originalRestore
+		uninstallWorkloadAutoscaler = originalWAUninstall
+		deleteCloudpilotNamespace = originalDeleteNamespace
+	})
+
+	uninstallCloudpilotAIAgentComponent = func(context.Context, cloudpilotaiclient.Interface, string, string, string, string, string, map[string]string) error {
+		return nil
+	}
+	restoreCloudpilotAIRebalanceComponent = func(context.Context, cloudpilotaiclient.Interface, string, string, string, map[string]string, map[string]string) error {
+		return nil
+	}
+	uninstallWorkloadAutoscaler = func(context.Context, cloudpilotaiclient.Interface, string, string) error {
+		return nil
+	}
+	deleteCloudpilotNamespace = func(context.Context, string, map[string]string) error {
+		return nil
+	}
+}
+
 func TestSchemaExposesGKEIdentityAndClusterFields(t *testing.T) {
 	s := Schema(context.Background())
 
@@ -481,37 +509,27 @@ func TestSyncConfigurationTreatsMissingRebalanceDisableAsNoop(t *testing.T) {
 	}
 }
 
-func TestDeleteClusterDisablesRebalanceAndUsesGCPUninstallPath(t *testing.T) {
+func TestDeleteClusterWithoutRestoreUninstallsWAAndDeletesNamespace(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeClusterClient{}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	type uninstallCall struct {
-		clusterUID string
-		cluster    string
-		provider   string
-		region     string
-		kubeconfig string
+	calls := make([]string, 0, 2)
+	uninstallWorkloadAutoscaler = func(_ context.Context, _ cloudpilotaiclient.Interface, clusterUID, kubeconfigPath string) error {
+		calls = append(calls, fmt.Sprintf("wa:%s:%s", clusterUID, kubeconfigPath))
+		return nil
 	}
-
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-
-	var got uninstallCall
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, clusterUID, clusterName, provider, region, kubeconfigPath string, _ map[string]string) error {
-		got = uninstallCall{
-			clusterUID: clusterUID,
-			cluster:    clusterName,
-			provider:   provider,
-			region:     region,
-			kubeconfig: kubeconfigPath,
-		}
+	deleteCloudpilotNamespace = func(_ context.Context, kubeconfigPath string, _ map[string]string) error {
+		calls = append(calls, fmt.Sprintf("namespace:%s", kubeconfigPath))
+		return nil
+	}
+	uninstallCloudpilotAIAgentComponent = func(context.Context, cloudpilotaiclient.Interface, string, string, string, string, string, map[string]string) error {
+		t.Fatal("full uninstall should not run when GKE nodes are not restored")
 		return nil
 	}
 
@@ -531,11 +549,12 @@ func TestDeleteClusterDisablesRebalanceAndUsesGCPUninstallPath(t *testing.T) {
 	if len(client.rebalanceUpdates) != 1 || client.rebalanceUpdates[0] == nil || client.rebalanceUpdates[0].Enable {
 		t.Fatalf("rebalance updates = %#v, want one disable call", client.rebalanceUpdates)
 	}
-	if got.provider != api.CloudProviderGCP {
-		t.Fatalf("uninstall provider = %q, want %q", got.provider, api.CloudProviderGCP)
+	wantCalls := []string{
+		fmt.Sprintf("wa:cluster-1:%s", kubeconfigPath),
+		fmt.Sprintf("namespace:%s", kubeconfigPath),
 	}
-	if got.clusterUID != "cluster-1" || got.cluster != "demo-gke" || got.region != "us-central1" || got.kubeconfig != kubeconfigPath {
-		t.Fatalf("uninstall call = %#v, want cluster-1/demo-gke/us-central1/%s", got, kubeconfigPath)
+	if len(calls) != len(wantCalls) || calls[0] != wantCalls[0] || calls[1] != wantCalls[1] {
+		t.Fatalf("cleanup calls = %#v, want %#v", calls, wantCalls)
 	}
 	if len(client.deletedClusters) != 1 || client.deletedClusters[0] != "cluster-1" {
 		t.Fatalf("DeleteCluster calls = %#v, want [cluster-1]", client.deletedClusters)
@@ -546,26 +565,20 @@ func TestDeleteClusterSkipsRestoreByDefaultAndPreservesTrackedResources(t *testi
 	ctx := context.Background()
 	client := &fakeClusterClient{}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
 
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
+	restoreCalled := false
+	restoreCloudpilotAIRebalanceComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _ string, _ map[string]string, _ map[string]string) error {
+		restoreCalled = true
 		return nil
 	}
-
-	originalRestore := restoreCloudpilotAIAfterUninstall
-	defer func() {
-		restoreCloudpilotAIAfterUninstall = originalRestore
-	}()
-	restoreCalled := false
-	restoreCloudpilotAIAfterUninstall = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _ string, _ map[string]string, _ map[string]string) error {
-		restoreCalled = true
+	fullUninstallCalled := false
+	uninstallCloudpilotAIAgentComponent = func(context.Context, cloudpilotaiclient.Interface, string, string, string, string, string, map[string]string) error {
+		fullUninstallCalled = true
 		return nil
 	}
 
@@ -590,6 +603,9 @@ func TestDeleteClusterSkipsRestoreByDefaultAndPreservesTrackedResources(t *testi
 	}
 	if restoreCalled {
 		t.Fatal("restore should be skipped when no restore configuration is set")
+	}
+	if fullUninstallCalled {
+		t.Fatal("full uninstall should be skipped when no restore configuration is set")
 	}
 	if len(client.rebalanceUpdates) != 1 || client.rebalanceUpdates[0] == nil || client.rebalanceUpdates[0].Enable {
 		t.Fatalf("rebalance updates = %#v, want one disable call", client.rebalanceUpdates)
@@ -617,6 +633,7 @@ func TestDeleteClusterInfersKubeconfigFromNodeClasses(t *testing.T) {
 		},
 	}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 
 	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
 	defer func() {
@@ -629,14 +646,14 @@ func TestDeleteClusterInfersKubeconfigFromNodeClasses(t *testing.T) {
 		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
 	}
 
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-
-	var gotKubeconfig string
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, kubeconfig string, _ map[string]string) error {
-		gotKubeconfig = kubeconfig
+	var gotWAKubeconfig string
+	var gotNamespaceKubeconfig string
+	uninstallWorkloadAutoscaler = func(_ context.Context, _ cloudpilotaiclient.Interface, _, kubeconfig string) error {
+		gotWAKubeconfig = kubeconfig
+		return nil
+	}
+	deleteCloudpilotNamespace = func(_ context.Context, kubeconfig string, _ map[string]string) error {
+		gotNamespaceKubeconfig = kubeconfig
 		return nil
 	}
 
@@ -655,8 +672,11 @@ func TestDeleteClusterInfersKubeconfigFromNodeClasses(t *testing.T) {
 	}
 
 	wantSuffix := filepath.Clean("test-project_us-central1_demo-gke_kubeconfig")
-	if filepath.Base(gotKubeconfig) != wantSuffix {
-		t.Fatalf("uninstall kubeconfig = %q, want basename %q", gotKubeconfig, wantSuffix)
+	if filepath.Base(gotWAKubeconfig) != wantSuffix {
+		t.Fatalf("workload autoscaler uninstall kubeconfig = %q, want basename %q", gotWAKubeconfig, wantSuffix)
+	}
+	if filepath.Base(gotNamespaceKubeconfig) != wantSuffix {
+		t.Fatalf("namespace cleanup kubeconfig = %q, want basename %q", gotNamespaceKubeconfig, wantSuffix)
 	}
 	if data.ProjectID != types.StringValue("test-project") {
 		t.Fatalf("project_id = %#v, want inferred test-project", data.ProjectID)
@@ -674,17 +694,10 @@ func TestDeleteClusterPreservesManagedRemoteNodePoolsAndNodeClasses(t *testing.T
 		},
 	}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
-		return nil
 	}
 
 	data := ClusterModel{
@@ -720,17 +733,10 @@ func TestDeleteClusterWarnsWhenRemoteClusterRecordDeletionFails(t *testing.T) {
 		deleteClusterErr: fmt.Errorf("remote delete failed"),
 	}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
-		return nil
 	}
 
 	state := tfsdk.State{Schema: Schema(ctx)}
@@ -772,17 +778,10 @@ func TestDeleteClusterDoesNotCallRemoteNodeCleanup(t *testing.T) {
 		},
 	}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
-	}
-
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
-		return nil
 	}
 
 	state := tfsdk.State{Schema: Schema(ctx)}
@@ -823,23 +822,15 @@ func TestDeleteClusterDoesNotCallRemoteNodeCleanup(t *testing.T) {
 	}
 }
 
-func TestDeleteClusterRestoresAfterUninstallWhenConfigured(t *testing.T) {
+func TestDeleteClusterRestoresBeforeFullUninstallWhenConfigured(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeClusterClient{}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
-
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
-	originalRestore := restoreCloudpilotAIAfterUninstall
-	defer func() {
-		restoreCloudpilotAIAfterUninstall = originalRestore
-	}()
 
 	callOrder := make([]string, 0, 2)
 	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
@@ -847,7 +838,7 @@ func TestDeleteClusterRestoresAfterUninstallWhenConfigured(t *testing.T) {
 		return nil
 	}
 	var gotEnv map[string]string
-	restoreCloudpilotAIAfterUninstall = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _ string, restoreEnv map[string]string, _ map[string]string) error {
+	restoreCloudpilotAIRebalanceComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _ string, restoreEnv map[string]string, _ map[string]string) error {
 		callOrder = append(callOrder, "restore")
 		gotEnv = restoreEnv
 		return nil
@@ -867,8 +858,8 @@ func TestDeleteClusterRestoresAfterUninstallWhenConfigured(t *testing.T) {
 	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
-	if len(callOrder) != 2 || callOrder[0] != "uninstall" || callOrder[1] != "restore" {
-		t.Fatalf("call order = %#v, want [uninstall restore]", callOrder)
+	if len(callOrder) != 2 || callOrder[0] != "restore" || callOrder[1] != "uninstall" {
+		t.Fatalf("call order = %#v, want [restore uninstall]", callOrder)
 	}
 	if gotEnv["RESTORE_DESIRED_SIZE"] != "2" {
 		t.Fatalf("RESTORE_DESIRED_SIZE = %q, want 2", gotEnv["RESTORE_DESIRED_SIZE"])
@@ -886,6 +877,7 @@ func TestDeleteClusterUsesConfiguredPerPoolRestoreSizes(t *testing.T) {
 		},
 	}
 	cluster := &Cluster{client: client}
+	stubGKEDeleteHooks(t)
 
 	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
 	defer func() {
@@ -898,21 +890,13 @@ func TestDeleteClusterUsesConfiguredPerPoolRestoreSizes(t *testing.T) {
 		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
 	}
 
-	originalUninstall := uninstallCloudpilotAIAgentComponent
-	defer func() {
-		uninstallCloudpilotAIAgentComponent = originalUninstall
-	}()
 	uninstallCloudpilotAIAgentComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, _, _, _ string, _ map[string]string) error {
 		return nil
 	}
 
-	originalRestore := restoreCloudpilotAIAfterUninstall
-	defer func() {
-		restoreCloudpilotAIAfterUninstall = originalRestore
-	}()
 	var gotKubeconfig string
 	var gotRestoreEnv map[string]string
-	restoreCloudpilotAIAfterUninstall = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, kubeconfigPath string, restoreEnv map[string]string, _ map[string]string) error {
+	restoreCloudpilotAIRebalanceComponent = func(_ context.Context, _ cloudpilotaiclient.Interface, _, _, kubeconfigPath string, restoreEnv map[string]string, _ map[string]string) error {
 		gotKubeconfig = kubeconfigPath
 		gotRestoreEnv = restoreEnv
 		return nil
