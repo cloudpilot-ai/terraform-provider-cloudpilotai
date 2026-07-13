@@ -4,6 +4,11 @@ name: Claude PR Review (manual)
 # have Claude perform a deep, line-anchored inline review plus a short top-level
 # summary. This does NOT run automatically on every PR — it only fires when a
 # comment containing `@claude review` is posted on a PR.
+#
+# Comment `@claude review deep` instead to run the same review on the top model
+# tier. Reserve it for pull requests where a wrong call is expensive to catch —
+# auth boundaries, data migrations, billing correctness. Everything else should
+# use the plain `@claude review`, which is what the default tier is sized for.
 
 on:
   issue_comment:
@@ -22,11 +27,18 @@ jobs:
       pull-requests: write
       id-token: write
       actions: read # Required for Claude to read CI results on PRs
+    env:
+      # `@claude review deep` selects the top tier; a plain `@claude review`
+      # stays on the default one.
+      REVIEW_MODEL: ${{ contains(github.event.comment.body, '@claude review deep') && 'claude-fable-5' || 'claude-opus-4-8' }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
           fetch-depth: 1
+
+      - name: Report selected model
+        run: echo "Reviewing with $REVIEW_MODEL"
 
       - name: Run Claude PR Review
         uses: anthropics/claude-code-action@v1
@@ -76,5 +88,5 @@ jobs:
           # into related files for cross-file impact analysis. No --max-turns cap:
           # a deep review legitimately needs many turns and must not be truncated.
           claude_args: |
-            --model claude-opus-4-8
+            --model ${{ env.REVIEW_MODEL }}
             --allowedTools "mcp__github_inline_comment__create_inline_comment,Bash(gh pr diff:*),Bash(gh pr view:*),Bash(gh pr comment:*),Read,Grep,Glob"
