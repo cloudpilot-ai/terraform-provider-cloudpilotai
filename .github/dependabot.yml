@@ -1,0 +1,19 @@
+version: 2
+updates:
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+    # Security updates ONLY. Setting the PR limit to 0 disables routine
+    # version-update PRs; Dependabot security updates use a separate limit
+    # and still open PRs for CVE fixes. This provider ships to customers,
+    # so we deliberately avoid unattended routine bumps.
+    open-pull-requests-limit: 0
+    # Without this, gomod security updates skip transitive (// indirect)
+    # dependencies such as golang.org/x/crypto — the source of all 13
+    # advisories fixed manually in #30.
+    allow:
+      - dependency-type: "all"
+    # This repository vendors dependencies; Dependabot must re-vendor in
+    # its PRs or the build fails with "inconsistent vendoring".
+    vendor: true
