@@ -147,7 +147,7 @@ When the Terraform provider runs cluster-scoped rebalance or upgrade scripts its
 - `disable_workload_uploading` (Boolean) Disable automatic uploading of workload information to CloudPilot AI
 - `enable_rebalance` (Boolean) Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
 - `enable_upgrade` (Boolean) Enable upgrading CloudPilot AI components through the cluster upgrade script. The provider checks whether the cluster needs upgrade first, and only runs the upgrade when required.
-- `kubeconfig` (String) Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates a kubeconfig that includes the required exec auth for aws_profile and aws_assume_role.
+- `kubeconfig` (String) Optional Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates an execution-local kubeconfig for each operation without storing its path in Terraform state.
 - `nodeclass_templates` (Attributes List, Deprecated) NodeClass templates configuration (see [below for nested schema](#nestedatt--nodeclass_templates))
 - `nodeclasses` (Attributes List) NodeClasses configuration (no change if not set) (see [below for nested schema](#nestedatt--nodeclasses))
 - `nodepool_templates` (Attributes List, Deprecated) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepool_templates))
@@ -426,6 +426,10 @@ Optional:
 - `rebalance_able` (Boolean) Rebalance able
 - `spot_friendly` (Boolean) Spot friendly
 - `template_name` (String, Deprecated) Workload Template Name
+
+## Upgrading from Generated Kubeconfig State
+
+Older provider versions stored an automatically generated kubeconfig path in state. If `kubeconfig` is not configured, the first plan with the fixed provider will show that legacy path changing to `null`; apply that in-place update to remove the environment-local value. No state edit, import, or resource replacement is required. Generate a new plan after upgrading instead of applying a plan file created by an older provider. A direct destroy is also supported: if the legacy path no longer exists, the provider generates a kubeconfig in the current execution environment.
 
 ## Import
 

@@ -17,12 +17,8 @@ func Schema(ctx context.Context) schema.Schema {
 		Description: "GKE Cluster",
 		Attributes: map[string]schema.Attribute{
 			"kubeconfig": schema.StringAttribute{
-				Description: "Kubernetes configuration file path for accessing the GKE cluster. If not set, the provider tries to generate one during CRUD flows, including import-driven GKE operations where cluster metadata is sufficient to infer project access.",
+				Description: "Optional Kubernetes configuration file path for accessing the GKE cluster. If not set, the provider generates an execution-local kubeconfig when needed without storing its path in Terraform state.",
 				Optional:    true,
-				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					useStateForUnknownNonNullString(),
-				},
 			},
 			"cluster_name": schema.StringAttribute{
 				Description: "Name of the GKE cluster to be managed.",

@@ -8,8 +8,12 @@ import (
 )
 
 type WorkloadAutoscalerModel struct {
-	ClusterID  types.String `tfsdk:"cluster_id"`
-	Kubeconfig types.String `tfsdk:"kubeconfig"`
+	ClusterID     types.String                                 `tfsdk:"cluster_id"`
+	Kubeconfig    types.String                                 `tfsdk:"kubeconfig"`
+	AWSProfile    types.String                                 `tfsdk:"aws_profile"`
+	AWSAssumeRole customfield.NestedObject[AWSAssumeRoleModel] `tfsdk:"aws_assume_role"`
+	GCPProjectID  types.String                                 `tfsdk:"gcp_project_id"`
+	GCPLocation   types.String                                 `tfsdk:"gcp_cluster_location"`
 
 	StorageClass    types.String `tfsdk:"storage_class"`
 	EnableNodeAgent types.Bool   `tfsdk:"enable_node_agent"`
@@ -26,6 +30,11 @@ type WorkloadAutoscalerModel struct {
 	AutoscalingPolicies    customfield.NestedObjectList[api.AutoscalingPolicyModel]    `tfsdk:"autoscaling_policies"`
 	EnableProactive        customfield.NestedObjectList[api.EnableProactiveModel]      `tfsdk:"enable_proactive"`
 	DisableProactive       customfield.NestedObjectList[api.DisableProactiveModel]     `tfsdk:"disable_proactive"`
+}
+
+type AWSAssumeRoleModel struct {
+	RoleARN     types.String `tfsdk:"role_arn"`
+	SessionName types.String `tfsdk:"session_name"`
 }
 
 func (m WorkloadAutoscalerModel) ToWAConfiguration() *api.WAConfiguration {

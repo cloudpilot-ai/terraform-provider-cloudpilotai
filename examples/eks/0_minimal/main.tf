@@ -37,8 +37,8 @@ resource "cloudpilotai_eks_cluster" "example" {
 }
 
 resource "cloudpilotai_workload_autoscaler" "example" {
-  cluster_id = cloudpilotai_eks_cluster.example.cluster_id
-  kubeconfig = cloudpilotai_eks_cluster.example.kubeconfig
+  cluster_id  = cloudpilotai_eks_cluster.example.cluster_id
+  aws_profile = var.aws_profile
 
   storage_class     = var.wa_storage_class
   enable_node_agent = var.wa_enable_node_agent

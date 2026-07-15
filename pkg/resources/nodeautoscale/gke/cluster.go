@@ -142,7 +142,8 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data); err != nil {
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, false)
+	if err != nil {
 		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
 		return
 	}
@@ -154,11 +155,11 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 	clusterID := resolveClusterUID(data.ClusterID, types.StringNull(), data.ClusterName, data.Region, data.ClusterUID)
 	data.ClusterID = types.StringValue(clusterID)
 
-	if err := c.ensureAgentInstalled(ctx, &data, clusterID); err != nil {
+	if err := c.ensureAgentInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install cloudpilot ai agent", err.Error())
 		return
 	}
-	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID); err != nil {
+	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install gke node autoscaler component", err.Error())
 		return
 	}
@@ -168,7 +169,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	if err := c.upgradeComponentsIfNeeded(ctx, &data, clusterID); err != nil {
+	if err := c.upgradeComponentsIfNeeded(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to upgrade cloudpilot ai components", err.Error())
 		return
 	}
@@ -203,7 +204,8 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data); err != nil {
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, false)
+	if err != nil {
 		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
 		return
 	}
@@ -215,11 +217,11 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	clusterID := resolveClusterUID(data.ClusterID, state.ClusterID, data.ClusterName, data.Region, data.ClusterUID)
 	data.ClusterID = types.StringValue(clusterID)
 
-	if err := c.ensureAgentInstalled(ctx, &data, clusterID); err != nil {
+	if err := c.ensureAgentInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install cloudpilot ai agent", err.Error())
 		return
 	}
-	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID); err != nil {
+	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install gke node autoscaler component", err.Error())
 		return
 	}
@@ -229,7 +231,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return
 	}
 
-	if err := c.upgradeComponentsIfNeeded(ctx, &data, clusterID); err != nil {
+	if err := c.upgradeComponentsIfNeeded(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to upgrade cloudpilot ai components", err.Error())
 		return
 	}
@@ -309,13 +311,18 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data); err != nil {
+	clusterID := resolveDeleteClusterUID(data.ClusterID, data.ClusterName, data.Region, data.ClusterUID)
+	if stringValue(data.ClusterID) == "" {
+		data.ClusterID = types.StringValue(clusterID)
+	}
+
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, true)
+	if err != nil {
 		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
 		return
 	}
 
-	clusterID := resolveDeleteClusterUID(data.ClusterID, data.ClusterName, data.Region, data.ClusterUID)
-	if err := c.deleteCluster(ctx, &data, clusterID); err != nil {
+	if err := c.deleteCluster(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		var warning warningOnlyError
 		if errors.As(err, &warning) {
 			resp.Diagnostics.AddWarning(warning.summary, warning.detail)
@@ -328,7 +335,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
-func (c *Cluster) ensureAgentInstalled(ctx context.Context, data *ClusterModel, clusterUID string) error {
+func (c *Cluster) ensureAgentInstalled(ctx context.Context, data *ClusterModel, clusterUID, kubeconfigPath string) error {
 	agentInstalled := false
 	if _, err := c.client.GetCluster(clusterUID); err == nil {
 		agentInstalled = true
@@ -337,15 +344,12 @@ func (c *Cluster) ensureAgentInstalled(ctx context.Context, data *ClusterModel, 
 	}
 
 	if !agentInstalled {
-		if err := c.fillMissingParameters(ctx, data); err != nil {
-			return err
-		}
 		if err := installCloudpilotAIAgentComponent(
 			ctx,
 			c.client,
 			api.CloudProviderGCP,
 			data.ClusterName.ValueString(),
-			data.Kubeconfig.ValueString(),
+			kubeconfigPath,
 			boolValueOrDefault(data.DisableWorkloadUploading, false),
 			nil,
 		); err != nil {
@@ -359,13 +363,9 @@ func (c *Cluster) ensureAgentInstalled(ctx context.Context, data *ClusterModel, 
 	return nil
 }
 
-func (c *Cluster) upgradeComponentsIfNeeded(ctx context.Context, data *ClusterModel, clusterUID string) error {
+func (c *Cluster) upgradeComponentsIfNeeded(ctx context.Context, data *ClusterModel, clusterUID, kubeconfigPath string) error {
 	if data.EnableUpgrade.IsNull() || data.EnableUpgrade.IsUnknown() || !data.EnableUpgrade.ValueBool() {
 		return nil
-	}
-
-	if err := c.fillMissingParameters(ctx, data); err != nil {
-		return err
 	}
 
 	_, err := helper.UpgradeCloudpilotAIComponentsIfNeeded(
@@ -373,14 +373,14 @@ func (c *Cluster) upgradeComponentsIfNeeded(ctx context.Context, data *ClusterMo
 		c.client,
 		clusterUID,
 		api.CloudProviderGCP,
-		data.Kubeconfig.ValueString(),
+		kubeconfigPath,
 		"",
 		nil,
 	)
 	return err
 }
 
-func (c *Cluster) ensureNodeAutoscalerInstalled(ctx context.Context, data *ClusterModel, clusterUID string) error {
+func (c *Cluster) ensureNodeAutoscalerInstalled(ctx context.Context, data *ClusterModel, clusterUID, kubeconfigPath string) error {
 	if !shouldManageNodeAutoscaler(*data) {
 		return nil
 	}
@@ -400,10 +400,7 @@ func (c *Cluster) ensureNodeAutoscalerInstalled(ctx context.Context, data *Clust
 		return nil
 	}
 
-	if err := c.fillMissingParameters(ctx, data); err != nil {
-		return err
-	}
-	if data.Kubeconfig.ValueString() == "" {
+	if kubeconfigPath == "" {
 		return fmt.Errorf("kubeconfig is required when the provider needs to install the gke node autoscaler component")
 	}
 
@@ -412,7 +409,7 @@ func (c *Cluster) ensureNodeAutoscalerInstalled(ctx context.Context, data *Clust
 		c.client,
 		clusterUID,
 		api.CloudProviderGCP,
-		data.Kubeconfig.ValueString(),
+		kubeconfigPath,
 		"",
 		nil,
 	)
@@ -440,10 +437,10 @@ func validateClusterIdentity(data *ClusterModel) error {
 	return nil
 }
 
-func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel) error {
+func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel, pathFromState bool) (string, error) {
 	projectHints, err := gkeaccess.ProjectIDCandidatesFromNodeClassModels(ctx, data.NodeClasses)
 	if err != nil {
-		return err
+		return "", err
 	}
 
 	info := gkeaccess.AccessInfo{
@@ -454,8 +451,12 @@ func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel)
 		ProjectID:       stringValue(data.ProjectID),
 		Kubeconfig:      stringValue(data.Kubeconfig),
 	}
-	if err := gkeaccess.EnsureKubeconfigAvailable(ctx, c.client, &info, projectHints); err != nil {
-		return err
+	ensureKubeconfig := gkeaccess.EnsureKubeconfigAvailable
+	if pathFromState {
+		ensureKubeconfig = gkeaccess.EnsureKubeconfigAvailableFromState
+	}
+	if err := ensureKubeconfig(ctx, c.client, &info, projectHints); err != nil {
+		return "", err
 	}
 
 	if info.ClusterName != "" {
@@ -465,19 +466,16 @@ func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel)
 		data.Region = types.StringValue(info.Region)
 	}
 	setOptionalComputedString(&data.ProjectID, info.ProjectID)
-	if info.Kubeconfig != "" {
-		data.Kubeconfig = types.StringValue(info.Kubeconfig)
-	}
 	if stringValue(data.ClusterUID) == "" && info.Kubeconfig != "" {
 		clusterUID, err := gkeaccess.RunKubectlGetClusterUID(ctx, info.Kubeconfig)
 		if err != nil {
-			return err
+			return "", err
 		}
 		if clusterUID != "" {
 			data.ClusterUID = types.StringValue(clusterUID)
 		}
 	}
-	return nil
+	return info.Kubeconfig, nil
 }
 
 func (c *Cluster) maybeHydrateExecutionAccess(ctx context.Context, data *ClusterModel) error {
@@ -494,13 +492,10 @@ func (c *Cluster) maybeHydrateExecutionAccess(ctx context.Context, data *Cluster
 		ProjectID:       stringValue(data.ProjectID),
 		Kubeconfig:      stringValue(data.Kubeconfig),
 	}
-	if err := gkeaccess.EnsureKubeconfigAvailable(ctx, c.client, &info, projectHints); err != nil {
+	if err := gkeaccess.EnsureKubeconfigAvailableFromState(ctx, c.client, &info, projectHints); err != nil {
 		return err
 	}
 	setOptionalComputedString(&data.ProjectID, info.ProjectID)
-	if info.Kubeconfig != "" {
-		data.Kubeconfig = types.StringValue(info.Kubeconfig)
-	}
 	if stringValue(data.ClusterUID) == "" && info.Kubeconfig != "" {
 		clusterUID, err := gkeaccess.RunKubectlGetClusterUID(ctx, info.Kubeconfig)
 		if err != nil {
@@ -665,17 +660,13 @@ func (c *Cluster) syncConfiguration(
 	return nil
 }
 
-func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, clusterUID string) error {
+func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, clusterUID, kubeconfigPath string) error {
 	warnings := make([]string, 0, 5)
 	if err := c.client.UpdateRebalanceConfiguration(clusterUID, &api.RebalanceConfig{Enable: false}); err != nil {
 		warnings = append(warnings, fmt.Sprintf("skipped disabling remote rebalance configuration: %s", err))
 	}
 	if stringValue(data.ClusterID) == "" {
 		data.ClusterID = types.StringValue(clusterUID)
-	}
-
-	if err := c.fillMissingParameters(ctx, data); err != nil {
-		return err
 	}
 
 	restoreEnv, err := restoreEnvFromClusterModel(ctx, *data)
@@ -691,7 +682,7 @@ func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, cluster
 		tflog.Info(ctx, "restore_node_number is 0 and no per-pool restore sizes are configured, leaving cluster in its current optimized state")
 	default:
 		tflog.Info(ctx, "restoring regular gke node pools before CloudPilot uninstall")
-		if err := restoreCloudpilotAIRebalanceComponent(ctx, c.client, clusterUID, api.CloudProviderGCP, data.Kubeconfig.ValueString(), restoreEnv, nil); err != nil {
+		if err := restoreCloudpilotAIRebalanceComponent(ctx, c.client, clusterUID, api.CloudProviderGCP, kubeconfigPath, restoreEnv, nil); err != nil {
 			return fmt.Errorf("failed to restore gke node pools before uninstall: %w", err)
 		}
 
@@ -703,7 +694,7 @@ func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, cluster
 			data.ClusterName.ValueString(),
 			api.CloudProviderGCP,
 			data.Region.ValueString(),
-			data.Kubeconfig.ValueString(),
+			kubeconfigPath,
 			nil,
 		); err != nil {
 			return fmt.Errorf("failed to uninstall cloudpilot agent component: %w", err)
@@ -713,10 +704,10 @@ func (c *Cluster) deleteCluster(ctx context.Context, data *ClusterModel, cluster
 
 	if !nodesRestored {
 		tflog.Info(ctx, "gke node pools were not restored, uninstalling Workload Autoscaler and deleting cloudpilot namespace")
-		if err := uninstallWorkloadAutoscaler(ctx, c.client, clusterUID, data.Kubeconfig.ValueString()); err != nil {
+		if err := uninstallWorkloadAutoscaler(ctx, c.client, clusterUID, kubeconfigPath); err != nil {
 			return fmt.Errorf("failed to uninstall workload autoscaler: %w", err)
 		}
-		if err := deleteCloudpilotNamespace(ctx, data.Kubeconfig.ValueString(), nil); err != nil {
+		if err := deleteCloudpilotNamespace(ctx, kubeconfigPath, nil); err != nil {
 			return fmt.Errorf("failed to delete cloudpilot namespace: %w", err)
 		}
 	}

@@ -287,9 +287,9 @@ resource "cloudpilotai_workload_autoscaler" "example" {
   # ⚠️ Required
   cluster_id = cloudpilotai_eks_cluster.example.cluster_id
 
-  # Path to the kubeconfig file for kubectl/helm operations.
-  # ⚠️ Required
-  kubeconfig = cloudpilotai_eks_cluster.example.kubeconfig
+  # Reuse the EKS execution identity. The provider generates a local
+  # kubeconfig for this operation without storing its path in state.
+  aws_profile = var.aws_profile
 
   storage_class     = var.wa_storage_class
   enable_node_agent = var.wa_enable_node_agent
