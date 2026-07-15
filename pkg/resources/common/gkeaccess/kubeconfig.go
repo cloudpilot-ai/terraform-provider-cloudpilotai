@@ -37,13 +37,29 @@ type AccessInfo struct {
 }
 
 func EnsureKubeconfigAvailable(ctx context.Context, client Client, info *AccessInfo, projectHints []string) error {
-	kubeconfigPath, err := normalizeKubeconfigPath(info.Kubeconfig)
+	return ensureKubeconfigAvailable(ctx, client, info, projectHints, false)
+}
+
+// EnsureKubeconfigAvailableFromState accepts a kubeconfig path read from prior
+// Terraform state. If the path no longer exists, it may be a generated path
+// from an older provider running in another working directory, so a fresh
+// execution-local kubeconfig is generated instead.
+func EnsureKubeconfigAvailableFromState(ctx context.Context, client Client, info *AccessInfo, projectHints []string) error {
+	return ensureKubeconfigAvailable(ctx, client, info, projectHints, true)
+}
+
+func ensureKubeconfigAvailable(ctx context.Context, client Client, info *AccessInfo, projectHints []string, pathFromState bool) error {
+	configuredPath := strings.TrimSpace(info.Kubeconfig)
+	kubeconfigPath, exists, err := inspectKubeconfigPath(configuredPath)
 	if err != nil {
 		return err
 	}
-	if kubeconfigPath != "" {
+	if exists {
 		info.Kubeconfig = kubeconfigPath
 		return nil
+	}
+	if pathFromState {
+		configuredPath = ""
 	}
 
 	if err := fillClusterIdentity(client, info); err != nil {
@@ -74,21 +90,28 @@ func EnsureKubeconfigAvailable(ctx context.Context, client Client, info *AccessI
 		return fmt.Errorf("cluster_name and cluster location could not be inferred when kubeconfig is unset")
 	}
 
-	kubeconfigPath = fmt.Sprintf(
-		"%s_%s_%s_kubeconfig",
-		kubeconfigPathPart(info.ProjectID),
-		kubeconfigPathPart(location),
-		kubeconfigPathPart(info.ClusterName),
-	)
+	if configuredPath != "" {
+		kubeconfigPath, err = filepath.Abs(configuredPath)
+		if err != nil {
+			return err
+		}
+	} else {
+		kubeconfigPath = fmt.Sprintf(
+			"%s_%s_%s_kubeconfig",
+			kubeconfigPathPart(info.ProjectID),
+			kubeconfigPathPart(location),
+			kubeconfigPathPart(info.ClusterName),
+		)
+	}
 	if err := RunGcloudUpdateKubeconfig(ctx, info.ClusterName, location, info.ProjectID, kubeconfigPath); err != nil {
 		return err
 	}
 
-	kubeconfigPath, err = normalizeKubeconfigPath(kubeconfigPath)
+	kubeconfigPath, exists, err = inspectKubeconfigPath(kubeconfigPath)
 	if err != nil {
 		return err
 	}
-	if kubeconfigPath == "" {
+	if !exists {
 		return fmt.Errorf("generated kubeconfig path %q was not created", kubeconfigPath)
 	}
 
@@ -196,24 +219,25 @@ func fillClusterIdentity(client Client, info *AccessInfo) error {
 	return nil
 }
 
-func normalizeKubeconfigPath(kubeconfigPath string) (string, error) {
+func inspectKubeconfigPath(kubeconfigPath string) (absolutePath string, exists bool, err error) {
 	if strings.TrimSpace(kubeconfigPath) == "" {
-		return "", nil
+		return "", false, nil
 	}
 
-	_, err := os.Stat(kubeconfigPath)
+	_, err = os.Stat(kubeconfigPath)
 	if err != nil && !os.IsNotExist(err) {
-		return "", err
+		return "", false, err
 	}
 	if os.IsNotExist(err) {
-		return "", nil
+		absolutePath, err := filepath.Abs(kubeconfigPath)
+		return absolutePath, false, err
 	}
 
-	fp, err := filepath.Abs(kubeconfigPath)
+	absolutePath, err = filepath.Abs(kubeconfigPath)
 	if err != nil {
-		return "", err
+		return "", false, err
 	}
-	return fp, nil
+	return absolutePath, true, nil
 }
 
 func updateKubeconfig(ctx context.Context, clusterName, region, projectID, kubeconfigPath string) error {

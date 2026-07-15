@@ -1,6 +1,8 @@
 resource "cloudpilotai_workload_autoscaler" "example" {
   cluster_id = cloudpilotai_eks_cluster.my_cluster.cluster_id
-  kubeconfig = cloudpilotai_eks_cluster.my_cluster.kubeconfig
+
+  aws_profile     = cloudpilotai_eks_cluster.my_cluster.aws_profile
+  aws_assume_role = cloudpilotai_eks_cluster.my_cluster.aws_assume_role
 
   recommendation_policies = [
     {

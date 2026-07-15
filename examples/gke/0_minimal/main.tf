@@ -65,7 +65,6 @@ resource "cloudpilotai_gke_cluster" "example" {
 
 resource "cloudpilotai_workload_autoscaler" "example" {
   cluster_id = cloudpilotai_gke_cluster.example.cluster_id
-  kubeconfig = cloudpilotai_gke_cluster.example.kubeconfig
 
   enable_node_agent = true
 }

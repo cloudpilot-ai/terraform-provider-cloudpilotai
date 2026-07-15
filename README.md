@@ -24,7 +24,7 @@ For reusable node/workload template composition on EKS, prefer the [`cloudpilot-
 - **[Terraform](https://developer.hashicorp.com/terraform/install)** - Version 1.0 or later
 - **[AWS CLI](https://docs.aws.amazon.com/cli/latest/userguide/getting-started-install.html)** — Install and configure the AWS CLI with credentials that have EKS cluster management permissions. Required for EKS-related operations such as generating kubeconfig, running install scripts, and executing `kubectl`/`helm` through the generated kubeconfig.
   - **Terraform-only CI/CD:** If your Terraform run already has AWS base credentials or OIDC, set `aws_assume_role` on `cloudpilotai_eks_cluster` to make CloudPilot assume the same target role for its AWS CLI and kubeconfig operations.
-  - **Local development:** `aws_profile` remains available as the source-credential fallback, and generated kubeconfigs preserve that profile for later `kubectl` and `helm` calls.
+  - **Local development:** `aws_profile` remains available as the source-credential fallback. Generated kubeconfigs carry that profile for the current operation, but their environment-local paths are not stored in Terraform state.
 - **[Kubectl](https://kubernetes.io/docs/tasks/tools)** - For cluster operations and component management
 - **[gcloud CLI](https://cloud.google.com/sdk/docs/install)** - Required for GKE-related operations such as generating kubeconfig and running CloudPilot install scripts against GKE clusters
 - **CloudPilot AI API key** - See [CloudPilot AI API Key Documentation](https://docs.cloudpilot.ai/guide/getting_started/get_apikeys) for setup instructions

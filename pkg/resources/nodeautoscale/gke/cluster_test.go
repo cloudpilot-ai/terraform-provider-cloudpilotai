@@ -243,6 +243,17 @@ func TestSchemaExposesGKEIdentityAndClusterFields(t *testing.T) {
 		t.Fatalf("cluster_uid should be optional+computed for import discovery")
 	}
 
+	kubeconfigAttr, ok := s.Attributes["kubeconfig"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("kubeconfig attribute has unexpected type %T", s.Attributes["kubeconfig"])
+	}
+	if !kubeconfigAttr.IsOptional() || kubeconfigAttr.IsComputed() {
+		t.Fatalf("kubeconfig must be optional-only, got optional=%v computed=%v", kubeconfigAttr.IsOptional(), kubeconfigAttr.IsComputed())
+	}
+	if len(kubeconfigAttr.StringPlanModifiers()) != 0 {
+		t.Fatal("kubeconfig must not preserve an execution-local path from prior state")
+	}
+
 	nodeClassesAttr, ok := s.Attributes["nodeclasses"].(schema.ListNestedAttribute)
 	if !ok {
 		t.Fatalf("nodeclasses attribute has unexpected type %T", s.Attributes["nodeclasses"])
@@ -338,7 +349,7 @@ func TestEnsureAgentInstalledPassesDisableWorkloadUploading(t *testing.T) {
 	}
 
 	cluster := &Cluster{client: &fakeAgentInstallClusterClient{}}
-	if err := cluster.ensureAgentInstalled(ctx, &data, "cluster-1"); err != nil {
+	if err := cluster.ensureAgentInstalled(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("ensureAgentInstalled() error = %v", err)
 	}
 	if !gotDisableWorkloadUploading {
@@ -534,6 +545,7 @@ func TestDeleteClusterWithoutRestoreUninstallsWAAndDeletesNamespace(t *testing.T
 	}
 
 	data := ClusterModel{
+		ClusterID:           types.StringValue("cluster-1"),
 		ClusterName:         types.StringValue("demo-gke"),
 		Region:              types.StringValue("us-central1"),
 		ClusterUID:          types.StringValue("kube-system-uid-123"),
@@ -543,7 +555,11 @@ func TestDeleteClusterWithoutRestoreUninstallsWAAndDeletesNamespace(t *testing.T
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	kubeconfigPath, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 	if len(client.rebalanceUpdates) != 1 || client.rebalanceUpdates[0] == nil || client.rebalanceUpdates[0].Enable {
@@ -598,7 +614,11 @@ func TestDeleteClusterSkipsRestoreByDefaultAndPreservesTrackedResources(t *testi
 		}),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	kubeconfigPath, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 	if restoreCalled {
@@ -658,6 +678,7 @@ func TestDeleteClusterInfersKubeconfigFromNodeClasses(t *testing.T) {
 	}
 
 	data := ClusterModel{
+		ClusterID:           types.StringValue("cluster-1"),
 		ClusterName:         types.StringValue("demo-gke"),
 		Region:              types.StringValue("us-central1"),
 		ClusterUID:          types.StringValue("kube-system-uid-123"),
@@ -667,7 +688,11 @@ func TestDeleteClusterInfersKubeconfigFromNodeClasses(t *testing.T) {
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	kubeconfigPath, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 
@@ -716,7 +741,7 @@ func TestDeleteClusterPreservesManagedRemoteNodePoolsAndNodeClasses(t *testing.T
 		}),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 	if len(client.deletedNodePools) != 0 {
@@ -855,7 +880,7 @@ func TestDeleteClusterRestoresBeforeFullUninstallWhenConfigured(t *testing.T) {
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 	if len(callOrder) != 2 || callOrder[0] != "restore" || callOrder[1] != "uninstall" {
@@ -924,7 +949,11 @@ func TestDeleteClusterUsesConfiguredPerPoolRestoreSizes(t *testing.T) {
 		}}),
 	}
 
-	if err := cluster.deleteCluster(ctx, &data, "cluster-1"); err != nil {
+	kubeconfigPath, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if err := cluster.deleteCluster(ctx, &data, "cluster-1", kubeconfigPath); err != nil {
 		t.Fatalf("deleteCluster() error = %v", err)
 	}
 
@@ -984,7 +1013,8 @@ func TestFillMissingParametersInfersProjectFromGcloudAndClusterUIDFromKubeconfig
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.fillMissingParameters(ctx, &data); err != nil {
+	effectiveKubeconfig, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
 		t.Fatalf("fillMissingParameters() error = %v", err)
 	}
 
@@ -994,8 +1024,11 @@ func TestFillMissingParametersInfersProjectFromGcloudAndClusterUIDFromKubeconfig
 	if data.ClusterUID != types.StringValue("kube-system-uid-123") {
 		t.Fatalf("cluster_uid = %#v, want kube-system-uid-123", data.ClusterUID)
 	}
-	if filepath.Base(data.Kubeconfig.ValueString()) != "cloudpilot-ai-dev_us-central1_demo-gke_kubeconfig" {
-		t.Fatalf("kubeconfig = %q, want inferred path", data.Kubeconfig.ValueString())
+	if filepath.Base(effectiveKubeconfig) != "cloudpilot-ai-dev_us-central1_demo-gke_kubeconfig" {
+		t.Fatalf("effective kubeconfig = %q, want inferred path", effectiveKubeconfig)
+	}
+	if !data.Kubeconfig.IsNull() {
+		t.Fatalf("kubeconfig state = %#v, want null", data.Kubeconfig)
 	}
 }
 
@@ -1045,19 +1078,24 @@ func TestFillMissingParametersUsesClusterLocationForZonalKubeconfig(t *testing.T
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.fillMissingParameters(ctx, &data); err != nil {
+	effectiveKubeconfig, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
 		t.Fatalf("fillMissingParameters() error = %v", err)
 	}
 
-	if filepath.Base(data.Kubeconfig.ValueString()) != "cloudpilot-ai-dev_us-central1-f_demo-gke_kubeconfig" {
-		t.Fatalf("kubeconfig = %q, want zonal inferred path", data.Kubeconfig.ValueString())
+	if filepath.Base(effectiveKubeconfig) != "cloudpilot-ai-dev_us-central1-f_demo-gke_kubeconfig" {
+		t.Fatalf("effective kubeconfig = %q, want zonal inferred path", effectiveKubeconfig)
+	}
+	if !data.Kubeconfig.IsNull() {
+		t.Fatalf("kubeconfig state = %#v, want null", data.Kubeconfig)
 	}
 }
 
 func TestFillMissingParametersKeepsProjectIDUnmanagedWithConfiguredKubeconfig(t *testing.T) {
 	ctx := context.Background()
 	cluster := &Cluster{client: &fakeClusterClient{}}
-	kubeconfigPath := filepath.Join(t.TempDir(), "gke-kubeconfig")
+	t.Chdir(t.TempDir())
+	kubeconfigPath := "./gke-kubeconfig"
 	if err := os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
 		t.Fatalf("WriteFile() error = %v", err)
 	}
@@ -1094,14 +1132,69 @@ func TestFillMissingParametersKeepsProjectIDUnmanagedWithConfiguredKubeconfig(t 
 		RestoreDesiredSizes: types.MapNull(types.Int64Type),
 	}
 
-	if err := cluster.fillMissingParameters(ctx, &data); err != nil {
+	effectiveKubeconfig, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
 		t.Fatalf("fillMissingParameters() error = %v", err)
 	}
 	if !data.ProjectID.IsNull() {
 		t.Fatalf("project_id = %#v, want null unmanaged value", data.ProjectID)
 	}
-	if data.Kubeconfig.ValueString() != kubeconfigPath && filepath.Base(data.Kubeconfig.ValueString()) != filepath.Base(kubeconfigPath) {
+	if data.Kubeconfig.ValueString() != kubeconfigPath {
 		t.Fatalf("kubeconfig = %#v, want configured kubeconfig", data.Kubeconfig)
+	}
+	if !filepath.IsAbs(effectiveKubeconfig) || filepath.Base(effectiveKubeconfig) != filepath.Base(kubeconfigPath) {
+		t.Fatalf("effective kubeconfig = %q, want absolute runtime path for %q", effectiveKubeconfig, kubeconfigPath)
+	}
+}
+
+func TestFillMissingParametersCreatesMissingConfiguredKubeconfigAtExactPath(t *testing.T) {
+	ctx := context.Background()
+	cluster := &Cluster{client: &fakeClusterClient{}}
+	t.Chdir(t.TempDir())
+	configuredPath := filepath.Join("nested", "gke-kubeconfig")
+	if err := os.MkdirAll(filepath.Dir(configuredPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	originalClusterUID := gkeaccess.RunKubectlGetClusterUID
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+		gkeaccess.RunKubectlGetClusterUID = originalClusterUID
+	}()
+	var writtenPath string
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, clusterName, location, projectID, kubeconfigPath string) error {
+		if clusterName != "demo-gke" || location != "us-central1-a" || projectID != "target-project" {
+			t.Fatalf("kubeconfig inputs = %s/%s/%s", clusterName, location, projectID)
+		}
+		writtenPath = kubeconfigPath
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+	gkeaccess.RunKubectlGetClusterUID = func(context.Context, string) (string, error) {
+		return "kube-system-uid-123", nil
+	}
+
+	data := ClusterModel{
+		ClusterName:     types.StringValue("demo-gke"),
+		Region:          types.StringValue("us-central1"),
+		ClusterLocation: types.StringValue("us-central1-a"),
+		ProjectID:       types.StringValue("target-project"),
+		ClusterUID:      types.StringNull(),
+		Kubeconfig:      types.StringValue(configuredPath),
+	}
+	effectivePath, err := cluster.fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	wantPath, err := filepath.Abs(configuredPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	if effectivePath != wantPath || writtenPath != wantPath {
+		t.Fatalf("effective path = %q, written path = %q, want %q", effectivePath, writtenPath, wantPath)
+	}
+	if data.Kubeconfig != types.StringValue(configuredPath) {
+		t.Fatalf("kubeconfig state = %#v, want exact configured value %q", data.Kubeconfig, configuredPath)
 	}
 }
 

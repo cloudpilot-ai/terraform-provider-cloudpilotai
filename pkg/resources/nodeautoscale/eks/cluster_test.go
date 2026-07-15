@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
@@ -17,6 +18,7 @@ import (
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
+	awsauth "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/aws"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
@@ -80,6 +82,22 @@ func (f *fakeClusterSummaryClient) GetCluster(string) (*api.ClusterCostsSummary,
 type fakeClusterSettingUpdateClient struct {
 	cloudpilotaiclient.Interface
 	setting *api.ClusterSetting
+}
+
+type fakeDeleteClusterClient struct {
+	cloudpilotaiclient.Interface
+	rebalanceClusterID string
+	deletedClusterID   string
+}
+
+func (f *fakeDeleteClusterClient) UpdateRebalanceConfiguration(clusterID string, _ *api.RebalanceConfig) error {
+	f.rebalanceClusterID = clusterID
+	return nil
+}
+
+func (f *fakeDeleteClusterClient) DeleteCluster(clusterID string) error {
+	f.deletedClusterID = clusterID
+	return nil
 }
 
 func (f *fakeClusterSettingUpdateClient) UpdateClusterSetting(_ string, setting *api.ClusterSetting) error {
@@ -298,6 +316,63 @@ func TestExecutionAuthConfigFromClusterModelReadsAssumeRoleAndProfile(t *testing
 	}
 }
 
+func TestFillMissingParametersKeepsGeneratedKubeconfigOutOfState(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	awsPath := filepath.Join(t.TempDir(), "aws")
+	script := "#!/bin/sh\nif [ \"$1\" = 'sts' ]; then\n  printf '{\"Account\":\"123456789012\"}\\n'\n  exit 0\nfi\npath=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '--kubeconfig' ]; then shift; path=\"$1\"; fi\n  shift\ndone\nprintf 'apiVersion: v1\\n' > \"$path\"\n"
+	if err := os.WriteFile(awsPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(awsPath))
+
+	data := ClusterModel{
+		ClusterName: types.StringValue("demo-eks"),
+		Region:      types.StringValue("us-east-2"),
+		AccountID:   types.StringNull(),
+		Kubeconfig:  types.StringNull(),
+	}
+	kubeconfigPath, err := (&Cluster{}).fillMissingParameters(ctx, &data, awsauth.ExecutionAuthConfig{}, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if filepath.Base(kubeconfigPath) != "us-east-2_demo-eks_kubeconfig" {
+		t.Fatalf("runtime kubeconfig = %q, want generated EKS path", kubeconfigPath)
+	}
+	if !data.Kubeconfig.IsNull() {
+		t.Fatalf("kubeconfig state = %#v, want null", data.Kubeconfig)
+	}
+	if data.AccountID.ValueString() != "123456789012" {
+		t.Fatalf("account_id = %q, want discovered account", data.AccountID.ValueString())
+	}
+}
+
+func TestFillMissingParametersPreservesExplicitRelativeKubeconfigInState(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	configuredPath := "./explicit-kubeconfig"
+	if err := os.WriteFile(configuredPath, []byte("apiVersion: v1\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+
+	data := ClusterModel{
+		ClusterName: types.StringValue("demo-eks"),
+		Region:      types.StringValue("us-east-2"),
+		AccountID:   types.StringValue("123456789012"),
+		Kubeconfig:  types.StringValue(configuredPath),
+	}
+	kubeconfigPath, err := (&Cluster{}).fillMissingParameters(ctx, &data, awsauth.ExecutionAuthConfig{}, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if data.Kubeconfig.ValueString() != configuredPath {
+		t.Fatalf("kubeconfig state = %q, want exact configured value %q", data.Kubeconfig.ValueString(), configuredPath)
+	}
+	if !filepath.IsAbs(kubeconfigPath) || filepath.Base(kubeconfigPath) != filepath.Base(configuredPath) {
+		t.Fatalf("runtime kubeconfig = %q, want absolute path for %q", kubeconfigPath, configuredPath)
+	}
+}
+
 func TestReadPreparesAWSAuthEnvironmentWhenClusterIDExists(t *testing.T) {
 	ctx := context.Background()
 	awsPath := filepath.Join(t.TempDir(), "aws")
@@ -359,6 +434,65 @@ func TestDeletePrefersConfiguredClusterIDOverGeneratedID(t *testing.T) {
 
 	if got != "user-specified-id" {
 		t.Fatalf("got cluster ID %q, want configured cluster ID during delete", got)
+	}
+}
+
+func TestDeleteRegeneratesMissingLegacyKubeconfigInCurrentWorkingDirectory(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	binDir := t.TempDir()
+	awsPath := filepath.Join(binDir, "aws")
+	awsScript := `#!/bin/sh
+path=''
+while [ "$#" -gt 0 ]; do
+  if [ "$1" = '--kubeconfig' ]; then shift; path="$1"; fi
+  shift
+done
+printf 'apiVersion: v1\n' > "$path"
+printf '%s' "$path" > "$CAPTURE_PATH"
+`
+	if err := os.WriteFile(awsPath, []byte(awsScript), 0o755); err != nil {
+		t.Fatalf("WriteFile(aws) error = %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(binDir, "kubectl"), []byte("#!/bin/sh\nexit 0\n"), 0o755); err != nil {
+		t.Fatalf("WriteFile(kubectl) error = %v", err)
+	}
+	capturePath := filepath.Join(t.TempDir(), "generated-path")
+	t.Setenv("CAPTURE_PATH", capturePath)
+	t.Setenv("PATH", binDir+string(os.PathListSeparator)+os.Getenv("PATH"))
+
+	state := tfsdk.State{Schema: Schema(ctx)}
+	diags := state.Set(ctx, &ClusterModel{
+		ClusterID:                types.StringValue("cluster-1"),
+		ClusterName:              types.StringValue("demo"),
+		Region:                   types.StringValue("us-east-2"),
+		AccountID:                types.StringValue("123456789012"),
+		Kubeconfig:               types.StringValue("/old-runner/.terragrunt-cache/us-east-2_demo_kubeconfig"),
+		SkipRestore:              types.BoolValue(true),
+		RestoreNodeNumber:        types.Int64Value(0),
+		EnableRebalance:          types.BoolNull(),
+		DisableWorkloadUploading: types.BoolNull(),
+	})
+	if diags.HasError() {
+		t.Fatalf("state.Set() diagnostics = %v", diags)
+	}
+
+	client := &fakeDeleteClusterClient{}
+	resp := &resource.DeleteResponse{State: state}
+	(&Cluster{client: client}).Delete(ctx, resource.DeleteRequest{State: state}, resp)
+	if resp.Diagnostics.HasError() {
+		t.Fatalf("Delete() diagnostics = %v", resp.Diagnostics)
+	}
+	generatedPathBytes, err := os.ReadFile(capturePath)
+	if err != nil {
+		t.Fatalf("ReadFile(capture) error = %v", err)
+	}
+	generatedPath := string(generatedPathBytes)
+	if filepath.Base(generatedPath) != "us-east-2_demo_kubeconfig" || strings.Contains(generatedPath, ".terragrunt-cache") {
+		t.Fatalf("generated path = %q, want current execution-local path", generatedPath)
+	}
+	if client.rebalanceClusterID != "cluster-1" || client.deletedClusterID != "cluster-1" {
+		t.Fatalf("delete calls used %q/%q, want cluster-1", client.rebalanceClusterID, client.deletedClusterID)
 	}
 }
 
@@ -1079,7 +1213,18 @@ func TestUseStateForUnknownStringPreservesNullState(t *testing.T) {
 }
 
 func TestOperationalStringAttributesDoNotPreserveNullState(t *testing.T) {
-	tests := []string{"kubeconfig", "account_id"}
+	kubeconfigAttr, ok := Schema(context.Background()).Attributes["kubeconfig"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("kubeconfig attribute has unexpected type %T", Schema(context.Background()).Attributes["kubeconfig"])
+	}
+	if !kubeconfigAttr.IsOptional() || kubeconfigAttr.IsComputed() {
+		t.Fatalf("kubeconfig must be optional-only, got optional=%v computed=%v", kubeconfigAttr.IsOptional(), kubeconfigAttr.IsComputed())
+	}
+	if len(kubeconfigAttr.StringPlanModifiers()) != 0 {
+		t.Fatal("kubeconfig must not preserve an execution-local path from prior state")
+	}
+
+	tests := []string{"account_id"}
 
 	for _, name := range tests {
 		t.Run(name, func(t *testing.T) {

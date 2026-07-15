@@ -15,6 +15,7 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client/helper"
+	awsauth "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/aws"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/common/gkeaccess"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
@@ -184,12 +185,6 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 		return
 	}
 
-	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
-	if err != nil {
-		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
-		return
-	}
-
 	// Read previous state to know which resources were previously tracked
 	var state WorkloadAutoscalerModel
 	resp.Diagnostics.Append(req.State.Get(ctx, &state)...)
@@ -219,6 +214,11 @@ func (w *WorkloadAutoscaler) Update(ctx context.Context, req resource.UpdateRequ
 	}
 
 	if needReinstall {
+		kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
+		if err != nil {
+			resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
+			return
+		}
 		if kubeconfigPath == "" {
 			resp.Diagnostics.AddError(
 				"kubeconfig is required",
@@ -365,13 +365,6 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 		resp.Diagnostics.AddError("failed to hydrate Workload Autoscaler state after read", err.Error())
 		return
 	}
-	if err := w.maybeHydrateExecutionAccess(ctx, &data, isImport); err != nil {
-		resp.Diagnostics.AddWarning(
-			"skipped GKE kubeconfig auto-discovery",
-			fmt.Sprintf("The provider could not auto-generate kubeconfig during read: %s", err),
-		)
-	}
-
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
 }
 
@@ -575,8 +568,7 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 	if resp.Diagnostics.HasError() {
 		return
 	}
-
-	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, false)
+	kubeconfigPath, err := w.fillMissingParameters(ctx, &data, true)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to fill missing parameters", err.Error())
 		return
@@ -685,35 +677,72 @@ func (w *WorkloadAutoscaler) Delete(ctx context.Context, req resource.DeleteRequ
 	tflog.Info(ctx, "deleted Workload Autoscaler resource successfully")
 }
 
-func (w *WorkloadAutoscaler) fillMissingParameters(ctx context.Context, data *WorkloadAutoscalerModel, persistGeneratedKubeconfig bool) (string, error) {
+func (w *WorkloadAutoscaler) fillMissingParameters(ctx context.Context, data *WorkloadAutoscalerModel, pathFromState bool) (string, error) {
 	originalKubeconfig := stringValue(data.Kubeconfig)
-	info := gkeaccess.AccessInfo{
-		ClusterID:  stringValue(data.ClusterID),
-		Kubeconfig: originalKubeconfig,
-	}
-
-	summary, err := w.client.GetCluster(info.ClusterID)
+	clusterID := stringValue(data.ClusterID)
+	summary, err := w.client.GetCluster(clusterID)
 	if err != nil {
 		return "", err
 	}
-	if summary == nil || summary.CloudProvider != api.CloudProviderGCP {
+	if summary == nil {
 		return originalKubeconfig, nil
 	}
 
-	info.ClusterName = summary.ClusterName
-	info.Region = summary.Region
-	if err := gkeaccess.EnsureKubeconfigAvailable(ctx, w.client, &info, nil); err != nil {
-		return "", err
+	switch summary.CloudProvider {
+	case api.CloudProviderGCP:
+		info := gkeaccess.AccessInfo{
+			ClusterID:       clusterID,
+			ClusterName:     summary.ClusterName,
+			Region:          summary.Region,
+			ClusterLocation: stringValue(data.GCPLocation),
+			ProjectID:       stringValue(data.GCPProjectID),
+			Kubeconfig:      originalKubeconfig,
+		}
+		ensureKubeconfig := gkeaccess.EnsureKubeconfigAvailable
+		if pathFromState {
+			ensureKubeconfig = gkeaccess.EnsureKubeconfigAvailableFromState
+		}
+		if err := ensureKubeconfig(ctx, w.client, &info, nil); err != nil {
+			return "", err
+		}
+		return info.Kubeconfig, nil
+	case api.CloudProviderAWS:
+		authCfg, err := executionAuthConfigFromModel(ctx, *data)
+		if err != nil {
+			return "", err
+		}
+		if pathFromState {
+			return awsauth.EnsureKubeconfigAvailableFromState(ctx, summary.ClusterName, summary.Region, originalKubeconfig, authCfg)
+		}
+		return awsauth.EnsureKubeconfigAvailable(ctx, summary.ClusterName, summary.Region, originalKubeconfig, authCfg)
+	default:
+		return originalKubeconfig, nil
 	}
-	if info.Kubeconfig != "" && (persistGeneratedKubeconfig || originalKubeconfig != "") {
-		data.Kubeconfig = types.StringValue(info.Kubeconfig)
-	}
-	return info.Kubeconfig, nil
 }
 
-func (w *WorkloadAutoscaler) maybeHydrateExecutionAccess(ctx context.Context, data *WorkloadAutoscalerModel, persistGeneratedKubeconfig bool) error {
-	_, err := w.fillMissingParameters(ctx, data, persistGeneratedKubeconfig)
-	return err
+func executionAuthConfigFromModel(ctx context.Context, data WorkloadAutoscalerModel) (awsauth.ExecutionAuthConfig, error) {
+	cfg := awsauth.ExecutionAuthConfig{}
+	if !data.AWSProfile.IsNull() && !data.AWSProfile.IsUnknown() {
+		cfg.Profile = data.AWSProfile.ValueString()
+	}
+	if data.AWSAssumeRole.IsNull() || data.AWSAssumeRole.IsUnknown() {
+		return cfg, nil
+	}
+
+	value, diags := data.AWSAssumeRole.Value(ctx)
+	if diags.HasError() {
+		return cfg, fmt.Errorf("failed to decode aws_assume_role: %v", diags)
+	}
+	if value == nil {
+		return cfg, nil
+	}
+	if !value.RoleARN.IsNull() && !value.RoleARN.IsUnknown() {
+		cfg.AssumeRoleARN = value.RoleARN.ValueString()
+	}
+	if !value.SessionName.IsNull() && !value.SessionName.IsUnknown() {
+		cfg.AssumeRoleSessionName = value.SessionName.ValueString()
+	}
+	return cfg, nil
 }
 
 func (w *WorkloadAutoscaler) syncPolicies(ctx context.Context, data *WorkloadAutoscalerModel, clusterID string,

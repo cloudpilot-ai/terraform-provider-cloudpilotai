@@ -15,3 +15,7 @@ GKE Cluster
 {{ tffile "examples/resources/cloudpilotai_gke_cluster/resource.tf" }}
 
 {{ .SchemaMarkdown | trimspace }}
+
+## Upgrading from Generated Kubeconfig State
+
+Older provider versions stored an automatically generated kubeconfig path in state. If `kubeconfig` is not configured, the first plan with the fixed provider will show that legacy path changing to `null`; apply that in-place update to remove the environment-local value. No state edit, import, or resource replacement is required. Generate a new plan after upgrading instead of applying a plan file created by an older provider. A direct destroy is also supported: if the legacy path no longer exists, the provider generates a kubeconfig in the current execution environment.

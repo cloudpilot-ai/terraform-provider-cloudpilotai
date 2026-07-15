@@ -61,9 +61,15 @@ autoscaling_policies = [
 ]
 ```
 
-The `kubeconfig` you pass must already contain working auth for the target Kubernetes cluster. For EKS, the `cloudpilotai_eks_cluster` resource now generates a kubeconfig that carries `aws_profile` and `aws_assume_role` auth forward for this purpose.
+An explicitly configured `kubeconfig` must contain working auth for the target cluster. When `kubeconfig` is omitted, the provider generates an execution-local path without storing it in Terraform state. GKE access uses `gcp_project_id` and `gcp_cluster_location` when set, then falls back to cluster metadata and local gcloud credentials. EKS access uses `aws_profile`, `aws_assume_role`, or the ambient AWS credential chain.
 
 {{ .SchemaMarkdown | trimspace }}
+
+## Upgrading from Generated Kubeconfig State
+
+Older provider versions could store an automatically generated kubeconfig path in this resource. If `kubeconfig` is not configured, the first plan with the fixed provider will change that legacy value to `null`. Apply the in-place update; no state edit, re-import, or replacement is required. EKS users who omit `kubeconfig` should configure `aws_profile` and/or `aws_assume_role` when ambient AWS credentials are not sufficient.
+
+When upgrading legacy Workload Autoscaler state that requires non-ambient AWS credentials or non-default GCP project/location settings, run one normal apply with this resource still enabled before destroying it or setting its module count to zero. Terraform does not send resource configuration to providers for a legacy delete, so the upgrade apply is what records the new access fields and removes the stale path.
 
 ## Import
 
@@ -73,4 +79,4 @@ Import only requires a valid CloudPilot AI API key — no AWS credentials or kub
 
 After importing, the resource state will contain all recommendation and autoscaling policies fetched from the server. You can then manage them via `terraform apply`.
 
-~> **Note:** To perform create, update, or delete operations after import, you will need to set the `kubeconfig` attribute, as those operations require access to the actual Kubernetes cluster.
+~> **Note:** Create, update, and delete operations require live cluster access. Configure `kubeconfig`, or provide the local GCP/AWS credentials needed for execution-local kubeconfig generation. EKS assume-role users should also configure `aws_profile` and/or `aws_assume_role` on this resource.

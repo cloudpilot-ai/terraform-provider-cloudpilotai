@@ -40,12 +40,8 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"kubeconfig": schema.StringAttribute{
-				Description: "Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates a kubeconfig that includes the required exec auth for aws_profile and aws_assume_role.",
+				Description: "Optional Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates an execution-local kubeconfig for each operation without storing its path in Terraform state.",
 				Optional:    true,
-				Computed:    true,
-				PlanModifiers: []planmodifier.String{
-					useStateForUnknownNonNullString(),
-				},
 			},
 
 			"cluster_name": schema.StringAttribute{

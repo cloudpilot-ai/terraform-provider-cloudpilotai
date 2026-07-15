@@ -5,7 +5,6 @@ import (
 
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/planmodifier"
-	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringdefault"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
@@ -24,13 +23,35 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"kubeconfig": schema.StringAttribute{
-				Description: "Path to the kubeconfig file for the target Kubernetes cluster. Required for create/update/delete operations, but not needed for import. For imported GKE clusters, the provider can often auto-generate kubeconfig from discovered cluster metadata; for EKS, using cloudpilotai_eks_cluster.this.kubeconfig satisfies this requirement.",
+				Description: "Optional path to a kubeconfig file for the target Kubernetes cluster. If not set, the provider generates an execution-local kubeconfig for supported EKS and GKE clusters without storing its path in Terraform state.",
 				Optional:    true,
-				Computed:    true,
-				Default:     stringdefault.StaticString(""),
-				PlanModifiers: []planmodifier.String{
-					useStateForUnknownString(),
+			},
+			"aws_profile": schema.StringAttribute{
+				Description: "Optional AWS CLI named profile used when an execution-local EKS kubeconfig must be generated.",
+				Optional:    true,
+			},
+			"aws_assume_role": schema.SingleNestedAttribute{
+				Description: "Optional IAM role to assume when an execution-local EKS kubeconfig must be generated.",
+				Optional:    true,
+				CustomType:  customfield.NewNestedObjectType[AWSAssumeRoleModel](ctx),
+				Attributes: map[string]schema.Attribute{
+					"role_arn": schema.StringAttribute{
+						Description: "IAM role ARN to assume for AWS CLI and EKS kubeconfig operations.",
+						Required:    true,
+					},
+					"session_name": schema.StringAttribute{
+						Description: "Optional STS session name. Defaults to cloudpilotai-terraform when omitted.",
+						Optional:    true,
+					},
 				},
+			},
+			"gcp_project_id": schema.StringAttribute{
+				Description: "Optional GCP project ID used when an execution-local GKE kubeconfig must be generated.",
+				Optional:    true,
+			},
+			"gcp_cluster_location": schema.StringAttribute{
+				Description: "Optional GKE region or zone used when an execution-local kubeconfig must be generated.",
+				Optional:    true,
 			},
 			"storage_class": schema.StringAttribute{
 				Description: "StorageClass name for VictoriaMetrics persistent volume. If empty, the cluster default StorageClass is used.",

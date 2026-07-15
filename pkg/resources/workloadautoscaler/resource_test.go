@@ -164,6 +164,71 @@ func TestSchemaRemovesEnableUpgrade(t *testing.T) {
 	if _, ok := s.Attributes["cluster_id"].(schema.StringAttribute); !ok {
 		t.Fatalf("cluster_id attribute has unexpected type %T", s.Attributes["cluster_id"])
 	}
+	kubeconfigAttr, ok := s.Attributes["kubeconfig"].(schema.StringAttribute)
+	if !ok {
+		t.Fatalf("kubeconfig attribute has unexpected type %T", s.Attributes["kubeconfig"])
+	}
+	if !kubeconfigAttr.IsOptional() || kubeconfigAttr.IsComputed() {
+		t.Fatalf("kubeconfig must be optional-only, got optional=%v computed=%v", kubeconfigAttr.IsOptional(), kubeconfigAttr.IsComputed())
+	}
+	for _, name := range []string{"aws_profile", "aws_assume_role", "gcp_project_id", "gcp_cluster_location"} {
+		if _, ok := s.Attributes[name]; !ok {
+			t.Fatalf("workload autoscaler schema missing %s", name)
+		}
+	}
+}
+
+func TestFillMissingParametersGeneratesEKSRuntimeKubeconfigWithoutPersistingIt(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	awsPath := filepath.Join(t.TempDir(), "aws")
+	script := "#!/bin/sh\npath=''\nwhile [ \"$#\" -gt 0 ]; do\n  if [ \"$1\" = '--kubeconfig' ]; then shift; path=\"$1\"; fi\n  shift\ndone\nprintf 'apiVersion: v1\\n' > \"$path\"\n"
+	if err := os.WriteFile(awsPath, []byte(script), 0o755); err != nil {
+		t.Fatalf("WriteFile() error = %v", err)
+	}
+	t.Setenv("PATH", filepath.Dir(awsPath))
+
+	client := &fakeWorkloadAutoscalerClient{summary: &api.ClusterCostsSummary{
+		ClusterInfo: api.ClusterInfo{
+			ClusterName:   "demo-eks",
+			Region:        "us-east-2",
+			CloudProvider: api.CloudProviderAWS,
+		},
+	}}
+	data := WorkloadAutoscalerModel{
+		ClusterID:  types.StringValue("cluster-1"),
+		Kubeconfig: types.StringNull(),
+	}
+
+	kubeconfigPath, err := (&WorkloadAutoscaler{client: client}).fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if filepath.Base(kubeconfigPath) != "us-east-2_demo-eks_kubeconfig" {
+		t.Fatalf("runtime kubeconfig = %q, want generated EKS path", kubeconfigPath)
+	}
+	if !data.Kubeconfig.IsNull() {
+		t.Fatalf("kubeconfig state = %#v, want null", data.Kubeconfig)
+	}
+}
+
+func TestExecutionAuthConfigFromModelReadsAssumeRoleAndProfile(t *testing.T) {
+	ctx := context.Background()
+	data := WorkloadAutoscalerModel{
+		AWSProfile: types.StringValue("dev"),
+		AWSAssumeRole: customfield.NewObjectMust(ctx, &AWSAssumeRoleModel{
+			RoleARN:     types.StringValue("arn:aws:iam::123456789012:role/target"),
+			SessionName: types.StringValue("wa-session"),
+		}),
+	}
+
+	got, err := executionAuthConfigFromModel(ctx, data)
+	if err != nil {
+		t.Fatalf("executionAuthConfigFromModel() error = %v", err)
+	}
+	if got.Profile != "dev" || got.AssumeRoleARN != "arn:aws:iam::123456789012:role/target" || got.AssumeRoleSessionName != "wa-session" {
+		t.Fatalf("execution auth = %#v, want configured profile and assume role", got)
+	}
 }
 
 func TestTopLevelOptionalConfigFieldsHaveNoSchemaDefaults(t *testing.T) {
@@ -460,7 +525,98 @@ func TestFillMissingParametersDoesNotPersistGeneratedKubeconfig(t *testing.T) {
 	}
 }
 
-func TestFillMissingParametersPersistsGeneratedKubeconfigForImport(t *testing.T) {
+func TestFillMissingParametersUsesConfiguredGCPProjectAndZonalLocation(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	client := &fakeWorkloadAutoscalerClient{summary: &api.ClusterCostsSummary{
+		ClusterInfo: api.ClusterInfo{
+			ClusterName:   "demo-gke",
+			Region:        "us-central1",
+			CloudProvider: api.CloudProviderGCP,
+		},
+	}}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	originalCurrentProject := gkeaccess.RunGcloudCurrentProject
+	defer func() {
+		gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate
+		gkeaccess.RunGcloudCurrentProject = originalCurrentProject
+	}()
+	gkeaccess.RunGcloudCurrentProject = func(context.Context) (string, error) {
+		t.Fatal("current gcloud project should not be consulted when gcp_project_id is configured")
+		return "", nil
+	}
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, clusterName, location, projectID, kubeconfigPath string) error {
+		if clusterName != "demo-gke" || location != "us-central1-a" || projectID != "target-project" {
+			t.Fatalf("kubeconfig inputs = %s/%s/%s, want demo-gke/us-central1-a/target-project", clusterName, location, projectID)
+		}
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	data := WorkloadAutoscalerModel{
+		ClusterID:    types.StringValue("cluster-1"),
+		Kubeconfig:   types.StringNull(),
+		GCPProjectID: types.StringValue("target-project"),
+		GCPLocation:  types.StringValue("us-central1-a"),
+	}
+	kubeconfigPath, err := (&WorkloadAutoscaler{client: client}).fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	if filepath.Base(kubeconfigPath) != "target-project_us-central1-a_demo-gke_kubeconfig" {
+		t.Fatalf("kubeconfigPath = %q, want cross-project zonal path", kubeconfigPath)
+	}
+	if !data.Kubeconfig.IsNull() {
+		t.Fatalf("Kubeconfig = %#v, want generated path omitted from state", data.Kubeconfig)
+	}
+}
+
+func TestFillMissingParametersCreatesMissingConfiguredGKEKubeconfig(t *testing.T) {
+	ctx := context.Background()
+	t.Chdir(t.TempDir())
+	client := &fakeWorkloadAutoscalerClient{summary: &api.ClusterCostsSummary{
+		ClusterInfo: api.ClusterInfo{
+			ClusterName:   "demo-gke",
+			Region:        "us-central1",
+			CloudProvider: api.CloudProviderGCP,
+		},
+	}}
+	configuredPath := filepath.Join("nested", "configured-kubeconfig")
+	if err := os.MkdirAll(filepath.Dir(configuredPath), 0o755); err != nil {
+		t.Fatalf("MkdirAll() error = %v", err)
+	}
+
+	originalUpdate := gkeaccess.RunGcloudUpdateKubeconfig
+	defer func() { gkeaccess.RunGcloudUpdateKubeconfig = originalUpdate }()
+	var writtenPath string
+	gkeaccess.RunGcloudUpdateKubeconfig = func(_ context.Context, _, _, _, kubeconfigPath string) error {
+		writtenPath = kubeconfigPath
+		return os.WriteFile(kubeconfigPath, []byte("apiVersion: v1\n"), 0o600)
+	}
+
+	data := WorkloadAutoscalerModel{
+		ClusterID:    types.StringValue("cluster-1"),
+		Kubeconfig:   types.StringValue(configuredPath),
+		GCPProjectID: types.StringValue("target-project"),
+		GCPLocation:  types.StringValue("us-central1-a"),
+	}
+	effectivePath, err := (&WorkloadAutoscaler{client: client}).fillMissingParameters(ctx, &data, false)
+	if err != nil {
+		t.Fatalf("fillMissingParameters() error = %v", err)
+	}
+	wantPath, err := filepath.Abs(configuredPath)
+	if err != nil {
+		t.Fatalf("filepath.Abs() error = %v", err)
+	}
+	if effectivePath != wantPath || writtenPath != wantPath {
+		t.Fatalf("effective path = %q, written path = %q, want %q", effectivePath, writtenPath, wantPath)
+	}
+	if data.Kubeconfig != types.StringValue(configuredPath) {
+		t.Fatalf("kubeconfig state = %#v, want exact configured value %q", data.Kubeconfig, configuredPath)
+	}
+}
+
+func TestFillMissingParametersDoesNotPersistGeneratedKubeconfigForImport(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeWorkloadAutoscalerClient{
 		summary: &api.ClusterCostsSummary{
@@ -499,8 +655,11 @@ func TestFillMissingParametersPersistsGeneratedKubeconfigForImport(t *testing.T)
 	if err != nil {
 		t.Fatalf("fillMissingParameters() error = %v", err)
 	}
-	if data.Kubeconfig.ValueString() != kubeconfigPath {
-		t.Fatalf("Kubeconfig = %q, want persisted %q", data.Kubeconfig.ValueString(), kubeconfigPath)
+	if kubeconfigPath == "" {
+		t.Fatal("fillMissingParameters() returned an empty execution path")
+	}
+	if data.Kubeconfig.ValueString() != "" {
+		t.Fatalf("Kubeconfig = %q, want omitted value preserved", data.Kubeconfig.ValueString())
 	}
 }
 

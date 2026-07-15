@@ -88,7 +88,7 @@ resource "cloudpilotai_gke_cluster" "managed" {
 - `disable_workload_uploading` (Boolean) Disable automatic uploading of workload information to CloudPilot AI.
 - `enable_rebalance` (Boolean) Enable CloudPilot node autoscaler / rebalance behavior for the cluster. This overrides only_install_agent when true.
 - `enable_upgrade` (Boolean) Enable upgrading CloudPilot AI components when the service reports this cluster needs an upgrade.
-- `kubeconfig` (String) Kubernetes configuration file path for accessing the GKE cluster. If not set, the provider tries to generate one during CRUD flows, including import-driven GKE operations where cluster metadata is sufficient to infer project access.
+- `kubeconfig` (String) Optional Kubernetes configuration file path for accessing the GKE cluster. If not set, the provider generates an execution-local kubeconfig when needed without storing its path in Terraform state.
 - `nodeclasses` (Attributes List) GCENodeClasses configuration managed by the GKE cluster resource. (see [below for nested schema](#nestedatt--nodeclasses))
 - `nodepools` (Attributes List) GCENodePools configuration managed by the GKE cluster resource. (see [below for nested schema](#nestedatt--nodepools))
 - `only_install_agent` (Boolean) Only install the CloudPilot AI agent without additional node autoscaler configuration.
@@ -230,3 +230,7 @@ Required:
 Optional:
 
 - `value` (String) Taint value.
+
+## Upgrading from Generated Kubeconfig State
+
+Older provider versions stored an automatically generated kubeconfig path in state. If `kubeconfig` is not configured, the first plan with the fixed provider will show that legacy path changing to `null`; apply that in-place update to remove the environment-local value. No state edit, import, or resource replacement is required. Generate a new plan after upgrading instead of applying a plan file created by an older provider. A direct destroy is also supported: if the legacy path no longer exists, the provider generates a kubeconfig in the current execution environment.

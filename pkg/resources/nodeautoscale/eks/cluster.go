@@ -5,10 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"os"
-	"path/filepath"
 	"sort"
-	"strings"
 	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework/path"
@@ -203,7 +200,8 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, authCfg, false)
+	if err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
@@ -217,7 +215,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		return
 	}
 
-	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(kubeconfigPath, awsEnv)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
 		return
@@ -372,7 +370,8 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, authCfg, false)
+	if err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
@@ -386,7 +385,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return
 	}
 
-	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(kubeconfigPath, awsEnv)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
 		return
@@ -549,7 +548,7 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	if clusterUID == "" {
 		// cluster_id is not yet known (normal CRUD path); need AWS credentials
 		// to derive account_id and kubeconfig.
-		if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
+		if _, err := c.fillMissingParameters(ctx, &data, authCfg, true); err != nil {
 			resp.Diagnostics.AddError(
 				"failed to fill missing parameters",
 				err.Error(),
@@ -793,7 +792,8 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	if err := c.fillMissingParameters(ctx, &data, authCfg); err != nil {
+	kubeconfigPath, err := c.fillMissingParameters(ctx, &data, authCfg, true)
+	if err != nil {
 		resp.Diagnostics.AddError(
 			"failed to fill missing parameters",
 			err.Error(),
@@ -807,7 +807,7 @@ func (c *Cluster) Delete(ctx context.Context, req resource.DeleteRequest, resp *
 		return
 	}
 
-	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(data.Kubeconfig.ValueString(), awsEnv)
+	shellKubeconfig, cleanupShellKubeconfig, err := awsauth.KubeconfigForCommandEnv(kubeconfigPath, awsEnv)
 	if err != nil {
 		resp.Diagnostics.AddError("failed to prepare shell kubeconfig", err.Error())
 		return
@@ -915,44 +915,32 @@ func executionAuthConfigFromModel(ctx context.Context, data ClusterModel) (awsau
 	return cfg, nil
 }
 
-func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel, authCfg awsauth.ExecutionAuthConfig) error {
+func (c *Cluster) fillMissingParameters(ctx context.Context, data *ClusterModel, authCfg awsauth.ExecutionAuthConfig, pathFromState bool) (string, error) {
 	if data.AccountID.IsNull() || data.AccountID.IsUnknown() || data.AccountID.ValueString() == "" {
 		accountID, err := awsauth.GetAccountID(ctx, authCfg)
 		if err != nil {
-			return err
+			return "", err
 		}
 
 		data.AccountID = types.StringValue(accountID)
 	}
 
-	kubeconfigPath := ""
-	if !data.Kubeconfig.IsNull() && !data.Kubeconfig.IsUnknown() && data.Kubeconfig.ValueString() != "" {
-		kubeconfigPath = data.Kubeconfig.ValueString()
-		_, err := os.Stat(kubeconfigPath)
-		if err != nil && !os.IsNotExist(err) {
-			return err
-		}
-
-		if os.IsNotExist(err) {
-			kubeconfigPath = ""
-		}
+	configuredPath := ""
+	if !data.Kubeconfig.IsNull() && !data.Kubeconfig.IsUnknown() {
+		configuredPath = data.Kubeconfig.ValueString()
 	}
 
-	if kubeconfigPath == "" {
-		kubeconfigPath = strings.Join([]string{data.Region.ValueString(), data.ClusterName.ValueString(), "kubeconfig"}, "_")
-		if err := awsauth.UpdateKubeconfig(ctx, data.ClusterName.ValueString(), data.Region.ValueString(), kubeconfigPath, authCfg); err != nil {
-			return err
-		}
+	ensureKubeconfig := awsauth.EnsureKubeconfigAvailable
+	if pathFromState {
+		ensureKubeconfig = awsauth.EnsureKubeconfigAvailableFromState
 	}
-
-	fp, err := filepath.Abs(kubeconfigPath)
-	if err != nil {
-		return err
-	}
-
-	data.Kubeconfig = types.StringValue(fp)
-
-	return nil
+	return ensureKubeconfig(
+		ctx,
+		data.ClusterName.ValueString(),
+		data.Region.ValueString(),
+		configuredPath,
+		authCfg,
+	)
 }
 
 func (c *Cluster) syncClusterSetting(ctx context.Context, data *ClusterModel, clusterUID string) error {
