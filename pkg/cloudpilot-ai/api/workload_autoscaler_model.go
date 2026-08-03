@@ -508,12 +508,12 @@ func (m *AutoscalingPolicyModel) ToResourceFromBase(ctx context.Context, base *A
 		for _, lp := range limitPolicies {
 			resourceName := lp.Resource.ValueString()
 			policy := ResourceLimitPolicy{}
-			if !lp.RemoveLimit.IsNull() && !lp.RemoveLimit.IsUnknown() && lp.RemoveLimit.ValueBool() {
-				v := true
+			if !lp.RemoveLimit.IsNull() && !lp.RemoveLimit.IsUnknown() {
+				v := lp.RemoveLimit.ValueBool()
 				policy.RemoveLimit = &v
 			}
-			if !lp.KeepLimit.IsNull() && !lp.KeepLimit.IsUnknown() && lp.KeepLimit.ValueBool() {
-				v := true
+			if !lp.KeepLimit.IsNull() && !lp.KeepLimit.IsUnknown() {
+				v := lp.KeepLimit.ValueBool()
 				policy.KeepLimit = &v
 			}
 			if !lp.Multiplier.IsNull() && !lp.Multiplier.IsUnknown() && lp.Multiplier.ValueString() != "" {
@@ -531,23 +531,27 @@ func (m *AutoscalingPolicyModel) ToResourceFromBase(ctx context.Context, base *A
 		}
 	}
 
-	if m.StartupBoostEnabled.ValueBool() {
-		boost := &WorkloadStartupResourceBoost{
-			Enabled:          true,
-			MinBoostDuration: m.StartupBoostMinBoostDuration.ValueString(),
-			MinReadyDuration: m.StartupBoostMinReadyDuration.ValueString(),
+	if !m.StartupBoostEnabled.IsNull() && !m.StartupBoostEnabled.IsUnknown() {
+		if m.StartupBoostEnabled.ValueBool() {
+			boost := &WorkloadStartupResourceBoost{
+				Enabled:          true,
+				MinBoostDuration: m.StartupBoostMinBoostDuration.ValueString(),
+				MinReadyDuration: m.StartupBoostMinReadyDuration.ValueString(),
+			}
+			multipliers := make(map[string]string)
+			if !m.StartupBoostMultiplierCPU.IsNull() && !m.StartupBoostMultiplierCPU.IsUnknown() && m.StartupBoostMultiplierCPU.ValueString() != "" {
+				multipliers["cpu"] = m.StartupBoostMultiplierCPU.ValueString()
+			}
+			if !m.StartupBoostMultiplierMemory.IsNull() && !m.StartupBoostMultiplierMemory.IsUnknown() && m.StartupBoostMultiplierMemory.ValueString() != "" {
+				multipliers["memory"] = m.StartupBoostMultiplierMemory.ValueString()
+			}
+			if len(multipliers) > 0 {
+				boost.ResourceMultipliers = multipliers
+			}
+			ap.Spec.ResourceStartupBoost = boost
+		} else {
+			ap.Spec.ResourceStartupBoost = nil
 		}
-		multipliers := make(map[string]string)
-		if !m.StartupBoostMultiplierCPU.IsNull() && !m.StartupBoostMultiplierCPU.IsUnknown() && m.StartupBoostMultiplierCPU.ValueString() != "" {
-			multipliers["cpu"] = m.StartupBoostMultiplierCPU.ValueString()
-		}
-		if !m.StartupBoostMultiplierMemory.IsNull() && !m.StartupBoostMultiplierMemory.IsUnknown() && m.StartupBoostMultiplierMemory.ValueString() != "" {
-			multipliers["memory"] = m.StartupBoostMultiplierMemory.ValueString()
-		}
-		if len(multipliers) > 0 {
-			boost.ResourceMultipliers = multipliers
-		}
-		ap.Spec.ResourceStartupBoost = boost
 	}
 
 	fallback := &InPlaceFallback{}
@@ -634,21 +638,32 @@ func labelSelectorModelFromAPI(ctx context.Context, in *LabelSelector) customfie
 	for k, v := range in.MatchLabels {
 		labels[k] = types.StringValue(v)
 	}
+	matchLabels := customfield.NullMap[types.String](ctx)
+	if len(labels) > 0 {
+		matchLabels = customfield.NewMapMust[types.String](ctx, labels)
+	}
 	expressions := make([]LabelSelectorRequirementModel, 0, len(in.MatchExpressions))
 	for _, expr := range in.MatchExpressions {
 		values := make([]types.String, 0, len(expr.Values))
 		for _, v := range expr.Values {
 			values = append(values, types.StringValue(v))
 		}
-		expressions = append(expressions, LabelSelectorRequirementModel{
+		model := LabelSelectorRequirementModel{
 			Key:      types.StringValue(expr.Key),
 			Operator: types.StringValue(expr.Operator),
-			Values:   &values,
-		})
+		}
+		if len(values) > 0 {
+			model.Values = &values
+		}
+		expressions = append(expressions, model)
+	}
+	matchExpressions := customfield.NullObjectList[LabelSelectorRequirementModel](ctx)
+	if len(expressions) > 0 {
+		matchExpressions = customfield.NewObjectListMust(ctx, expressions)
 	}
 	return customfield.NewObjectMust(ctx, &LabelSelectorModel{
-		MatchLabels:      customfield.NewMapMust[types.String](ctx, labels),
-		MatchExpressions: customfield.NewObjectListMust(ctx, expressions),
+		MatchLabels:      matchLabels,
+		MatchExpressions: matchExpressions,
 	})
 }
 
@@ -743,15 +758,17 @@ func AutoscalingPolicyModelFromResource(ctx context.Context, ap *AutoscalingPoli
 	}
 
 	// startup boost
-	if ap.Spec.ResourceStartupBoost != nil && ap.Spec.ResourceStartupBoost.Enabled {
-		m.StartupBoostEnabled = types.BoolValue(true)
-		m.StartupBoostMinBoostDuration = types.StringValue(ap.Spec.ResourceStartupBoost.MinBoostDuration)
-		m.StartupBoostMinReadyDuration = types.StringValue(ap.Spec.ResourceStartupBoost.MinReadyDuration)
-		if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["cpu"]; ok {
-			m.StartupBoostMultiplierCPU = types.StringValue(v)
-		}
-		if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["memory"]; ok {
-			m.StartupBoostMultiplierMemory = types.StringValue(v)
+	if ap.Spec.ResourceStartupBoost != nil {
+		m.StartupBoostEnabled = types.BoolValue(ap.Spec.ResourceStartupBoost.Enabled)
+		if ap.Spec.ResourceStartupBoost.Enabled {
+			m.StartupBoostMinBoostDuration = types.StringValue(ap.Spec.ResourceStartupBoost.MinBoostDuration)
+			m.StartupBoostMinReadyDuration = types.StringValue(ap.Spec.ResourceStartupBoost.MinReadyDuration)
+			if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["cpu"]; ok {
+				m.StartupBoostMultiplierCPU = types.StringValue(v)
+			}
+			if v, ok := ap.Spec.ResourceStartupBoost.ResourceMultipliers["memory"]; ok {
+				m.StartupBoostMultiplierMemory = types.StringValue(v)
+			}
 		}
 	}
 

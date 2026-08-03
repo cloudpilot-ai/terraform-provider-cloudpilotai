@@ -208,9 +208,88 @@ func TestAutoscalingPolicyModelToResourceFromBaseReplacesManagedSlices(t *testin
 	}
 }
 
+func TestAutoscalingPolicyModelToResourceFromBasePreservesExplicitFalseValues(t *testing.T) {
+	ctx := context.Background()
+	model := AutoscalingPolicyModel{
+		Name:                     types.StringValue("default-ap"),
+		RecommendationPolicyName: types.StringValue("balanced"),
+		LimitPolicies: customfield.NewObjectListMust(ctx, []LimitPolicyModel{{
+			Resource:    types.StringValue("cpu"),
+			RemoveLimit: types.BoolValue(false),
+			KeepLimit:   types.BoolValue(false),
+		}}),
+		StartupBoostEnabled: types.BoolValue(false),
+	}
+
+	resource, err := model.ToResourceFromBase(ctx, &AutoscalingPolicyResource{
+		Name: "default-ap",
+		Spec: AutoscalingPolicySpec{
+			RecommendationPolicyName: "balanced",
+			ResourceStartupBoost: &WorkloadStartupResourceBoost{
+				Enabled: true,
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("ToResourceFromBase() error = %v", err)
+	}
+
+	policy := resource.Spec.LimitPolicies["cpu"]
+	if policy.RemoveLimit == nil || *policy.RemoveLimit {
+		t.Fatalf("RemoveLimit = %#v, want explicit false", policy.RemoveLimit)
+	}
+	if policy.KeepLimit == nil || *policy.KeepLimit {
+		t.Fatalf("KeepLimit = %#v, want explicit false", policy.KeepLimit)
+	}
+	if resource.Spec.ResourceStartupBoost != nil {
+		t.Fatalf("ResourceStartupBoost = %#v, want nil", resource.Spec.ResourceStartupBoost)
+	}
+}
+
 func TestLabelSelectorModelFromAPILeavesEmptySelectorNull(t *testing.T) {
 	got := labelSelectorModelFromAPI(context.Background(), &LabelSelector{})
 	if !got.IsNull() {
 		t.Fatalf("LabelSelector should be null when the backend returns an empty selector")
+	}
+}
+
+func TestLabelSelectorModelFromAPILeavesAbsentNestedCollectionsNull(t *testing.T) {
+	ctx := context.Background()
+	got := labelSelectorModelFromAPI(ctx, &LabelSelector{
+		MatchLabels: map[string]string{"app": "api"},
+	})
+	model, diags := got.Value(ctx)
+	if diags.HasError() {
+		t.Fatalf("LabelSelector diagnostics = %v", diags)
+	}
+	if model == nil {
+		t.Fatalf("LabelSelector should be populated")
+	}
+	if model.MatchLabels.IsNull() {
+		t.Fatalf("MatchLabels should be populated")
+	}
+	if !model.MatchExpressions.IsNull() {
+		t.Fatalf("MatchExpressions = %#v, want null", model.MatchExpressions)
+	}
+
+	got = labelSelectorModelFromAPI(ctx, &LabelSelector{
+		MatchExpressions: []LabelSelectorRequirement{{
+			Key:      "autoscaling",
+			Operator: "Exists",
+		}},
+	})
+	model, diags = got.Value(ctx)
+	if diags.HasError() {
+		t.Fatalf("LabelSelector diagnostics = %v", diags)
+	}
+	if !model.MatchLabels.IsNull() {
+		t.Fatalf("MatchLabels = %#v, want null", model.MatchLabels)
+	}
+	expressions, diags := model.MatchExpressions.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("MatchExpressions diagnostics = %v", diags)
+	}
+	if len(expressions) != 1 || expressions[0].Values != nil {
+		t.Fatalf("MatchExpressions = %#v, want one expression with null values", expressions)
 	}
 }

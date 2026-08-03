@@ -3,6 +3,7 @@ package workloadautoscaler
 import (
 	"context"
 	"fmt"
+	"reflect"
 	"strings"
 	"time"
 
@@ -503,12 +504,12 @@ func preserveAutoscalingPolicyStateRepresentation(ctx context.Context, remote, s
 	remote.DriftThresholdCPU = preserveManagedString(state.DriftThresholdCPU, remote.DriftThresholdCPU)
 	remote.DriftThresholdMemory = preserveManagedString(state.DriftThresholdMemory, remote.DriftThresholdMemory)
 	remote.OnPolicyRemoval = preserveManagedString(state.OnPolicyRemoval, remote.OnPolicyRemoval)
-	remote.TargetRefs = preserveManagedObjectList(ctx, state.TargetRefs, remote.TargetRefs)
-	remote.UpdateSchedules = preserveManagedObjectList(ctx, state.UpdateSchedules, remote.UpdateSchedules)
-	remote.LimitPolicies = preserveManagedObjectList(ctx, state.LimitPolicies, remote.LimitPolicies)
-	remote.StartupBoostEnabled = preserveManagedBool(state.StartupBoostEnabled, remote.StartupBoostEnabled)
-	remote.StartupBoostMinBoostDuration = preserveManagedString(state.StartupBoostMinBoostDuration, remote.StartupBoostMinBoostDuration)
-	remote.StartupBoostMinReadyDuration = preserveManagedString(state.StartupBoostMinReadyDuration, remote.StartupBoostMinReadyDuration)
+	remote.TargetRefs = preserveTargetRefsStateRepresentation(ctx, state.TargetRefs, remote.TargetRefs)
+	remote.UpdateSchedules = preserveUpdateSchedulesStateRepresentation(ctx, state.UpdateSchedules, remote.UpdateSchedules)
+	remote.LimitPolicies = preserveLimitPoliciesStateRepresentation(ctx, state.LimitPolicies, remote.LimitPolicies)
+	remote.StartupBoostEnabled = preserveOptionalFalse(state.StartupBoostEnabled, remote.StartupBoostEnabled)
+	remote.StartupBoostMinBoostDuration = preserveManagedDuration(state.StartupBoostMinBoostDuration, remote.StartupBoostMinBoostDuration)
+	remote.StartupBoostMinReadyDuration = preserveManagedDuration(state.StartupBoostMinReadyDuration, remote.StartupBoostMinReadyDuration)
 	remote.StartupBoostMultiplierCPU = preserveManagedString(state.StartupBoostMultiplierCPU, remote.StartupBoostMultiplierCPU)
 	remote.StartupBoostMultiplierMemory = preserveManagedString(state.StartupBoostMultiplierMemory, remote.StartupBoostMultiplierMemory)
 	remote.InPlaceFallbackDefaultPolicy = preserveManagedString(state.InPlaceFallbackDefaultPolicy, remote.InPlaceFallbackDefaultPolicy)
@@ -936,6 +937,16 @@ func preserveManagedBool(stateVal, remoteVal types.Bool) types.Bool {
 	return remoteVal
 }
 
+func preserveOptionalFalse(stateVal, remoteVal types.Bool) types.Bool {
+	if stateVal.IsNull() || stateVal.IsUnknown() {
+		return types.BoolNull()
+	}
+	if !stateVal.ValueBool() && (remoteVal.IsNull() || remoteVal.IsUnknown()) {
+		return stateVal
+	}
+	return remoteVal
+}
+
 func preserveManagedInt64(stateVal, remoteVal types.Int64) types.Int64 {
 	if stateVal.IsNull() {
 		return types.Int64Null()
@@ -955,6 +966,210 @@ func preserveManagedString(stateVal, remoteVal types.String) types.String {
 		return types.StringNull()
 	}
 	return remoteVal
+}
+
+func preserveManagedDuration(stateVal, remoteVal types.String) types.String {
+	if stateVal.IsNull() || stateVal.IsUnknown() {
+		return types.StringNull()
+	}
+	if remoteVal.IsNull() || remoteVal.IsUnknown() {
+		return remoteVal
+	}
+
+	stateDuration, stateErr := time.ParseDuration(stateVal.ValueString())
+	remoteDuration, remoteErr := time.ParseDuration(remoteVal.ValueString())
+	if stateErr == nil && remoteErr == nil && stateDuration == remoteDuration {
+		return stateVal
+	}
+	return remoteVal
+}
+
+func mergeNestedObjectsByState[T any](
+	stateItems, remoteItems []T,
+	key func(T) string,
+	preserve func(remote, state T) T,
+) []T {
+	result := make([]T, 0, len(remoteItems))
+	matchedRemote := make([]bool, len(remoteItems))
+	for _, stateItem := range stateItems {
+		stateKey := key(stateItem)
+		for i, remoteItem := range remoteItems {
+			if matchedRemote[i] || key(remoteItem) != stateKey {
+				continue
+			}
+			result = append(result, preserve(remoteItem, stateItem))
+			matchedRemote[i] = true
+			break
+		}
+	}
+	for i, remoteItem := range remoteItems {
+		if !matchedRemote[i] {
+			result = append(result, remoteItem)
+		}
+	}
+	return result
+}
+
+func preserveTargetRefsStateRepresentation(
+	ctx context.Context,
+	stateVal customfield.NestedObjectList[api.TargetRefModel],
+	remoteVal customfield.NestedObjectList[api.TargetRefModel],
+) customfield.NestedObjectList[api.TargetRefModel] {
+	if stateVal.IsNull() {
+		return customfield.NullObjectList[api.TargetRefModel](ctx)
+	}
+	if remoteVal.IsNullOrUnknown() {
+		return preserveManagedObjectList(ctx, stateVal, remoteVal)
+	}
+
+	stateItems, stateDiags := stateVal.AsStructSliceT(ctx)
+	remoteItems, remoteDiags := remoteVal.AsStructSliceT(ctx)
+	if stateDiags.HasError() || remoteDiags.HasError() {
+		return remoteVal
+	}
+
+	result := mergeNestedObjectsByState(
+		stateItems,
+		remoteItems,
+		func(item api.TargetRefModel) string {
+			return strings.Join([]string{
+				item.APIVersion.ValueString(),
+				item.Kind.ValueString(),
+				item.Name.ValueString(),
+				item.Namespace.ValueString(),
+			}, "\x00")
+		},
+		func(remoteItem, stateItem api.TargetRefModel) api.TargetRefModel {
+			remoteItem.LabelSelector = preserveLabelSelectorStateRepresentation(ctx, stateItem.LabelSelector, remoteItem.LabelSelector)
+			return remoteItem
+		},
+	)
+	return customfield.NewObjectListMust(ctx, result)
+}
+
+func preserveLabelSelectorStateRepresentation(
+	ctx context.Context,
+	stateVal customfield.NestedObject[api.LabelSelectorModel],
+	remoteVal customfield.NestedObject[api.LabelSelectorModel],
+) customfield.NestedObject[api.LabelSelectorModel] {
+	stateSelector, stateOK := labelSelectorSemanticValue(ctx, stateVal)
+	remoteSelector, remoteOK := labelSelectorSemanticValue(ctx, remoteVal)
+	if stateOK && remoteOK && reflect.DeepEqual(stateSelector, remoteSelector) {
+		return stateVal
+	}
+	return remoteVal
+}
+
+func labelSelectorSemanticValue(
+	ctx context.Context,
+	value customfield.NestedObject[api.LabelSelectorModel],
+) (api.LabelSelector, bool) {
+	result := api.LabelSelector{}
+	if value.IsNull() {
+		return result, true
+	}
+	if value.IsUnknown() {
+		return result, false
+	}
+	model, diags := value.Value(ctx)
+	if diags.HasError() || model == nil {
+		return result, false
+	}
+
+	labels, diags := model.MatchLabels.Value(ctx)
+	if diags.HasError() {
+		return result, false
+	}
+	if len(labels) > 0 {
+		result.MatchLabels = make(map[string]string, len(labels))
+		for key, labelValue := range labels {
+			result.MatchLabels[key] = labelValue.ValueString()
+		}
+	}
+
+	expressions, diags := model.MatchExpressions.AsStructSliceT(ctx)
+	if diags.HasError() {
+		return result, false
+	}
+	for _, expression := range expressions {
+		item := api.LabelSelectorRequirement{
+			Key:      expression.Key.ValueString(),
+			Operator: expression.Operator.ValueString(),
+		}
+		if expression.Values != nil && len(*expression.Values) > 0 {
+			item.Values = make([]string, 0, len(*expression.Values))
+			for _, expressionValue := range *expression.Values {
+				item.Values = append(item.Values, expressionValue.ValueString())
+			}
+		}
+		result.MatchExpressions = append(result.MatchExpressions, item)
+	}
+	return result, true
+}
+
+func preserveUpdateSchedulesStateRepresentation(
+	ctx context.Context,
+	stateVal customfield.NestedObjectList[api.UpdateScheduleModel],
+	remoteVal customfield.NestedObjectList[api.UpdateScheduleModel],
+) customfield.NestedObjectList[api.UpdateScheduleModel] {
+	if stateVal.IsNull() {
+		return customfield.NullObjectList[api.UpdateScheduleModel](ctx)
+	}
+	if remoteVal.IsNullOrUnknown() {
+		return preserveManagedObjectList(ctx, stateVal, remoteVal)
+	}
+
+	stateItems, stateDiags := stateVal.AsStructSliceT(ctx)
+	remoteItems, remoteDiags := remoteVal.AsStructSliceT(ctx)
+	if stateDiags.HasError() || remoteDiags.HasError() {
+		return remoteVal
+	}
+
+	result := mergeNestedObjectsByState(
+		stateItems,
+		remoteItems,
+		func(item api.UpdateScheduleModel) string { return item.Name.ValueString() },
+		func(remoteItem, stateItem api.UpdateScheduleModel) api.UpdateScheduleModel {
+			remoteItem.Schedule = preserveManagedString(stateItem.Schedule, remoteItem.Schedule)
+			remoteItem.Duration = preserveManagedDuration(stateItem.Duration, remoteItem.Duration)
+			remoteItem.Mode = preserveManagedString(stateItem.Mode, remoteItem.Mode)
+			return remoteItem
+		},
+	)
+	return customfield.NewObjectListMust(ctx, result)
+}
+
+func preserveLimitPoliciesStateRepresentation(
+	ctx context.Context,
+	stateVal customfield.NestedObjectList[api.LimitPolicyModel],
+	remoteVal customfield.NestedObjectList[api.LimitPolicyModel],
+) customfield.NestedObjectList[api.LimitPolicyModel] {
+	if stateVal.IsNull() {
+		return customfield.NullObjectList[api.LimitPolicyModel](ctx)
+	}
+	if remoteVal.IsNullOrUnknown() {
+		return preserveManagedObjectList(ctx, stateVal, remoteVal)
+	}
+
+	stateItems, stateDiags := stateVal.AsStructSliceT(ctx)
+	remoteItems, remoteDiags := remoteVal.AsStructSliceT(ctx)
+	if stateDiags.HasError() || remoteDiags.HasError() {
+		return remoteVal
+	}
+
+	result := mergeNestedObjectsByState(
+		stateItems,
+		remoteItems,
+		func(item api.LimitPolicyModel) string { return item.Resource.ValueString() },
+		func(remoteItem, stateItem api.LimitPolicyModel) api.LimitPolicyModel {
+			remoteItem.RemoveLimit = preserveOptionalFalse(stateItem.RemoveLimit, remoteItem.RemoveLimit)
+			remoteItem.KeepLimit = preserveOptionalFalse(stateItem.KeepLimit, remoteItem.KeepLimit)
+			remoteItem.Multiplier = preserveManagedString(stateItem.Multiplier, remoteItem.Multiplier)
+			remoteItem.AutoHeadroom = preserveManagedString(stateItem.AutoHeadroom, remoteItem.AutoHeadroom)
+			return remoteItem
+		},
+	)
+	return customfield.NewObjectListMust(ctx, result)
 }
 
 func preserveManagedStringList(stateVal, remoteVal *[]types.String) *[]types.String {
