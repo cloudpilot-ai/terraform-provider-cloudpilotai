@@ -95,6 +95,7 @@ resource "cloudpilotai_gke_cluster" "managed" {
 - `project_id` (String) GCP project ID where the GKE cluster is located. When unset, the provider first tries to infer it from GKE metadata it already knows, then falls back to the active local gcloud project.
 - `restore_desired_sizes` (Map of Number) Optional per-node-pool desired total node counts used during cluster destroy. Keys are GKE node-pool names and values are desired total nodes for each pool.
 - `restore_node_number` (Number) Total number of regular GKE node-pool nodes to restore during cluster destroy. For regional or multi-zone GKE node pools, this is the desired total across all locations. Set to 0 to skip restore unless restore_desired_sizes is set.
+- `scheduled_rebalances` (Attributes List) Scheduled rebalance policies managed by Terraform. Omit this attribute to leave all server policies unmanaged; set it to an empty list to remove only policies previously managed by this resource. (see [below for nested schema](#nestedatt--scheduled_rebalances))
 - `skip_restore` (Boolean) When set to true, skip restoring the original regular GKE node pools during cluster destroy. This matches the EKS-style destroy switch and leaves the current optimized nodes untouched while uninstalling CloudPilot.
 
 ### Read-Only
@@ -110,7 +111,9 @@ Optional:
 
 - `discount` (Number) Cluster-level discount ratio used by cost calculations.
 - `enable_disk_monitor` (Boolean) Enable disk monitor for this cluster.
+- `enable_node_pool_decommission` (Boolean) Enable node pool decommissioning. When omitted, Terraform does not manage this setting.
 - `enable_node_repair` (Boolean) Enable CloudPilot AI node repair for this cluster.
+- `enable_workload_min_non_spot` (Boolean) Enable minimum non-spot workload replicas. When omitted, Terraform does not manage this setting.
 - `post_run_command` (String) Command run after maintenance or repair actions.
 - `pre_run_command` (String) Command run before maintenance or repair actions.
 
@@ -128,6 +131,8 @@ Optional:
 - `confidential_instance_type` (String) Confidential instance type setting for this NodeClass.
 - `disks` (Attributes List) GCE disks attached to provisioned nodes. (see [below for nested schema](#nestedatt--nodeclasses--disks))
 - `enable_image_accelerator` (Boolean) Enable Image Accelerator bootstrap for nodes launched from this NodeClass.
+- `enable_local_ssd_ephemeral_storage` (Boolean) Use GCE Local SSDs as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.
+- `ephemeral_storage_local_ssd` (Attributes) Optional Local SSD configuration. When omitted, Terraform preserves the server configuration. (see [below for nested schema](#nestedatt--nodeclasses--ephemeral_storage_local_ssd))
 - `gpu_driver_version` (String) GPU driver version to configure on provisioned nodes.
 - `image_selector_terms` (Attributes List) Image selector terms for the GCENodeClass. (see [below for nested schema](#nestedatt--nodeclasses--image_selector_terms))
 - `kubelet_configuration` (Attributes) Kubelet configuration overrides for nodes in this NodeClass. (see [below for nested schema](#nestedatt--nodeclasses--kubelet_configuration))
@@ -147,6 +152,14 @@ Optional:
 - `boot` (Boolean) Whether this is the boot disk.
 - `category` (String) Disk category, for example pd-balanced.
 - `size_gib` (Number) Disk size in GiB.
+
+
+<a id="nestedatt--nodeclasses--ephemeral_storage_local_ssd"></a>
+### Nested Schema for `nodeclasses.ephemeral_storage_local_ssd`
+
+Optional:
+
+- `count` (Number) Number of Local SSDs to attach (1-32). Omit for machine types with bundled Local SSDs.
 
 
 <a id="nestedatt--nodeclasses--image_selector_terms"></a>
@@ -211,13 +224,28 @@ Optional:
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Set to 0 for unlimited.
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
+- `node_disruption_budgets` (Attributes List) Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value. (see [below for nested schema](#nestedatt--nodepools--node_disruption_budgets))
 - `node_disruption_delay` (String) Duration the controller waits before terminating underutilized nodes.
-- `node_disruption_limit` (String) Maximum number of nodes that can be terminated at once, either as a fixed number or percentage.
+- `node_disruption_limit` (String, Deprecated) Maximum number of nodes that can be terminated at once, either as a fixed number or percentage. Use node_disruption_budgets instead.
 - `nodeclass` (String) Select the nodeclass to use for this nodepool.
 - `origin_nodepool_json` (String) The origin nodepool JSON. If configured, the other nodepool configuration items are ignored.
 - `provision_priority` (Number) The priority level of this nodepool. A larger number means a higher priority.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepools--taints))
 - `zone` (List of String) Zones where nodes may be provisioned.
+
+<a id="nestedatt--nodepools--node_disruption_budgets"></a>
+### Nested Schema for `nodepools.node_disruption_budgets`
+
+Required:
+
+- `nodes` (String) Maximum number or percentage of nodes that may be disrupted.
+
+Optional:
+
+- `duration` (String) How long the scheduled budget remains active. Must be configured together with schedule.
+- `reasons` (List of String) Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.
+- `schedule` (String) Optional cron schedule. Must be configured together with duration.
+
 
 <a id="nestedatt--nodepools--taints"></a>
 ### Nested Schema for `nodepools.taints`
@@ -230,6 +258,87 @@ Required:
 Optional:
 
 - `value` (String) Taint value.
+
+
+
+<a id="nestedatt--scheduled_rebalances"></a>
+### Nested Schema for `scheduled_rebalances`
+
+Required:
+
+- `name` (String) Unique policy name.
+
+Optional:
+
+- `cron` (String) Five-field cron expression. Required for a new policy; when omitted for an existing policy, Terraform preserves the server value.
+- `enabled` (Boolean) Whether the policy is enabled. When omitted, Terraform preserves the server value.
+- `force_drain` (Boolean) Whether to force drain selected nodes.
+- `node_constraints` (Attributes) (see [below for nested schema](#nestedatt--scheduled_rebalances--node_constraints))
+- `scope` (Attributes) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope))
+- `selection_order` (String) Node selection order: oldest_first, newest_first, name_asc, or lowest_utilization_first.
+- `timezone` (String) IANA timezone. When omitted, Terraform preserves the server value.
+
+<a id="nestedatt--scheduled_rebalances--node_constraints"></a>
+### Nested Schema for `scheduled_rebalances.node_constraints`
+
+Optional:
+
+- `max_nodes` (Number)
+- `min_age_seconds` (Number)
+- `min_cluster_size` (Number)
+
+
+<a id="nestedatt--scheduled_rebalances--scope"></a>
+### Nested Schema for `scheduled_rebalances.scope`
+
+Optional:
+
+- `capacity_types` (List of String)
+- `exclude_node_names` (List of String)
+- `exclude_node_selector_terms` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms))
+- `node_names` (List of String)
+- `node_pool_name` (String)
+- `node_selector_terms` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms))
+
+<a id="nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms"></a>
+### Nested Schema for `scheduled_rebalances.scope.exclude_node_selector_terms`
+
+Optional:
+
+- `match_expressions` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms--match_expressions))
+
+<a id="nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms--match_expressions"></a>
+### Nested Schema for `scheduled_rebalances.scope.exclude_node_selector_terms.match_expressions`
+
+Required:
+
+- `key` (String)
+- `operator` (String)
+
+Optional:
+
+- `values` (List of String)
+
+
+
+<a id="nestedatt--scheduled_rebalances--scope--node_selector_terms"></a>
+### Nested Schema for `scheduled_rebalances.scope.node_selector_terms`
+
+Optional:
+
+- `match_expressions` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms--match_expressions))
+
+<a id="nestedatt--scheduled_rebalances--scope--node_selector_terms--match_expressions"></a>
+### Nested Schema for `scheduled_rebalances.scope.node_selector_terms.match_expressions`
+
+Required:
+
+- `key` (String)
+- `operator` (String)
+
+Optional:
+
+- `values` (List of String)
 
 ## Upgrading from Generated Kubeconfig State
 

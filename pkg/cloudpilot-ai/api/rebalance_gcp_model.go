@@ -18,13 +18,14 @@ import (
 )
 
 const (
-	gceNodeClassRefGroup     = "karpenter.k8s.gcp"
-	gceNodeClassRefKind      = "GCENodeClass"
-	gceLabelInstanceFamily   = "karpenter.k8s.gcp/instance-family"
-	gceLabelInstanceCPU      = "karpenter.k8s.gcp/instance-cpu"
-	gceLabelInstanceMemory   = "karpenter.k8s.gcp/instance-memory"
-	gceLabelInstanceGPUCount = "karpenter.k8s.gcp/instance-gpu-count"
-	gceLabelTopologyZoneID   = "topology.k8s.gcp/zone-id"
+	gceNodeClassRefGroup          = "karpenter.k8s.gcp"
+	gceNodeClassRefKind           = "GCENodeClass"
+	gceLabelInstanceFamily        = "karpenter.k8s.gcp/instance-family"
+	gceLabelInstanceCPU           = "karpenter.k8s.gcp/instance-cpu"
+	gceLabelInstanceMemory        = "karpenter.k8s.gcp/instance-memory"
+	gceLabelInstanceGPUCount      = "karpenter.k8s.gcp/instance-gpu-count"
+	gceLegacyLabelTopologyZoneID  = "topology.k8s.gcp/zone-id"
+	maxGCPDisruptionBudgetReasons = 50
 )
 
 type GCEImageSelectorTerm = gcpproviderv1alpha1.ImageSelectorTerm
@@ -33,6 +34,7 @@ type GCEAdditionalNetworkInterface = gcpproviderv1alpha1.AdditionalNetworkInterf
 type GCENetworkConfig = gcpproviderv1alpha1.NetworkConfig
 type GCEKubeletConfiguration = gcpproviderv1alpha1.KubeletConfiguration
 type GCENodeClassSpec = gcpproviderv1alpha1.GCENodeClassSpec
+type GCEEphemeralStorageLocalSSD = gcpproviderv1alpha1.EphemeralStorageLocalSSDConfig
 
 type GCEImageSelectorTermModel struct {
 	ID      types.String `tfsdk:"id"`
@@ -87,44 +89,51 @@ type GCEKubeletConfigurationModel struct {
 	EvictionSoft   customfield.Map[types.String] `tfsdk:"eviction_soft"`
 }
 
+type GCEEphemeralStorageLocalSSDModel struct {
+	Count types.Int32 `tfsdk:"count"`
+}
+
 type GCENodeClassModel struct {
-	Name                     types.String                                            `tfsdk:"name"`
-	EnableImageAccelerator   types.Bool                                              `tfsdk:"enable_image_accelerator"`
-	ServiceAccount           types.String                                            `tfsdk:"service_account"`
-	Disks                    customfield.NestedObjectList[GCEDiskModel]              `tfsdk:"disks"`
-	ImageSelectorTerms       customfield.NestedObjectList[GCEImageSelectorTermModel] `tfsdk:"image_selector_terms"`
-	SubnetRangeName          types.String                                            `tfsdk:"subnet_range_name"`
-	KubeletConfiguration     customfield.NestedObject[GCEKubeletConfigurationModel]  `tfsdk:"kubelet_configuration"`
-	Labels                   customfield.Map[types.String]                           `tfsdk:"labels"`
-	Metadata                 customfield.Map[types.String]                           `tfsdk:"metadata"`
-	NetworkTags              []types.String                                          `tfsdk:"network_tags"`
-	ConfidentialInstanceType types.String                                            `tfsdk:"confidential_instance_type"`
-	NetworkConfig            customfield.NestedObject[GCENetworkConfigModel]         `tfsdk:"network_config"`
-	AutoGPUTaint             types.Bool                                              `tfsdk:"auto_gpu_taint"`
-	GPUDriverVersion         types.String                                            `tfsdk:"gpu_driver_version"`
-	OriginNodeClassJSON      types.String                                            `tfsdk:"origin_nodeclass_json"`
+	Name                           types.String                                               `tfsdk:"name"`
+	EnableImageAccelerator         types.Bool                                                 `tfsdk:"enable_image_accelerator"`
+	EnableLocalSSDEphemeralStorage types.Bool                                                 `tfsdk:"enable_local_ssd_ephemeral_storage"`
+	EphemeralStorageLocalSSD       customfield.NestedObject[GCEEphemeralStorageLocalSSDModel] `tfsdk:"ephemeral_storage_local_ssd"`
+	ServiceAccount                 types.String                                               `tfsdk:"service_account"`
+	Disks                          customfield.NestedObjectList[GCEDiskModel]                 `tfsdk:"disks"`
+	ImageSelectorTerms             customfield.NestedObjectList[GCEImageSelectorTermModel]    `tfsdk:"image_selector_terms"`
+	SubnetRangeName                types.String                                               `tfsdk:"subnet_range_name"`
+	KubeletConfiguration           customfield.NestedObject[GCEKubeletConfigurationModel]     `tfsdk:"kubelet_configuration"`
+	Labels                         customfield.Map[types.String]                              `tfsdk:"labels"`
+	Metadata                       customfield.Map[types.String]                              `tfsdk:"metadata"`
+	NetworkTags                    []types.String                                             `tfsdk:"network_tags"`
+	ConfidentialInstanceType       types.String                                               `tfsdk:"confidential_instance_type"`
+	NetworkConfig                  customfield.NestedObject[GCENetworkConfigModel]            `tfsdk:"network_config"`
+	AutoGPUTaint                   types.Bool                                                 `tfsdk:"auto_gpu_taint"`
+	GPUDriverVersion               types.String                                               `tfsdk:"gpu_driver_version"`
+	OriginNodeClassJSON            types.String                                               `tfsdk:"origin_nodeclass_json"`
 }
 
 type GCENodePoolModel struct {
-	Name                   types.String                             `tfsdk:"name"`
-	Enable                 types.Bool                               `tfsdk:"enable"`
-	EnableImageAccelerator types.Bool                               `tfsdk:"enable_image_accelerator"`
-	NodeClass              types.String                             `tfsdk:"nodeclass"`
-	EnableGPU              types.Bool                               `tfsdk:"enable_gpu"`
-	ProvisionPriority      types.Int32                              `tfsdk:"provision_priority"`
-	InstanceFamily         *[]types.String                          `tfsdk:"instance_family"`
-	InstanceArch           *[]types.String                          `tfsdk:"instance_arch"`
-	CapacityType           *[]types.String                          `tfsdk:"capacity_type"`
-	Zone                   *[]types.String                          `tfsdk:"zone"`
-	InstanceCPUMAX         types.Int64                              `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN         types.Int64                              `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX      types.Int64                              `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN      types.Int64                              `tfsdk:"instance_memory_min"`
-	Labels                 customfield.Map[types.String]            `tfsdk:"labels"`
-	Taints                 customfield.NestedObjectList[TaintModel] `tfsdk:"taints"`
-	NodeDisruptionLimit    types.String                             `tfsdk:"node_disruption_limit"`
-	NodeDisruptionDelay    types.String                             `tfsdk:"node_disruption_delay"`
-	OriginNodePoolJSON     types.String                             `tfsdk:"origin_nodepool_json"`
+	Name                   types.String                                        `tfsdk:"name"`
+	Enable                 types.Bool                                          `tfsdk:"enable"`
+	EnableImageAccelerator types.Bool                                          `tfsdk:"enable_image_accelerator"`
+	NodeClass              types.String                                        `tfsdk:"nodeclass"`
+	EnableGPU              types.Bool                                          `tfsdk:"enable_gpu"`
+	ProvisionPriority      types.Int32                                         `tfsdk:"provision_priority"`
+	InstanceFamily         *[]types.String                                     `tfsdk:"instance_family"`
+	InstanceArch           *[]types.String                                     `tfsdk:"instance_arch"`
+	CapacityType           *[]types.String                                     `tfsdk:"capacity_type"`
+	Zone                   *[]types.String                                     `tfsdk:"zone"`
+	InstanceCPUMAX         types.Int64                                         `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN         types.Int64                                         `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX      types.Int64                                         `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN      types.Int64                                         `tfsdk:"instance_memory_min"`
+	Labels                 customfield.Map[types.String]                       `tfsdk:"labels"`
+	Taints                 customfield.NestedObjectList[TaintModel]            `tfsdk:"taints"`
+	NodeDisruptionLimit    types.String                                        `tfsdk:"node_disruption_limit"`
+	NodeDisruptionBudgets  customfield.NestedObjectList[DisruptionBudgetModel] `tfsdk:"node_disruption_budgets"`
+	NodeDisruptionDelay    types.String                                        `tfsdk:"node_disruption_delay"`
+	OriginNodePoolJSON     types.String                                        `tfsdk:"origin_nodepool_json"`
 }
 
 func (g *GCENodeClass) UnmarshalJSON(data []byte) error {
@@ -165,26 +174,44 @@ func (g GCENodePool) MarshalJSON() ([]byte, error) {
 	return json.Marshal(alias(g))
 }
 
+func (g *GCENodeClass) localSSDEphemeralStorageEnabled() bool {
+	if g == nil {
+		return false
+	}
+	if g.EnableLocalSSDEphemeralStorage != nil {
+		return *g.EnableLocalSSDEphemeralStorage
+	}
+	return g.NodeClassSpec != nil && g.NodeClassSpec.EphemeralStorageLocalSSD != nil
+}
+
 func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassModel, error) {
 	if g == nil {
 		return nil, nil
 	}
 
 	model := &GCENodeClassModel{
-		Name:                 types.StringValue(g.Name),
-		Disks:                customfield.NullObjectList[GCEDiskModel](ctx),
-		ImageSelectorTerms:   customfield.NullObjectList[GCEImageSelectorTermModel](ctx),
-		KubeletConfiguration: customfield.NullObject[GCEKubeletConfigurationModel](ctx),
-		Labels:               customfield.NullMap[types.String](ctx),
-		Metadata:             customfield.NullMap[types.String](ctx),
-		NetworkConfig:        customfield.NullObject[GCENetworkConfigModel](ctx),
-		OriginNodeClassJSON:  types.StringNull(),
-	}
-	if g.NodeClassSpec == nil {
-		model.EnableImageAccelerator = types.BoolValue(g.EnableImageAccelerator)
-		return model, nil
+		Name:                     types.StringValue(g.Name),
+		Disks:                    customfield.NullObjectList[GCEDiskModel](ctx),
+		ImageSelectorTerms:       customfield.NullObjectList[GCEImageSelectorTermModel](ctx),
+		KubeletConfiguration:     customfield.NullObject[GCEKubeletConfigurationModel](ctx),
+		Labels:                   customfield.NullMap[types.String](ctx),
+		Metadata:                 customfield.NullMap[types.String](ctx),
+		NetworkConfig:            customfield.NullObject[GCENetworkConfigModel](ctx),
+		EphemeralStorageLocalSSD: customfield.NullObject[GCEEphemeralStorageLocalSSDModel](ctx),
+		OriginNodeClassJSON:      types.StringNull(),
 	}
 	model.EnableImageAccelerator = types.BoolValue(g.EnableImageAccelerator)
+	model.EnableLocalSSDEphemeralStorage = types.BoolValue(g.localSSDEphemeralStorageEnabled())
+	if g.NodeClassSpec == nil {
+		return model, nil
+	}
+	if g.NodeClassSpec.EphemeralStorageLocalSSD != nil {
+		localSSD := GCEEphemeralStorageLocalSSDModel{Count: types.Int32Null()}
+		if g.NodeClassSpec.EphemeralStorageLocalSSD.Count != nil {
+			localSSD.Count = types.Int32Value(*g.NodeClassSpec.EphemeralStorageLocalSSD.Count)
+		}
+		model.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &localSSD)
+	}
 
 	if g.NodeClassSpec.ServiceAccount != "" {
 		model.ServiceAccount = types.StringValue(g.NodeClassSpec.ServiceAccount)
@@ -273,6 +300,15 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 		}
 		return &raw, nil
 	}
+	if !m.EphemeralStorageLocalSSD.IsNull() && !m.EphemeralStorageLocalSSD.IsUnknown() {
+		if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+			if !m.EnableLocalSSDEphemeralStorage.ValueBool() {
+				return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured when enable_local_ssd_ephemeral_storage is false")
+			}
+		} else if !current.localSSDEphemeralStorageEnabled() {
+			return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured while the existing enable_local_ssd_ephemeral_storage value is false; set enable_local_ssd_ephemeral_storage to true explicitly")
+		}
+	}
 
 	currentHasLegacyAliasImageSelector := current.NodeClassSpec != nil && hasLegacyAliasImageSelectorTerm(current.NodeClassSpec.ImageSelectorTerms)
 
@@ -281,10 +317,42 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	if !m.EnableImageAccelerator.IsNull() && !m.EnableImageAccelerator.IsUnknown() {
 		out.EnableImageAccelerator = m.EnableImageAccelerator.ValueBool()
 	}
+	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		enabled := m.EnableLocalSSDEphemeralStorage.ValueBool()
+		out.EnableLocalSSDEphemeralStorage = &enabled
+	}
 	if out.NodeClassSpec == nil {
 		out.NodeClassSpec = &GCENodeClassSpec{}
 	}
-
+	if !m.EphemeralStorageLocalSSD.IsNull() && !m.EphemeralStorageLocalSSD.IsUnknown() {
+		localSSD, diags := m.EphemeralStorageLocalSSD.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("ephemeral_storage_local_ssd: %v", diags)
+		}
+		if localSSD != nil {
+			if out.NodeClassSpec.EphemeralStorageLocalSSD == nil {
+				out.NodeClassSpec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
+			}
+			if !localSSD.Count.IsNull() && !localSSD.Count.IsUnknown() {
+				count := localSSD.Count.ValueInt32()
+				if count < 1 || count > 32 {
+					return nil, fmt.Errorf("ephemeral_storage_local_ssd.count must be between 1 and 32")
+				}
+				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = &count
+			} else if localSSD.Count.IsNull() {
+				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = nil
+			}
+		}
+	}
+	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		if m.EnableLocalSSDEphemeralStorage.ValueBool() {
+			if out.NodeClassSpec.EphemeralStorageLocalSSD == nil {
+				out.NodeClassSpec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
+			}
+		} else {
+			out.NodeClassSpec.EphemeralStorageLocalSSD = nil
+		}
+	}
 	if !m.ServiceAccount.IsNull() && !m.ServiceAccount.IsUnknown() {
 		out.NodeClassSpec.ServiceAccount = m.ServiceAccount.ValueString()
 	}
@@ -412,6 +480,9 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	if !m.GPUDriverVersion.IsNull() && !m.GPUDriverVersion.IsUnknown() {
 		out.NodeClassSpec.GPUDriverVersion = m.GPUDriverVersion.ValueString()
 	}
+	if err := validateGCENodeClassLocalSSD(out.NodeClassSpec); err != nil {
+		return nil, err
+	}
 
 	if len(current.rawJSON) > 0 {
 		mergedRawJSON, err := mergeGCENodeClassModelIntoRawJSON(m, &out)
@@ -422,6 +493,18 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	}
 
 	return &out, nil
+}
+
+func validateGCENodeClassLocalSSD(spec *GCENodeClassSpec) error {
+	if spec == nil || spec.EphemeralStorageLocalSSD == nil {
+		return nil
+	}
+	for index, disk := range spec.Disks {
+		if disk.Category == gcpproviderv1alpha1.DiskCategory("local-ssd") {
+			return fmt.Errorf("ephemeral_storage_local_ssd cannot be combined with disks[%d].category = local-ssd", index)
+		}
+	}
+	return nil
 }
 
 func (g *GCENodePool) ToGCENodePoolModel(ctx context.Context) (*GCENodePoolModel, error) {
@@ -453,7 +536,7 @@ func (g *GCENodePool) ToGCENodePoolModel(ctx context.Context) (*GCENodePoolModel
 	model.InstanceFamily = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceFamily, corev1.NodeSelectorOpIn)
 	model.InstanceArch = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, corev1.LabelArchStable, corev1.NodeSelectorOpIn)
 	model.CapacityType = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, gcpcorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn)
-	model.Zone = gcpRequirementsToStringsByKeys(g.NodePoolSpec.Template.Spec.Requirements, corev1.NodeSelectorOpIn, gceLabelTopologyZoneID, corev1.LabelTopologyZone)
+	model.Zone = gcpRequirementsToStringsByKeys(g.NodePoolSpec.Template.Spec.Requirements, corev1.NodeSelectorOpIn, corev1.LabelTopologyZone, gceLegacyLabelTopologyZoneID)
 
 	var err error
 	model.InstanceCPUMAX, err = gcpRequirementsToInt64(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceCPU, corev1.NodeSelectorOpLt)
@@ -486,6 +569,20 @@ func (g *GCENodePool) ToGCENodePoolModel(ctx context.Context) (*GCENodePoolModel
 	}
 	if len(g.NodePoolSpec.Disruption.Budgets) > 0 {
 		model.NodeDisruptionLimit = types.StringValue(g.NodePoolSpec.Disruption.Budgets[0].Nodes)
+	}
+	if len(g.NodePoolSpec.Disruption.Budgets) > 0 {
+		budgetModels := make([]DisruptionBudgetModel, 0, len(g.NodePoolSpec.Disruption.Budgets))
+		for _, budget := range g.NodePoolSpec.Disruption.Budgets {
+			budgetModels = append(budgetModels, newDisruptionBudgetModel(
+				budget.Nodes,
+				lo.Map(budget.Reasons, func(reason gcpcorev1.DisruptionReason, _ int) string { return string(reason) }),
+				budget.Schedule,
+				budget.Duration,
+			))
+		}
+		model.NodeDisruptionBudgets = customfield.NewObjectListMust(ctx, budgetModels)
+	} else {
+		model.NodeDisruptionBudgets = customfield.NullObjectList[DisruptionBudgetModel](ctx)
 	}
 	if consolidateAfter, ok := gcpNillableDurationToString(g.NodePoolSpec.Disruption.ConsolidateAfter); ok {
 		model.NodeDisruptionDelay = types.StringValue(consolidateAfter)
@@ -563,8 +660,8 @@ func (m *GCENodePoolModel) ToGCENodePool(ctx context.Context, current GCENodePoo
 	}
 	if m.Zone != nil {
 		values := lo.Map(*m.Zone, func(item types.String, _ int) string { return item.ValueString() })
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelTopologyZoneID, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, nil, out.NodePoolSpec.Template.Spec.Requirements)
+		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
+		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLegacyLabelTopologyZoneID, corev1.NodeSelectorOpIn, nil, out.NodePoolSpec.Template.Spec.Requirements)
 	}
 	if !m.InstanceCPUMAX.IsNull() && !m.InstanceCPUMAX.IsUnknown() {
 		values := []string{strconv.FormatInt(m.InstanceCPUMAX.ValueInt64(), 10)}
@@ -586,7 +683,35 @@ func (m *GCENodePoolModel) ToGCENodePool(ctx context.Context, current GCENodePoo
 	if !m.InstanceMemoryMIN.IsNull() && !m.InstanceMemoryMIN.IsUnknown() {
 		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceMemory, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(m.InstanceMemoryMIN.ValueInt64(), 10)}, out.NodePoolSpec.Template.Spec.Requirements)
 	}
-	if !m.NodeDisruptionLimit.IsNull() && !m.NodeDisruptionLimit.IsUnknown() {
+	if !m.NodeDisruptionBudgets.IsNullOrUnknown() {
+		budgets, diags := m.NodeDisruptionBudgets.AsStructSliceT(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("node_disruption_budgets: %v", diags)
+		}
+		if err := validateDisruptionBudgetCount(len(budgets)); err != nil {
+			return nil, err
+		}
+		if !m.NodeDisruptionLimit.IsNull() && !m.NodeDisruptionLimit.IsUnknown() &&
+			m.NodeDisruptionLimit.ValueString() != budgets[0].Nodes.ValueString() {
+			return nil, fmt.Errorf("node_disruption_limit must match node_disruption_budgets[0].nodes when both are configured")
+		}
+		out.NodePoolSpec.Disruption.Budgets = make([]gcpcorev1.Budget, 0, len(budgets))
+		for i, budget := range budgets {
+			values, err := budget.values(ctx)
+			if err != nil {
+				return nil, fmt.Errorf("node_disruption_budgets[%d]: %w", i, err)
+			}
+			if len(values.reasons) > maxGCPDisruptionBudgetReasons {
+				return nil, fmt.Errorf("node_disruption_budgets[%d]: reasons must contain at most %d values", i, maxGCPDisruptionBudgetReasons)
+			}
+			out.NodePoolSpec.Disruption.Budgets = append(out.NodePoolSpec.Disruption.Budgets, gcpcorev1.Budget{
+				Nodes:    values.nodes,
+				Reasons:  lo.Map(values.reasons, func(reason string, _ int) gcpcorev1.DisruptionReason { return gcpcorev1.DisruptionReason(reason) }),
+				Schedule: values.schedule,
+				Duration: values.duration,
+			})
+		}
+	} else if !m.NodeDisruptionLimit.IsNull() && !m.NodeDisruptionLimit.IsUnknown() {
 		ensureFirstGCPBudget(out.NodePoolSpec).Nodes = m.NodeDisruptionLimit.ValueString()
 	}
 	if !m.NodeDisruptionDelay.IsNull() && !m.NodeDisruptionDelay.IsUnknown() {
@@ -1060,6 +1185,13 @@ func mergeGCENodeClassModelIntoRawJSON(model *GCENodeClassModel, nodeClass *GCEN
 		}
 		payload["enableImageAccelerator"] = enableImageAcceleratorJSON
 	}
+	if !model.EnableLocalSSDEphemeralStorage.IsNull() && !model.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		localSSDEnabledJSON, err := json.Marshal(nodeClass.EnableLocalSSDEphemeralStorage)
+		if err != nil {
+			return nil, fmt.Errorf("marshal gce nodeclass enableLocalSSDEphemeralStorage: %w", err)
+		}
+		payload["enableLocalSSDEphemeralStorage"] = localSSDEnabledJSON
+	}
 
 	specPayload := map[string]json.RawMessage{}
 	if rawSpec, ok := payload["nodeClassSpec"]; ok && len(rawSpec) > 0 && string(rawSpec) != "null" {
@@ -1078,6 +1210,13 @@ func mergeGCENodeClassModelIntoRawJSON(model *GCENodeClassModel, nodeClass *GCEN
 		!model.Disks.IsNull() && !model.Disks.IsUnknown(),
 		len(nodeClass.NodeClassSpec.Disks) > 0,
 		nodeClass.NodeClassSpec.Disks); err != nil {
+		return nil, err
+	}
+	if err := mergeGCENodeClassSpecField(specPayload, "ephemeralStorageLocalSSD",
+		!model.EphemeralStorageLocalSSD.IsNull() && !model.EphemeralStorageLocalSSD.IsUnknown() ||
+			(!model.EnableLocalSSDEphemeralStorage.IsNull() && !model.EnableLocalSSDEphemeralStorage.IsUnknown()),
+		nodeClass.NodeClassSpec.EphemeralStorageLocalSSD != nil,
+		nodeClass.NodeClassSpec.EphemeralStorageLocalSSD); err != nil {
 		return nil, err
 	}
 	if err := mergeGCENodeClassSpecField(specPayload, "imageSelectorTerms",

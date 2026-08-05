@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/types"
 
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
+	commonschemas "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/common/schemas"
 	commonvalidators "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/resources/common/validators"
 	customfield "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
@@ -130,6 +131,14 @@ func Schema(ctx context.Context) schema.Schema {
 						Description: "Enable disk monitor for this cluster.",
 						Optional:    true,
 					},
+					"enable_node_pool_decommission": schema.BoolAttribute{
+						Description: "Enable node pool decommissioning. When omitted, Terraform does not manage this setting.",
+						Optional:    true,
+					},
+					"enable_workload_min_non_spot": schema.BoolAttribute{
+						Description: "Enable minimum non-spot workload replicas. When omitted, Terraform does not manage this setting.",
+						Optional:    true,
+					},
 					"discount": schema.Float64Attribute{
 						Description: "Cluster-level discount ratio used by cost calculations.",
 						Optional:    true,
@@ -160,6 +169,7 @@ func Schema(ctx context.Context) schema.Schema {
 					Attributes: gkeNodePoolSchema(ctx),
 				},
 			},
+			"scheduled_rebalances": commonschemas.ScheduledRebalancesSchema(ctx),
 		},
 	}
 }
@@ -173,6 +183,21 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 		"enable_image_accelerator": schema.BoolAttribute{
 			Description: "Enable Image Accelerator bootstrap for nodes launched from this NodeClass.",
 			Optional:    true,
+		},
+		"enable_local_ssd_ephemeral_storage": schema.BoolAttribute{
+			Description: "Use GCE Local SSDs as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.",
+			Optional:    true,
+		},
+		"ephemeral_storage_local_ssd": schema.SingleNestedAttribute{
+			Description: "Optional Local SSD configuration. When omitted, Terraform preserves the server configuration.",
+			Optional:    true,
+			CustomType:  customfield.NewNestedObjectType[api.GCEEphemeralStorageLocalSSDModel](ctx),
+			Attributes: map[string]schema.Attribute{
+				"count": schema.Int32Attribute{
+					Description: "Number of Local SSDs to attach (1-32). Omit for machine types with bundled Local SSDs.",
+					Optional:    true,
+				},
+			},
 		},
 		"service_account": schema.StringAttribute{
 			Description: "Service account used by nodes launched from this NodeClass.",
@@ -425,8 +450,35 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"node_disruption_limit": schema.StringAttribute{
-			Description: "Maximum number of nodes that can be terminated at once, either as a fixed number or percentage.",
+			Description:        "Maximum number of nodes that can be terminated at once, either as a fixed number or percentage. Use node_disruption_budgets instead.",
+			Optional:           true,
+			DeprecationMessage: "node_disruption_limit is deprecated; use node_disruption_budgets instead.",
+		},
+		"node_disruption_budgets": schema.ListNestedAttribute{
+			Description: "Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value.",
 			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.DisruptionBudgetModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"nodes": schema.StringAttribute{
+						Description: "Maximum number or percentage of nodes that may be disrupted.",
+						Required:    true,
+					},
+					"reasons": schema.ListAttribute{
+						Description: "Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.",
+						Optional:    true,
+						ElementType: types.StringType,
+					},
+					"schedule": schema.StringAttribute{
+						Description: "Optional cron schedule. Must be configured together with duration.",
+						Optional:    true,
+					},
+					"duration": schema.StringAttribute{
+						Description: "How long the scheduled budget remains active. Must be configured together with schedule.",
+						Optional:    true,
+					},
+				},
+			},
 		},
 		"node_disruption_delay": schema.StringAttribute{
 			Description: "Duration the controller waits before terminating underutilized nodes.",

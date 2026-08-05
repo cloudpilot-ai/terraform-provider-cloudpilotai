@@ -64,12 +64,14 @@ type ClusterCostsSummary struct {
 }
 
 type ClusterSetting struct {
-	EnableNodeRepair   *bool    `json:"enableNodeRepair,omitempty"`
-	EnableDiskMonitor  *bool    `json:"enableDiskMonitor,omitempty"`
-	MaintenanceEnabled *bool    `json:"maintenanceEnabled,omitempty"`
-	Discount           *float64 `json:"discount,omitempty"`
-	PreRunCommand      *string  `json:"preRunCommand,omitempty"`
-	PostRunCommand     *string  `json:"postRunCommand,omitempty"`
+	EnableNodeRepair           *bool    `json:"enableNodeRepair,omitempty"`
+	EnableDiskMonitor          *bool    `json:"enableDiskMonitor,omitempty"`
+	EnableNodePoolDecommission *bool    `json:"enableNodePoolDecommission,omitempty"`
+	EnableWorkloadMinNonSpot   *bool    `json:"enableWorkloadMinNonSpot,omitempty"`
+	MaintenanceEnabled         *bool    `json:"maintenanceEnabled,omitempty"`
+	Discount                   *float64 `json:"discount,omitempty"`
+	PreRunCommand              *string  `json:"preRunCommand,omitempty"`
+	PostRunCommand             *string  `json:"postRunCommand,omitempty"`
 }
 
 type ClusterMaintenanceStatus struct {

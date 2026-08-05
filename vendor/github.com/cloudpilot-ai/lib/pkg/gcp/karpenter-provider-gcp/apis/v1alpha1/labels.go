@@ -52,6 +52,7 @@ func init() {
 		LabelGKEReadinessNetdReady,
 		LabelGKEReadinessNodeLocalDNSReady,
 		LabelGKEAccelerator,
+		LabelGKEEphemeralStorageLocalSSD,
 	)
 }
 
@@ -113,6 +114,9 @@ var (
 	// LabelGKEGPUDriverVersion is the kube-labels key read by GKE's GPU driver installer DaemonSet
 	// to decide which NVIDIA driver version to install. Corresponds to GCENodeClass.spec.gpuDriverVersion.
 	LabelGKEGPUDriverVersion = "cloud.google.com/gke-gpu-driver-version"
+	// LabelGKEEphemeralStorageLocalSSD matches the label applied by native GKE
+	// node pools when Local SSDs back node ephemeral storage.
+	LabelGKEEphemeralStorageLocalSSD = "cloud.google.com/gke-ephemeral-storage-local-ssd"
 
 	LabelNodeClass                           = apis.Group + "/gcenodeclass"
 	LabelTopologyZoneID                      = "topology.k8s.gcp/zone-id"

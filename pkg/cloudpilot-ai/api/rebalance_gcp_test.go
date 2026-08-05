@@ -65,6 +65,227 @@ func TestGCENodeClassModelRoundTripPreservesTypedFields(t *testing.T) {
 	}
 }
 
+func TestGCENodeClassModelRoundTripsLocalSSDEphemeralStorage(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	count := int32(4)
+	remote := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &enabled,
+		NodeClassSpec: &GCENodeClassSpec{
+			ImageSelectorTerms:       []GCEImageSelectorTerm{{Family: "ContainerOptimizedOS", Channel: "cluster"}},
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{Count: &count},
+		},
+	}
+	model, err := remote.ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	if !model.EnableLocalSSDEphemeralStorage.ValueBool() {
+		t.Fatalf("EnableLocalSSDEphemeralStorage = %#v", model.EnableLocalSSDEphemeralStorage)
+	}
+	localSSD, diags := model.EphemeralStorageLocalSSD.Value(ctx)
+	if diags.HasError() || localSSD == nil || localSSD.Count.ValueInt32() != count {
+		t.Fatalf("EphemeralStorageLocalSSD = %#v, diagnostics = %v", localSSD, diags)
+	}
+	roundTrip, err := model.ToGCENodeClass(ctx, GCENodeClass{Name: "cloudpilot"})
+	if err != nil {
+		t.Fatalf("ToGCENodeClass() error = %v", err)
+	}
+	if roundTrip.NodeClassSpec.EphemeralStorageLocalSSD == nil || roundTrip.NodeClassSpec.EphemeralStorageLocalSSD.Count == nil || *roundTrip.NodeClassSpec.EphemeralStorageLocalSSD.Count != count {
+		t.Fatalf("round-trip local SSD configuration = %#v", roundTrip.NodeClassSpec.EphemeralStorageLocalSSD)
+	}
+}
+
+func TestGCENodeClassModelNormalizesOmittedLocalSSDSwitch(t *testing.T) {
+	ctx := context.Background()
+
+	t.Run("disabled without configuration", func(t *testing.T) {
+		model, err := (&GCENodeClass{
+			Name:          "cloudpilot",
+			NodeClassSpec: &GCENodeClassSpec{},
+		}).ToGCENodeClassModel(ctx)
+		if err != nil {
+			t.Fatalf("ToGCENodeClassModel() error = %v", err)
+		}
+		if model.EnableLocalSSDEphemeralStorage != types.BoolValue(false) {
+			t.Fatalf("EnableLocalSSDEphemeralStorage = %#v, want false", model.EnableLocalSSDEphemeralStorage)
+		}
+	})
+
+	t.Run("enabled by legacy configuration", func(t *testing.T) {
+		model, err := (&GCENodeClass{
+			Name: "cloudpilot",
+			NodeClassSpec: &GCENodeClassSpec{
+				EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{},
+			},
+		}).ToGCENodeClassModel(ctx)
+		if err != nil {
+			t.Fatalf("ToGCENodeClassModel() error = %v", err)
+		}
+		if model.EnableLocalSSDEphemeralStorage != types.BoolValue(true) {
+			t.Fatalf("EnableLocalSSDEphemeralStorage = %#v, want true", model.EnableLocalSSDEphemeralStorage)
+		}
+	})
+}
+
+func TestGCENodeClassModelNullLocalSSDBlockPreservesRemoteConfiguration(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	count := int32(4)
+	remote := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &enabled,
+		NodeClassSpec: &GCENodeClassSpec{
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{Count: &count},
+		},
+	}
+	model, err := remote.ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	model.EphemeralStorageLocalSSD = customfield.NullObject[GCEEphemeralStorageLocalSSDModel](ctx)
+
+	got, err := model.ToGCENodeClass(ctx, remote)
+	if err != nil {
+		t.Fatalf("ToGCENodeClass() error = %v", err)
+	}
+	if got.NodeClassSpec.EphemeralStorageLocalSSD == nil || got.NodeClassSpec.EphemeralStorageLocalSSD.Count == nil || *got.NodeClassSpec.EphemeralStorageLocalSSD.Count != count {
+		t.Fatalf("unmanaged Local SSD configuration = %#v, want remote count preserved", got.NodeClassSpec.EphemeralStorageLocalSSD)
+	}
+}
+
+func TestGCENodeClassModelEmptyLocalSSDBlockClearsRemoteCount(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	count := int32(4)
+	remote := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &enabled,
+		NodeClassSpec: &GCENodeClassSpec{
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{Count: &count},
+		},
+	}
+	model, err := remote.ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	model.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &GCEEphemeralStorageLocalSSDModel{Count: types.Int32Null()})
+
+	got, err := model.ToGCENodeClass(ctx, remote)
+	if err != nil {
+		t.Fatalf("ToGCENodeClass() error = %v", err)
+	}
+	if got.NodeClassSpec.EphemeralStorageLocalSSD == nil || got.NodeClassSpec.EphemeralStorageLocalSSD.Count != nil {
+		t.Fatalf("managed empty Local SSD block = %#v, want present block with nil count", got.NodeClassSpec.EphemeralStorageLocalSSD)
+	}
+}
+
+func TestGCENodeClassModelDisableLocalSSDRemovesConfiguration(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	count := int32(4)
+	remote := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &enabled,
+		NodeClassSpec: &GCENodeClassSpec{
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{Count: &count},
+		},
+	}
+	model, err := remote.ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	model.EnableLocalSSDEphemeralStorage = types.BoolValue(false)
+	model.EphemeralStorageLocalSSD = customfield.NullObject[GCEEphemeralStorageLocalSSDModel](ctx)
+
+	got, err := model.ToGCENodeClass(ctx, remote)
+	if err != nil {
+		t.Fatalf("ToGCENodeClass() error = %v", err)
+	}
+	if got.NodeClassSpec.EphemeralStorageLocalSSD != nil {
+		t.Fatalf("disabled Local SSD configuration = %#v, want nil", got.NodeClassSpec.EphemeralStorageLocalSSD)
+	}
+}
+
+func TestGCENodeClassModelRejectsLocalSSDBlockWhenDisabled(t *testing.T) {
+	ctx := context.Background()
+	model := GCENodeClassModel{
+		Name:                           types.StringValue("cloudpilot"),
+		EnableLocalSSDEphemeralStorage: types.BoolValue(false),
+		EphemeralStorageLocalSSD: customfield.NewObjectMust(ctx, &GCEEphemeralStorageLocalSSDModel{
+			Count: types.Int32Value(2),
+		}),
+	}
+
+	if _, err := model.ToGCENodeClass(ctx, GCENodeClass{Name: "cloudpilot"}); err == nil || !strings.Contains(err.Error(), "cannot be configured") {
+		t.Fatalf("ToGCENodeClass() error = %v, want conflicting Local SSD configuration error", err)
+	}
+}
+
+func TestGCENodeClassModelRejectsManagedLocalSSDBlockWithInheritedDisabledState(t *testing.T) {
+	ctx := context.Background()
+	disabled := false
+	model := GCENodeClassModel{
+		Name:                           types.StringValue("cloudpilot"),
+		EnableLocalSSDEphemeralStorage: types.BoolNull(),
+		EphemeralStorageLocalSSD: customfield.NewObjectMust(ctx, &GCEEphemeralStorageLocalSSDModel{
+			Count: types.Int32Value(2),
+		}),
+	}
+	current := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &disabled,
+		NodeClassSpec:                  &GCENodeClassSpec{},
+	}
+
+	if _, err := model.ToGCENodeClass(ctx, current); err == nil || !strings.Contains(err.Error(), "set enable_local_ssd_ephemeral_storage to true explicitly") {
+		t.Fatalf("ToGCENodeClass() error = %v, want inherited disabled Local SSD conflict", err)
+	}
+}
+
+func TestGCENodeClassModelRejectsManagedLocalSSDBlockWithOmittedDisabledState(t *testing.T) {
+	ctx := context.Background()
+	model := GCENodeClassModel{
+		Name:                           types.StringValue("cloudpilot"),
+		EnableLocalSSDEphemeralStorage: types.BoolNull(),
+		EphemeralStorageLocalSSD: customfield.NewObjectMust(ctx, &GCEEphemeralStorageLocalSSDModel{
+			Count: types.Int32Value(2),
+		}),
+	}
+	current := GCENodeClass{
+		Name:          "cloudpilot",
+		NodeClassSpec: &GCENodeClassSpec{},
+	}
+
+	if _, err := model.ToGCENodeClass(ctx, current); err == nil || !strings.Contains(err.Error(), "set enable_local_ssd_ephemeral_storage to true explicitly") {
+		t.Fatalf("ToGCENodeClass() error = %v, want omitted disabled Local SSD conflict", err)
+	}
+}
+
+func TestGCENodeClassModelRejectsEphemeralStorageWithLocalSSDDisk(t *testing.T) {
+	ctx := context.Background()
+	model := GCENodeClassModel{
+		Name:                           types.StringValue("cloudpilot"),
+		EnableLocalSSDEphemeralStorage: types.BoolValue(true),
+		EphemeralStorageLocalSSD: customfield.NewObjectMust(ctx, &GCEEphemeralStorageLocalSSDModel{
+			Count: types.Int32Value(2),
+		}),
+		Disks: customfield.NewObjectListMust(ctx, []GCEDiskModel{{
+			Category: types.StringValue("local-ssd"),
+		}}),
+		ImageSelectorTerms: customfield.NewObjectListMust(ctx, []GCEImageSelectorTermModel{{
+			Family:  types.StringValue("ContainerOptimizedOS"),
+			Channel: types.StringValue("cluster"),
+		}}),
+	}
+
+	_, err := model.ToGCENodeClass(ctx, GCENodeClass{})
+	if err == nil || !strings.Contains(err.Error(), "cannot be combined") {
+		t.Fatalf("ToGCENodeClass() error = %v, want Local SSD conflict", err)
+	}
+}
+
 func TestGCENodePoolModelRoundTripPreservesRequirements(t *testing.T) {
 	ctx := context.Background()
 	remote := GCENodePool{
@@ -561,7 +782,7 @@ func TestGCENodeClassModelDoesNotInferUbuntu2204FromLegacyUbuntuAlias(t *testing
 	}
 }
 
-func TestGCENodePoolModelWritesZoneRequirementWithGCPKey(t *testing.T) {
+func TestGCENodePoolModelWritesZoneRequirementWithStandardKey(t *testing.T) {
 	ctx := context.Background()
 	model := GCENodePoolModel{
 		Name:      types.StringValue("cloudpilot-general"),
@@ -572,19 +793,31 @@ func TestGCENodePoolModelWritesZoneRequirementWithGCPKey(t *testing.T) {
 		},
 	}
 
-	updated, err := model.ToGCENodePool(ctx, GCENodePool{Name: "cloudpilot-general"})
+	current := GCENodePool{
+		Name:         "cloudpilot-general",
+		NodePoolSpec: defaultGCPNodePoolSpec(),
+	}
+	current.NodePoolSpec.Template.Spec.Requirements = append(current.NodePoolSpec.Template.Spec.Requirements,
+		gcpcorev1.NodeSelectorRequirementWithMinValues{
+			Key:      gceLegacyLabelTopologyZoneID,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"legacy-zone"},
+		},
+	)
+
+	updated, err := model.ToGCENodePool(ctx, current)
 	if err != nil {
 		t.Fatalf("ToGCENodePool() error = %v", err)
 	}
-	if got := gcpRequirementsToStrings(updated.NodePoolSpec.Template.Spec.Requirements, gceLabelTopologyZoneID, corev1.NodeSelectorOpIn); got == nil || len(*got) != 1 || (*got)[0].ValueString() != "us-central1-a" {
-		t.Fatalf("GCP zone requirement = %#v", updated.NodePoolSpec.Template.Spec.Requirements)
+	if got := gcpRequirementsToStrings(updated.NodePoolSpec.Template.Spec.Requirements, corev1.LabelTopologyZone, corev1.NodeSelectorOpIn); got == nil || len(*got) != 1 || (*got)[0].ValueString() != "us-central1-a" {
+		t.Fatalf("standard zone requirement = %#v", updated.NodePoolSpec.Template.Spec.Requirements)
 	}
-	if got := gcpRequirementsToStrings(updated.NodePoolSpec.Template.Spec.Requirements, corev1.LabelTopologyZone, corev1.NodeSelectorOpIn); got != nil {
-		t.Fatalf("generic zone requirement should be absent, got %#v", *got)
+	if got := gcpRequirementsToStrings(updated.NodePoolSpec.Template.Spec.Requirements, gceLegacyLabelTopologyZoneID, corev1.NodeSelectorOpIn); got != nil {
+		t.Fatalf("legacy GCP zone requirement should be absent, got %#v", *got)
 	}
 }
 
-func TestGCENodePoolModelPrefersGCPZoneRequirementOnRead(t *testing.T) {
+func TestGCENodePoolModelPrefersStandardZoneRequirementOnRead(t *testing.T) {
 	ctx := context.Background()
 	remote := GCENodePool{
 		Name:   "cloudpilot-general",
@@ -598,8 +831,8 @@ func TestGCENodePoolModelPrefersGCPZoneRequirementOnRead(t *testing.T) {
 						Name:  "cloudpilot",
 					},
 					Requirements: []gcpcorev1.NodeSelectorRequirementWithMinValues{
-						{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"generic-zone"}},
-						{Key: gceLabelTopologyZoneID, Operator: corev1.NodeSelectorOpIn, Values: []string{"gcp-zone"}},
+						{Key: corev1.LabelTopologyZone, Operator: corev1.NodeSelectorOpIn, Values: []string{"standard-zone"}},
+						{Key: gceLegacyLabelTopologyZoneID, Operator: corev1.NodeSelectorOpIn, Values: []string{"legacy-zone"}},
 					},
 				},
 			},
@@ -610,8 +843,65 @@ func TestGCENodePoolModelPrefersGCPZoneRequirementOnRead(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ToGCENodePoolModel() error = %v", err)
 	}
-	if model.Zone == nil || len(*model.Zone) != 1 || (*model.Zone)[0].ValueString() != "gcp-zone" {
+	if model.Zone == nil || len(*model.Zone) != 1 || (*model.Zone)[0].ValueString() != "standard-zone" {
 		t.Fatalf("Zone = %#v", model.Zone)
+	}
+}
+
+func TestGCENodePoolModelReadsLegacyZoneRequirement(t *testing.T) {
+	ctx := context.Background()
+	remote := GCENodePool{
+		Name:   "cloudpilot-general",
+		Enable: true,
+		NodePoolSpec: &gcpcorev1.NodePoolSpec{
+			Template: gcpcorev1.NodeClaimTemplate{
+				Spec: gcpcorev1.NodeClaimTemplateSpec{
+					NodeClassRef: &gcpcorev1.NodeClassReference{
+						Group: gceNodeClassRefGroup,
+						Kind:  gceNodeClassRefKind,
+						Name:  "cloudpilot",
+					},
+					Requirements: []gcpcorev1.NodeSelectorRequirementWithMinValues{
+						{Key: gceLegacyLabelTopologyZoneID, Operator: corev1.NodeSelectorOpIn, Values: []string{"legacy-zone"}},
+					},
+				},
+			},
+		},
+	}
+
+	model, err := remote.ToGCENodePoolModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodePoolModel() error = %v", err)
+	}
+	if model.Zone == nil || len(*model.Zone) != 1 || (*model.Zone)[0].ValueString() != "legacy-zone" {
+		t.Fatalf("Zone = %#v", model.Zone)
+	}
+}
+
+func TestGCENodePoolModelLeavesZoneRequirementsUnmanagedWhenZoneIsNull(t *testing.T) {
+	ctx := context.Background()
+	current := GCENodePool{
+		Name:         "cloudpilot-general",
+		NodePoolSpec: defaultGCPNodePoolSpec(),
+	}
+	current.NodePoolSpec.Template.Spec.Requirements = append(current.NodePoolSpec.Template.Spec.Requirements,
+		gcpcorev1.NodeSelectorRequirementWithMinValues{
+			Key:      gceLegacyLabelTopologyZoneID,
+			Operator: corev1.NodeSelectorOpIn,
+			Values:   []string{"legacy-zone"},
+		},
+	)
+	model := GCENodePoolModel{
+		Name:      types.StringValue("cloudpilot-general"),
+		NodeClass: types.StringValue("cloudpilot"),
+	}
+
+	updated, err := model.ToGCENodePool(ctx, current)
+	if err != nil {
+		t.Fatalf("ToGCENodePool() error = %v", err)
+	}
+	if got := gcpRequirementsToStrings(updated.NodePoolSpec.Template.Spec.Requirements, gceLegacyLabelTopologyZoneID, corev1.NodeSelectorOpIn); got == nil || len(*got) != 1 || (*got)[0].ValueString() != "legacy-zone" {
+		t.Fatalf("legacy zone requirement was unexpectedly changed: %#v", updated.NodePoolSpec.Template.Spec.Requirements)
 	}
 }
 
@@ -799,14 +1089,118 @@ func TestGCENodePoolModelPreservesNeverDisruptionDelayOnRead(t *testing.T) {
 	}
 }
 
+func TestGCENodePoolModelSupportsMultipleDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	reasons := []types.String{types.StringValue("Empty"), types.StringValue("Underutilized")}
+	model := GCENodePoolModel{
+		Name:      types.StringValue("cloudpilot-general"),
+		NodeClass: types.StringValue("cloudpilot"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []DisruptionBudgetModel{
+			{Nodes: types.StringValue("20%")},
+			{
+				Nodes:    types.StringValue("0"),
+				Reasons:  &reasons,
+				Schedule: types.StringValue("0 9 * * mon-fri"),
+				Duration: types.StringValue("8h"),
+			},
+		}),
+	}
+
+	got, err := model.ToGCENodePool(ctx, GCENodePool{})
+	if err != nil {
+		t.Fatalf("ToGCENodePool() error = %v", err)
+	}
+	if len(got.NodePoolSpec.Disruption.Budgets) != 2 {
+		t.Fatalf("budgets = %#v", got.NodePoolSpec.Disruption.Budgets)
+	}
+	if got.NodePoolSpec.Disruption.Budgets[1].Schedule == nil || *got.NodePoolSpec.Disruption.Budgets[1].Schedule != "0 9 * * mon-fri" {
+		t.Fatalf("scheduled budget = %#v", got.NodePoolSpec.Disruption.Budgets[1])
+	}
+	if len(got.NodePoolSpec.Disruption.Budgets[1].Reasons) != 2 {
+		t.Fatalf("budget reasons = %#v", got.NodePoolSpec.Disruption.Budgets[1].Reasons)
+	}
+
+	readModel, err := got.ToGCENodePoolModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodePoolModel() error = %v", err)
+	}
+	readBudgets, diags := readModel.NodeDisruptionBudgets.AsStructSliceT(ctx)
+	if diags.HasError() || len(readBudgets) != 2 {
+		t.Fatalf("read budgets = %#v, diagnostics = %v", readBudgets, diags)
+	}
+	if readBudgets[1].Duration.ValueString() != "8h" {
+		t.Fatalf("read duration = %#v", readBudgets[1].Duration)
+	}
+}
+
+func TestGCENodePoolModelRejectsEmptyDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	model := GCENodePoolModel{
+		Name:                  types.StringValue("cloudpilot-general"),
+		NodeClass:             types.StringValue("cloudpilot"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []DisruptionBudgetModel{}),
+	}
+
+	if _, err := model.ToGCENodePool(ctx, GCENodePool{}); err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("ToGCENodePool() error = %v, want empty budgets error", err)
+	}
+}
+
+func TestGCENodePoolModelRejectsTooManyDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	budgets := make([]DisruptionBudgetModel, maxDisruptionBudgets+1)
+	for i := range budgets {
+		budgets[i].Nodes = types.StringValue("10%")
+	}
+	model := GCENodePoolModel{
+		Name:                  types.StringValue("cloudpilot-general"),
+		NodeClass:             types.StringValue("cloudpilot"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, budgets),
+	}
+
+	if _, err := model.ToGCENodePool(ctx, GCENodePool{}); err == nil || !strings.Contains(err.Error(), "at most 50") {
+		t.Fatalf("ToGCENodePool() error = %v, want maximum budgets error", err)
+	}
+}
+
+func TestGCENodePoolModelRejectsTooManyDisruptionBudgetReasons(t *testing.T) {
+	ctx := context.Background()
+	reasons := make([]types.String, maxGCPDisruptionBudgetReasons+1)
+	for i := range reasons {
+		reasons[i] = types.StringValue("Drifted")
+	}
+	model := GCENodePoolModel{
+		Name:      types.StringValue("cloudpilot-general"),
+		NodeClass: types.StringValue("cloudpilot"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []DisruptionBudgetModel{{
+			Nodes:   types.StringValue("10%"),
+			Reasons: &reasons,
+		}}),
+	}
+
+	if _, err := model.ToGCENodePool(ctx, GCENodePool{}); err == nil || !strings.Contains(err.Error(), "reasons must contain at most 50") {
+		t.Fatalf("ToGCENodePool() error = %v, want maximum reasons error", err)
+	}
+}
+
+func TestGCENodePoolToModelKeepsAbsentDisruptionBudgetsNull(t *testing.T) {
+	model, err := (&GCENodePool{Name: "cloudpilot-general", NodePoolSpec: &gcpcorev1.NodePoolSpec{}}).ToGCENodePoolModel(context.Background())
+	if err != nil {
+		t.Fatalf("ToGCENodePoolModel() error = %v", err)
+	}
+	if !model.NodeDisruptionBudgets.IsNull() {
+		t.Fatalf("NodeDisruptionBudgets = %#v, want null for absent remote budgets", model.NodeDisruptionBudgets)
+	}
+}
+
 func TestGCPUpdateRequirementsRemovesOnlyMatchedRequirement(t *testing.T) {
 	requirements := []gcpcorev1.NodeSelectorRequirementWithMinValues{
 		{Key: "first", Operator: corev1.NodeSelectorOpIn, Values: []string{"a"}},
-		{Key: gceLabelTopologyZoneID, Operator: corev1.NodeSelectorOpIn, Values: []string{"us-central1-a"}},
+		{Key: gceLegacyLabelTopologyZoneID, Operator: corev1.NodeSelectorOpIn, Values: []string{"us-central1-a"}},
 		{Key: "last", Operator: corev1.NodeSelectorOpIn, Values: []string{"z"}},
 	}
 
-	updated := gcpUpdateRequirements(gceLabelTopologyZoneID, corev1.NodeSelectorOpIn, nil, requirements)
+	updated := gcpUpdateRequirements(gceLegacyLabelTopologyZoneID, corev1.NodeSelectorOpIn, nil, requirements)
 	if len(updated) != 2 {
 		t.Fatalf("updated requirements = %#v", updated)
 	}

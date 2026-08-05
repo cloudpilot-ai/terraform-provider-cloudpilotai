@@ -95,7 +95,7 @@ github.com/cloudflare/circl/math/mlsbset
 github.com/cloudflare/circl/sign
 github.com/cloudflare/circl/sign/ed25519
 github.com/cloudflare/circl/sign/ed448
-# github.com/cloudpilot-ai/lib v0.0.0-20260616033607-e61ea13c902f
+# github.com/cloudpilot-ai/lib v0.0.0-20260720094657-1d777cba7aae
 ## explicit; go 1.23.4
 github.com/cloudpilot-ai/lib/pkg/alibabacloud/awslabs/operatorpkg/status
 github.com/cloudpilot-ai/lib/pkg/alibabacloud/karpenter-provider-alibabacloud/apis

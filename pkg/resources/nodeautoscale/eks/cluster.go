@@ -38,6 +38,7 @@ type postWriteStateHydratorClient interface {
 	GetClusterSetting(clusterID string) (*api.ClusterSetting, error)
 	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
+	ListScheduledRebalances(clusterID string) (api.ScheduledRebalancePolicyList, error)
 }
 
 type clusterSummaryReader interface {
@@ -257,6 +258,11 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		)
 		return
 	}
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterUID, data.ScheduledRebalances, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid scheduled rebalance configuration", err.Error())
+		return
+	}
 
 	rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
 	if err != nil {
@@ -283,6 +289,15 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 			}
 			tflog.Info(ctx, "installed CloudPilot AI rebalance component successfully")
 		}
+	}
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
+	nodePoolPlan, err := helper.PrepareEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid nodepool configuration", err.Error())
+		return
 	}
 
 	if err := c.syncClusterSetting(ctx, &data, clusterUID); err != nil {
@@ -320,11 +335,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 
 	// 2. sync configurations (no previous state on Create, so pass nil — nothing to delete)
 	tflog.Info(ctx, "syncing cluster configuration")
-	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
-		return
-	}
-	if err := c.syncConfiguration(ctx, &data, clusterUID, nil, nil); err != nil {
+	if err := c.syncConfigurationWithScheduledPlan(ctx, &data, clusterUID, nil, scheduledRebalancePlan, nodePoolPlan); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
 			err.Error(),
@@ -361,6 +372,9 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		return m.Name.ValueString()
 	})
 	previousNPNames := extractResourceNames(ctx, state.NodePools, func(m api.EC2NodePoolModel) string {
+		return m.Name.ValueString()
+	})
+	previousScheduledRebalanceNames := extractResourceNames(ctx, state.ScheduledRebalances, func(m api.ScheduledRebalancePolicyModel) string {
 		return m.Name.ValueString()
 	})
 
@@ -426,6 +440,11 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 			return
 		}
 	}
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterUID, data.ScheduledRebalances, previousScheduledRebalanceNames)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid scheduled rebalance configuration", err.Error())
+		return
+	}
 
 	if !boolValueOrDefault(data.OnlyInstallAgent, false) || boolValueOrDefault(data.EnableRebalance, false) {
 		rebalanceConfig, err := c.client.GetRebalanceConfiguration(clusterUID)
@@ -449,6 +468,15 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 			}
 			tflog.Info(ctx, "installed CloudPilot AI rebalance component successfully")
 		}
+	}
+	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
+		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
+		return
+	}
+	nodePoolPlan, err := helper.PrepareEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, previousNPNames)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid nodepool configuration", err.Error())
+		return
 	}
 
 	if err := c.syncClusterSetting(ctx, &data, clusterUID); err != nil {
@@ -485,11 +513,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 	}
 
 	tflog.Info(ctx, "syncing cluster configuration")
-	if err := validateNodeClassDiskFields(ctx, &data); err != nil {
-		resp.Diagnostics.AddError("invalid nodeclass disk configuration", err.Error())
-		return
-	}
-	if err := c.syncConfiguration(ctx, &data, clusterUID, previousNCNames, previousNPNames); err != nil {
+	if err := c.syncConfigurationWithScheduledPlan(ctx, &data, clusterUID, previousNCNames, scheduledRebalancePlan, nodePoolPlan); err != nil {
 		resp.Diagnostics.AddError(
 			"failed to sync configuration",
 			err.Error(),
@@ -601,7 +625,11 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 	}
 
 	if !data.ClusterSetting.IsNull() && !data.ClusterSetting.IsUnknown() {
-		data.ClusterSetting = clusterSettingObjectFromAPI(ctx, clusterSetting)
+		data.ClusterSetting, err = clusterSettingObjectPreservingState(ctx, data.ClusterSetting, clusterSetting)
+		if err != nil {
+			resp.Diagnostics.AddError("failed to preserve cluster setting state", err.Error())
+			return
+		}
 	} else if isImport {
 		data.ClusterSetting = clusterSettingObjectFromAPI(ctx, clusterSetting)
 	}
@@ -773,6 +801,19 @@ func (c *Cluster) Read(ctx context.Context, req resource.ReadRequest, resp *reso
 			return
 		}
 		data.NodePools = nodePools
+	}
+	if !data.ScheduledRebalances.IsNullOrUnknown() {
+		data.ScheduledRebalances, err = helper.RefreshScheduledRebalances(ctx, c.client, clusterUID, data.ScheduledRebalances)
+		if err != nil {
+			resp.Diagnostics.AddError("failed to hydrate scheduled rebalances", err.Error())
+			return
+		}
+	} else if isImport {
+		data.ScheduledRebalances, err = helper.ImportScheduledRebalances(ctx, c.client, clusterUID)
+		if err != nil {
+			resp.Diagnostics.AddError("failed to import scheduled rebalances", err.Error())
+			return
+		}
 	}
 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &data)...)
@@ -964,7 +1005,24 @@ func (c *Cluster) syncClusterSetting(ctx context.Context, data *ClusterModel, cl
 }
 
 func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clusterUID string,
-	previousNCNames, previousNPNames map[string]struct{},
+	previousNCNames, previousNPNames, previousScheduledRebalanceNames map[string]struct{},
+) error {
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterUID, data.ScheduledRebalances, previousScheduledRebalanceNames)
+	if err != nil {
+		return fmt.Errorf("failed to prepare scheduled rebalance configuration: %w", err)
+	}
+	if err := validateNodeClassDiskFields(ctx, data); err != nil {
+		return fmt.Errorf("failed to validate nodeclass disk configuration: %w", err)
+	}
+	nodePoolPlan, err := helper.PrepareEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, previousNPNames)
+	if err != nil {
+		return fmt.Errorf("failed to prepare nodepool configuration: %w", err)
+	}
+	return c.syncConfigurationWithScheduledPlan(ctx, data, clusterUID, previousNCNames, scheduledRebalancePlan, nodePoolPlan)
+}
+
+func (c *Cluster) syncConfigurationWithScheduledPlan(ctx context.Context, data *ClusterModel, clusterUID string,
+	previousNCNames map[string]struct{}, scheduledRebalancePlan *helper.ScheduledRebalancePlan, nodePoolPlan *helper.EC2NodePoolPlan,
 ) error {
 	// sync workload configurations
 	tflog.Info(ctx, "syncing workload configuration")
@@ -983,7 +1041,7 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 
 	// sync nodepool configurations
 	tflog.Info(ctx, "syncing nodepool configuration")
-	if err := helper.SyncEC2NodePoolConfiguration(ctx, c.client, clusterUID, data.NodePools, data.NodePoolTemplates, previousNPNames); err != nil {
+	if err := helper.ApplyEC2NodePoolConfiguration(c.client, nodePoolPlan); err != nil {
 		return fmt.Errorf("failed to sync nodepool configuration: %w", err)
 	}
 	tflog.Info(ctx, "synced nodepool configuration successfully")
@@ -1001,6 +1059,10 @@ func (c *Cluster) syncConfiguration(ctx context.Context, data *ClusterModel, clu
 
 	if err := c.syncClusterSetting(ctx, data, clusterUID); err != nil {
 		return err
+	}
+
+	if err := helper.ApplyScheduledRebalanceConfiguration(c.client, scheduledRebalancePlan); err != nil {
+		return fmt.Errorf("failed to sync scheduled rebalance configuration: %w", err)
 	}
 
 	return nil
@@ -1028,10 +1090,25 @@ func hydratePostWriteState(ctx context.Context, client postWriteStateHydratorCli
 	if err != nil {
 		return err
 	}
+	data.ScheduledRebalances, err = helper.HydrateScheduledRebalancesPostWrite(ctx, client, clusterUID, data.ScheduledRebalances)
+	if err != nil {
+		return fmt.Errorf("failed to hydrate scheduled rebalances: %w", err)
+	}
 	return nil
 }
 
 func hydrateClusterSettingPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObject[ClusterSettingModel]) (customfield.NestedObject[ClusterSettingModel], error) {
+	if current.IsNull() || current.IsUnknown() {
+		return current, nil
+	}
+	remote, err := client.GetClusterSetting(clusterUID)
+	if err != nil {
+		return current, fmt.Errorf("failed to get cluster setting: %w", err)
+	}
+	return clusterSettingObjectPreservingState(ctx, current, remote)
+}
+
+func clusterSettingObjectPreservingState(ctx context.Context, current customfield.NestedObject[ClusterSettingModel], remote *api.ClusterSetting) (customfield.NestedObject[ClusterSettingModel], error) {
 	if current.IsNull() || current.IsUnknown() {
 		return current, nil
 	}
@@ -1044,14 +1121,10 @@ func hydrateClusterSettingPostWrite(ctx context.Context, client postWriteStateHy
 	hydrated := ClusterSettingModel{}
 	if value != nil {
 		hydrated = *value
-		normalizeClusterSettingUnknowns(&hydrated)
 	}
 
-	remote, err := client.GetClusterSetting(clusterUID)
-	if err != nil {
-		return current, fmt.Errorf("failed to get cluster setting: %w", err)
-	}
 	mergeClusterSettingFromAPI(&hydrated, remote)
+	normalizeClusterSettingUnknowns(&hydrated)
 
 	object, diags := customfield.NewObject(ctx, &hydrated)
 	if diags.HasError() {
@@ -1067,6 +1140,12 @@ func normalizeClusterSettingUnknowns(setting *ClusterSettingModel) {
 	if setting.EnableDiskMonitor.IsUnknown() {
 		setting.EnableDiskMonitor = types.BoolNull()
 	}
+	if setting.EnableNodePoolDecommission.IsUnknown() {
+		setting.EnableNodePoolDecommission = types.BoolNull()
+	}
+	if setting.EnableWorkloadMinNonSpot.IsUnknown() {
+		setting.EnableWorkloadMinNonSpot = types.BoolNull()
+	}
 	if setting.Discount.IsUnknown() {
 		setting.Discount = types.Float64Null()
 	}
@@ -1080,27 +1159,50 @@ func normalizeClusterSettingUnknowns(setting *ClusterSettingModel) {
 
 func mergeClusterSettingFromAPI(setting *ClusterSettingModel, remote *api.ClusterSetting) {
 	if remote == nil {
-		return
+		remote = &api.ClusterSetting{}
 	}
-	if remote.EnableNodeRepair != nil {
-		setting.EnableNodeRepair = types.BoolValue(*remote.EnableNodeRepair)
+	if !setting.EnableNodeRepair.IsNull() {
+		setting.EnableNodeRepair = boolPointerToTerraform(remote.EnableNodeRepair)
 	}
-	if remote.EnableDiskMonitor != nil {
-		setting.EnableDiskMonitor = types.BoolValue(*remote.EnableDiskMonitor)
+	if !setting.EnableDiskMonitor.IsNull() {
+		setting.EnableDiskMonitor = boolPointerToTerraform(remote.EnableDiskMonitor)
 	}
-	if remote.Discount != nil {
-		setting.Discount = types.Float64Value(*remote.Discount)
+	if !setting.EnableNodePoolDecommission.IsNull() {
+		setting.EnableNodePoolDecommission = boolPointerToTerraform(remote.EnableNodePoolDecommission)
 	}
-	if remote.PreRunCommand != nil {
-		if *remote.PreRunCommand != "" || !setting.PreRunCommand.IsNull() {
-			setting.PreRunCommand = types.StringValue(*remote.PreRunCommand)
-		}
+	if !setting.EnableWorkloadMinNonSpot.IsNull() {
+		setting.EnableWorkloadMinNonSpot = boolPointerToTerraform(remote.EnableWorkloadMinNonSpot)
 	}
-	if remote.PostRunCommand != nil {
-		if *remote.PostRunCommand != "" || !setting.PostRunCommand.IsNull() {
-			setting.PostRunCommand = types.StringValue(*remote.PostRunCommand)
-		}
+	if !setting.Discount.IsNull() {
+		setting.Discount = float64PointerToTerraform(remote.Discount)
 	}
+	if !setting.PreRunCommand.IsNull() {
+		setting.PreRunCommand = stringPointerToTerraform(remote.PreRunCommand)
+	}
+	if !setting.PostRunCommand.IsNull() {
+		setting.PostRunCommand = stringPointerToTerraform(remote.PostRunCommand)
+	}
+}
+
+func boolPointerToTerraform(value *bool) types.Bool {
+	if value == nil {
+		return types.BoolNull()
+	}
+	return types.BoolValue(*value)
+}
+
+func float64PointerToTerraform(value *float64) types.Float64 {
+	if value == nil {
+		return types.Float64Null()
+	}
+	return types.Float64Value(*value)
+}
+
+func stringPointerToTerraform(value *string) types.String {
+	if value == nil {
+		return types.StringNull()
+	}
+	return types.StringValue(*value)
 }
 
 func hydrateNodeClassesPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.EC2NodeClassModel]) (customfield.NestedObjectList[api.EC2NodeClassModel], error) {
@@ -1316,6 +1418,7 @@ func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api
 	remote.TemplateName = state.TemplateName
 	remote.Role = preserveManagedString(state.Role, remote.Role)
 	remote.EnableImageAccelerator = preserveManagedBool(state.EnableImageAccelerator, remote.EnableImageAccelerator)
+	remote.EnableLocalSSDEphemeralStorage = preserveManagedBool(state.EnableLocalSSDEphemeralStorage, remote.EnableLocalSSDEphemeralStorage)
 	remote.AmiAlias = preserveManagedString(state.AmiAlias, remote.AmiAlias)
 	remote.UserData = preserveManagedString(state.UserData, remote.UserData)
 	remote.SubnetSelectorTerms = preserveManagedObjectList(ctx, state.SubnetSelectorTerms, remote.SubnetSelectorTerms)
@@ -1360,6 +1463,7 @@ func preserveNodePoolStateRepresentation(ctx context.Context, remote, state api.
 	remote.InstanceMemoryMAX = preserveManagedInt64(state.InstanceMemoryMAX, remote.InstanceMemoryMAX)
 	remote.InstanceMemoryMIN = preserveManagedInt64(state.InstanceMemoryMIN, remote.InstanceMemoryMIN)
 	remote.NodeDisruptionLimit = preserveManagedString(state.NodeDisruptionLimit, remote.NodeDisruptionLimit)
+	remote.NodeDisruptionBudgets = preserveDisruptionBudgetsStateRepresentation(ctx, remote.NodeDisruptionBudgets, state.NodeDisruptionBudgets)
 	remote.NodeDisruptionDelay = preserveManagedDuration(state.NodeDisruptionDelay, remote.NodeDisruptionDelay)
 	remote.Labels = preserveManagedMap(ctx, state.Labels, remote.Labels)
 	remote.Taints = preserveManagedObjectList(ctx, state.Taints, remote.Taints)
@@ -1458,15 +1562,6 @@ func resolveClusterUID(preferred, fallback, clusterName, region, accountID types
 
 func resolveDeleteClusterUID(clusterID, clusterName, region, accountID types.String) string {
 	return resolveClusterUID(clusterID, clusterID, clusterName, region, accountID)
-}
-
-// preserveEmptyList keeps an explicit empty slice from state when the server
-// returns nil, avoiding false Terraform diffs like `+ instance_family = []`.
-func preserveEmptyList(stateVal, serverVal *[]types.String) *[]types.String {
-	if serverVal == nil && stateVal != nil && len(*stateVal) == 0 {
-		return stateVal
-	}
-	return serverVal
 }
 
 // preserveSemanticDuration keeps the state value when the state and server
@@ -1591,4 +1686,29 @@ func preserveManagedObjectList[T any](ctx context.Context, stateVal, remoteVal c
 		}
 	}
 	return remoteVal
+}
+
+func preserveDisruptionBudgetsStateRepresentation(ctx context.Context, remote, state customfield.NestedObjectList[api.DisruptionBudgetModel]) customfield.NestedObjectList[api.DisruptionBudgetModel] {
+	base := preserveManagedObjectList(ctx, state, remote)
+	if state.IsNull() || base.IsNullOrUnknown() {
+		return base
+	}
+
+	stateBudgets, stateDiags := state.AsStructSliceT(ctx)
+	remoteBudgets, remoteDiags := base.AsStructSliceT(ctx)
+	if stateDiags.HasError() || remoteDiags.HasError() {
+		return base
+	}
+	for index := range remoteBudgets {
+		if index >= len(stateBudgets) {
+			break
+		}
+		remoteBudgets[index].Duration = preserveSemanticDuration(stateBudgets[index].Duration, remoteBudgets[index].Duration)
+	}
+
+	result, diags := customfield.NewObjectList(ctx, remoteBudgets)
+	if diags.HasError() {
+		return base
+	}
+	return result
 }

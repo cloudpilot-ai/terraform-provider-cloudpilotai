@@ -19,6 +19,7 @@ func TestRecommendationPolicyModelJVMRoundTrip(t *testing.T) {
 		HistoryWindowMemory:        types.StringValue("48h"),
 		EvaluationPeriod:           types.StringValue("1m"),
 		JVMHeapBuffer:              types.StringValue("300Mi"),
+		JVMMinHeapXms:              types.StringValue("512Mi"),
 		JVMMinHeapXmsRatioOfMemory: types.StringValue("0.5"),
 		JVMRecentNonHeapWindow:     types.StringValue("2h"),
 		JVMHeapUsedPercentile:      types.Int32Value(30),
@@ -34,6 +35,9 @@ func TestRecommendationPolicyModelJVMRoundTrip(t *testing.T) {
 	if resource.Spec.JVM.MinHeapXmsRatioOfMemory == nil || *resource.Spec.JVM.MinHeapXmsRatioOfMemory != "0.5" {
 		t.Fatalf("MinHeapXmsRatioOfMemory = %#v", resource.Spec.JVM.MinHeapXmsRatioOfMemory)
 	}
+	if resource.Spec.JVM.MinHeapXms == nil || *resource.Spec.JVM.MinHeapXms != "512Mi" {
+		t.Fatalf("MinHeapXms = %#v", resource.Spec.JVM.MinHeapXms)
+	}
 
 	roundTrip := RecommendationPolicyModelFromResource(resource)
 	if roundTrip.JVMHeapBuffer.ValueString() != "300Mi" {
@@ -41,6 +45,21 @@ func TestRecommendationPolicyModelJVMRoundTrip(t *testing.T) {
 	}
 	if roundTrip.JVMHeapUsedPercentile.ValueInt32() != 30 {
 		t.Fatalf("JVMHeapUsedPercentile = %d", roundTrip.JVMHeapUsedPercentile.ValueInt32())
+	}
+	if roundTrip.JVMMinHeapXms.ValueString() != "512Mi" {
+		t.Fatalf("JVMMinHeapXms = %q", roundTrip.JVMMinHeapXms.ValueString())
+	}
+}
+
+func TestRecommendationPolicyModelPreservesUnmanagedJVMMinHeapXms(t *testing.T) {
+	minimum := "768Mi"
+	model := RecommendationPolicyModel{Name: types.StringValue("java")}
+	resource := model.ToResourceFromBase(&RecommendationPolicyResource{
+		Name: "java",
+		Spec: RecommendationPolicySpec{JVM: &JVMRecommendationConfiguration{MinHeapXms: &minimum}},
+	})
+	if resource.Spec.JVM == nil || resource.Spec.JVM.MinHeapXms == nil || *resource.Spec.JVM.MinHeapXms != minimum {
+		t.Fatalf("unmanaged MinHeapXms was not preserved: %#v", resource.Spec.JVM)
 	}
 }
 

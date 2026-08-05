@@ -51,6 +51,7 @@ type ClusterModel struct {
 	NodeClasses        customfield.NestedObjectList[api.EC2NodeClassModel]         `tfsdk:"nodeclasses"`
 
 	// rebalance nodepool configuration
-	NodePoolTemplates customfield.NestedObjectList[api.EC2NodePoolTemplateModel] `tfsdk:"nodepool_templates"`
-	NodePools         customfield.NestedObjectList[api.EC2NodePoolModel]         `tfsdk:"nodepools"`
+	NodePoolTemplates   customfield.NestedObjectList[api.EC2NodePoolTemplateModel]      `tfsdk:"nodepool_templates"`
+	NodePools           customfield.NestedObjectList[api.EC2NodePoolModel]              `tfsdk:"nodepools"`
+	ScheduledRebalances customfield.NestedObjectList[api.ScheduledRebalancePolicyModel] `tfsdk:"scheduled_rebalances"`
 }

@@ -44,6 +44,10 @@ func (f *fakePostWriteStateHydratorClient) ListNodePools(string) (api.RebalanceN
 	return f.nodePools, nil
 }
 
+func (f *fakePostWriteStateHydratorClient) ListScheduledRebalances(string) (api.ScheduledRebalancePolicyList, error) {
+	return api.ScheduledRebalancePolicyList{}, nil
+}
+
 type fakeReadAuthClient struct {
 	cloudpilotaiclient.Interface
 	getClusterCalls int
@@ -84,6 +88,57 @@ type fakeClusterSettingUpdateClient struct {
 	setting *api.ClusterSetting
 }
 
+type fakeConfigurationPreflightClient struct {
+	cloudpilotaiclient.Interface
+	operations []string
+}
+
+func (f *fakeConfigurationPreflightClient) ListScheduledRebalances(string) (api.ScheduledRebalancePolicyList, error) {
+	return api.ScheduledRebalancePolicyList{}, nil
+}
+
+func (f *fakeConfigurationPreflightClient) ListNodePools(string) (api.RebalanceNodePoolList, error) {
+	return api.RebalanceNodePoolList{}, nil
+}
+
+func (f *fakeConfigurationPreflightClient) ListNodeClasses(string) (api.RebalanceNodeClassList, error) {
+	return api.RebalanceNodeClassList{}, nil
+}
+
+func (f *fakeConfigurationPreflightClient) ApplyNodeClass(string, api.RebalanceNodeClass) error {
+	f.operations = append(f.operations, "apply-nodeclass")
+	return nil
+}
+
+func (f *fakeConfigurationPreflightClient) ApplyNodePool(string, api.RebalanceNodePool) error {
+	f.operations = append(f.operations, "apply-nodepool")
+	return nil
+}
+
+func (f *fakeConfigurationPreflightClient) DeleteNodeClass(string, string) error {
+	f.operations = append(f.operations, "delete-nodeclass")
+	return nil
+}
+
+func (f *fakeConfigurationPreflightClient) DeleteNodePool(string, string) error {
+	f.operations = append(f.operations, "delete-nodepool")
+	return nil
+}
+
+func (f *fakeConfigurationPreflightClient) UpdateClusterSetting(string, *api.ClusterSetting) error {
+	f.operations = append(f.operations, "update-cluster-setting")
+	return nil
+}
+
+func (f *fakeConfigurationPreflightClient) GetRebalanceConfiguration(string) (*api.RebalanceConfig, error) {
+	return &api.RebalanceConfig{Enable: true}, nil
+}
+
+func (f *fakeConfigurationPreflightClient) UpdateRebalanceConfiguration(string, *api.RebalanceConfig) error {
+	f.operations = append(f.operations, "update-rebalance")
+	return nil
+}
+
 type fakeDeleteClusterClient struct {
 	cloudpilotaiclient.Interface
 	rebalanceClusterID string
@@ -103,6 +158,36 @@ func (f *fakeDeleteClusterClient) DeleteCluster(clusterID string) error {
 func (f *fakeClusterSettingUpdateClient) UpdateClusterSetting(_ string, setting *api.ClusterSetting) error {
 	f.setting = setting
 	return nil
+}
+
+func TestSyncConfigurationPrevalidatesNodePoolsBeforeWrites(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeConfigurationPreflightClient{}
+	cluster := &Cluster{client: client}
+	data := ClusterModel{
+		ClusterName:        types.StringValue("test-cluster"),
+		EnableRebalance:    types.BoolValue(false),
+		NodeClasses:        customfield.NewObjectListMust(ctx, []api.EC2NodeClassModel{{Name: types.StringValue("default")}}),
+		NodeClassTemplates: customfield.NullObjectList[api.EC2NodeClassTemplateModel](ctx),
+		NodePools: customfield.NewObjectListMust(ctx, []api.EC2NodePoolModel{{
+			Name:      types.StringValue("invalid"),
+			NodeClass: types.StringValue("default"),
+			NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+				Nodes: types.StringValue("10%"), Schedule: types.StringValue("daily"), Duration: types.StringValue("1h"),
+			}}),
+		}}),
+		NodePoolTemplates:   customfield.NullObjectList[api.EC2NodePoolTemplateModel](ctx),
+		Workloads:           customfield.NullObjectList[api.WorkloadModel](ctx),
+		WorkloadTemplates:   customfield.NullObjectList[api.WorkloadTemplateModel](ctx),
+		ScheduledRebalances: customfield.NullObjectList[api.ScheduledRebalancePolicyModel](ctx),
+	}
+
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err == nil {
+		t.Fatal("syncConfiguration() error = nil, want invalid disruption schedule error")
+	}
+	if len(client.operations) != 0 {
+		t.Fatalf("invalid nodepool configuration made writes: %#v", client.operations)
+	}
 }
 
 type fakeReadClusterClient struct {
@@ -184,6 +269,19 @@ func TestSortedValuesByName(t *testing.T) {
 		if item.name != want[i] {
 			t.Fatalf("got order %v, want %v", []string{got[0].name, got[1].name, got[2].name}, want)
 		}
+	}
+}
+
+func TestOrderByStateNameDropsMissingRemoteObjects(t *testing.T) {
+	state := []namedItem{{name: "existing"}, {name: "deleted"}}
+	remote := map[string]namedItem{
+		"existing":    {name: "existing"},
+		"server-only": {name: "server-only"},
+	}
+
+	got := orderByStateName(state, remote, func(item namedItem) string { return item.name })
+	if len(got) != 1 || got[0].name != "existing" {
+		t.Fatalf("orderByStateName() = %#v, want only existing managed object", got)
 	}
 }
 
@@ -288,6 +386,14 @@ func TestTemplateNameFieldsAreDeprecated(t *testing.T) {
 	nodepoolTemplateName := nodepoolsAttr.NestedObject.Attributes["template_name"].(schema.StringAttribute)
 	if nodepoolTemplateName.DeprecationMessage == "" {
 		t.Fatalf("nodepools.template_name should be deprecated")
+	}
+}
+
+func TestNodeDisruptionLimitIsDeprecated(t *testing.T) {
+	nodepools := Schema(context.Background()).Attributes["nodepools"].(schema.ListNestedAttribute)
+	limit := nodepools.NestedObject.Attributes["node_disruption_limit"].(schema.StringAttribute)
+	if limit.DeprecationMessage == "" {
+		t.Fatalf("nodepools.node_disruption_limit should be deprecated")
 	}
 }
 
@@ -1396,6 +1502,9 @@ func TestPreserveNodePoolStateRepresentationLeavesLabelsAndTaintsNullWhenOmitted
 			Value:  types.StringValue("wa"),
 			Effect: types.StringValue("NoSchedule"),
 		}}),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes: types.StringValue("10%"),
+		}}),
 	}
 	state := api.EC2NodePoolModel{
 		Name: types.StringValue("cloudpilot-general"),
@@ -1407,6 +1516,35 @@ func TestPreserveNodePoolStateRepresentationLeavesLabelsAndTaintsNullWhenOmitted
 	}
 	if !got.Taints.IsNull() {
 		t.Fatalf("Taints should remain null when taints are omitted from state")
+	}
+	if !got.NodeDisruptionBudgets.IsNull() {
+		t.Fatalf("NodeDisruptionBudgets should remain null when budgets are omitted from state")
+	}
+}
+
+func TestPreserveNodePoolStateRepresentationKeepsBudgetDurationRepresentation(t *testing.T) {
+	ctx := context.Background()
+	state := api.EC2NodePoolModel{
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Duration: types.StringValue("60m"),
+		}}),
+	}
+	remote := api.EC2NodePoolModel{
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Reasons:  nil,
+			Duration: types.StringValue("1h"),
+		}}),
+	}
+
+	got := preserveNodePoolStateRepresentation(ctx, remote, state)
+	budgets, diags := got.NodeDisruptionBudgets.AsStructSliceT(ctx)
+	if diags.HasError() || len(budgets) != 1 {
+		t.Fatalf("budgets = %#v, diagnostics = %v", budgets, diags)
+	}
+	if budgets[0].Duration != types.StringValue("60m") {
+		t.Fatalf("duration = %#v, want preserved 60m", budgets[0].Duration)
 	}
 }
 
@@ -1767,5 +1905,51 @@ func TestHydratePostWriteStateNormalizesUnknownNodePoolTemplateMinimums(t *testi
 	}
 	if !templates[0].InstanceMemoryMIN.IsNull() {
 		t.Fatalf("InstanceMemoryMIN should be null after hydration, got %#v", templates[0].InstanceMemoryMIN)
+	}
+}
+
+func TestClusterSettingObjectPreservingStateLeavesNewUnmanagedFieldsNull(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	current := customfield.NewObjectMust(ctx, &ClusterSettingModel{
+		EnableNodePoolDecommission: types.BoolNull(),
+		EnableWorkloadMinNonSpot:   types.BoolValue(false),
+	})
+	got, err := clusterSettingObjectPreservingState(ctx, current, &api.ClusterSetting{
+		EnableNodePoolDecommission: &enabled,
+		EnableWorkloadMinNonSpot:   &enabled,
+	})
+	if err != nil {
+		t.Fatalf("clusterSettingObjectPreservingState() error = %v", err)
+	}
+	value, diags := got.Value(ctx)
+	if diags.HasError() || value == nil {
+		t.Fatalf("cluster_setting = %#v, diagnostics = %v", value, diags)
+	}
+	if !value.EnableNodePoolDecommission.IsNull() {
+		t.Fatalf("enable_node_pool_decommission = %#v, want null", value.EnableNodePoolDecommission)
+	}
+	if value.EnableWorkloadMinNonSpot != types.BoolValue(true) {
+		t.Fatalf("enable_workload_min_non_spot = %#v, want managed remote true", value.EnableWorkloadMinNonSpot)
+	}
+}
+
+func TestClusterSettingObjectPreservingStateReflectsManagedRemoteRemoval(t *testing.T) {
+	ctx := context.Background()
+	current := customfield.NewObjectMust(ctx, &ClusterSettingModel{
+		EnableNodePoolDecommission: types.BoolValue(true),
+		PreRunCommand:              types.StringValue("echo before"),
+	})
+
+	got, err := clusterSettingObjectPreservingState(ctx, current, &api.ClusterSetting{})
+	if err != nil {
+		t.Fatalf("clusterSettingObjectPreservingState() error = %v", err)
+	}
+	value, diags := got.Value(ctx)
+	if diags.HasError() || value == nil {
+		t.Fatalf("cluster_setting = %#v, diagnostics = %v", value, diags)
+	}
+	if !value.EnableNodePoolDecommission.IsNull() || !value.PreRunCommand.IsNull() {
+		t.Fatalf("managed removed values were preserved: %#v", value)
 	}
 }

@@ -8,11 +8,13 @@ import (
 )
 
 type ClusterSettingModel struct {
-	EnableNodeRepair  types.Bool    `tfsdk:"enable_node_repair"`
-	EnableDiskMonitor types.Bool    `tfsdk:"enable_disk_monitor"`
-	Discount          types.Float64 `tfsdk:"discount"`
-	PreRunCommand     types.String  `tfsdk:"pre_run_command"`
-	PostRunCommand    types.String  `tfsdk:"post_run_command"`
+	EnableNodeRepair           types.Bool    `tfsdk:"enable_node_repair"`
+	EnableDiskMonitor          types.Bool    `tfsdk:"enable_disk_monitor"`
+	EnableNodePoolDecommission types.Bool    `tfsdk:"enable_node_pool_decommission"`
+	EnableWorkloadMinNonSpot   types.Bool    `tfsdk:"enable_workload_min_non_spot"`
+	Discount                   types.Float64 `tfsdk:"discount"`
+	PreRunCommand              types.String  `tfsdk:"pre_run_command"`
+	PostRunCommand             types.String  `tfsdk:"post_run_command"`
 }
 
 type ClusterModel struct {
@@ -35,7 +37,8 @@ type ClusterModel struct {
 	RestoreNodeNumber        types.Int64 `tfsdk:"restore_node_number"`
 	RestoreDesiredSizes      types.Map   `tfsdk:"restore_desired_sizes"`
 
-	ClusterSetting customfield.NestedObject[ClusterSettingModel]       `tfsdk:"cluster_setting"`
-	NodeClasses    customfield.NestedObjectList[api.GCENodeClassModel] `tfsdk:"nodeclasses"`
-	NodePools      customfield.NestedObjectList[api.GCENodePoolModel]  `tfsdk:"nodepools"`
+	ClusterSetting      customfield.NestedObject[ClusterSettingModel]                   `tfsdk:"cluster_setting"`
+	NodeClasses         customfield.NestedObjectList[api.GCENodeClassModel]             `tfsdk:"nodeclasses"`
+	NodePools           customfield.NestedObjectList[api.GCENodePoolModel]              `tfsdk:"nodepools"`
+	ScheduledRebalances customfield.NestedObjectList[api.ScheduledRebalancePolicyModel] `tfsdk:"scheduled_rebalances"`
 }

@@ -17,6 +17,81 @@ type fakeRebalanceConfigurationClient struct {
 	updatedConfig *api.RebalanceConfig
 }
 
+type fakeEC2NodePoolConfigurationClient struct {
+	cloudpilotaiclient.Interface
+	applied []string
+}
+
+type fakeEC2NodeClassConfigurationClient struct {
+	cloudpilotaiclient.Interface
+	applied []string
+}
+
+func (f *fakeEC2NodeClassConfigurationClient) ListNodeClasses(string) (api.RebalanceNodeClassList, error) {
+	return api.RebalanceNodeClassList{}, nil
+}
+
+func (f *fakeEC2NodeClassConfigurationClient) ApplyNodeClass(_ string, nodeClass api.RebalanceNodeClass) error {
+	f.applied = append(f.applied, nodeClass.EC2NodeClass.Name)
+	return nil
+}
+
+func (f *fakeEC2NodeClassConfigurationClient) DeleteNodeClass(string, string) error {
+	return nil
+}
+
+func TestSyncEC2NodeClassConfigurationPrevalidatesAllNodeClasses(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeEC2NodeClassConfigurationClient{}
+	desired := customfield.NewObjectListMust(ctx, []api.EC2NodeClassModel{
+		{Name: types.StringValue("valid")},
+		{Name: types.StringValue("invalid"), SubnetSelectorTerms: customfield.NewObjectListMust(ctx, []api.SubnetSelectorTermModel{})},
+	})
+
+	if err := SyncEC2NodeClassConfiguration(ctx, client, "cluster-1", "test-cluster", desired, customfield.NullObjectList[api.EC2NodeClassTemplateModel](ctx), nil); err == nil {
+		t.Fatal("SyncEC2NodeClassConfiguration() error = nil, want empty subnet selector error")
+	}
+	if len(client.applied) != 0 {
+		t.Fatalf("invalid nodeclass list made writes: %#v", client.applied)
+	}
+}
+
+func (f *fakeEC2NodePoolConfigurationClient) ListNodePools(string) (api.RebalanceNodePoolList, error) {
+	return api.RebalanceNodePoolList{}, nil
+}
+
+func (f *fakeEC2NodePoolConfigurationClient) ApplyNodePool(_ string, nodePool api.RebalanceNodePool) error {
+	f.applied = append(f.applied, nodePool.EC2NodePool.Name)
+	return nil
+}
+
+func (f *fakeEC2NodePoolConfigurationClient) DeleteNodePool(string, string) error {
+	return nil
+}
+
+func TestSyncEC2NodePoolConfigurationPrevalidatesAllNodePools(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeEC2NodePoolConfigurationClient{}
+	budget := func(schedule string) customfield.NestedObjectList[api.DisruptionBudgetModel] {
+		return customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Schedule: types.StringValue(schedule),
+			Duration: types.StringValue("1h"),
+		}})
+	}
+	desired := customfield.NewObjectListMust(ctx, []api.EC2NodePoolModel{
+		{Name: types.StringValue("valid"), NodeClass: types.StringValue("default"), NodeDisruptionBudgets: budget("@daily")},
+		{Name: types.StringValue("invalid"), NodeClass: types.StringValue("default"), NodeDisruptionBudgets: budget("daily")},
+	})
+
+	if err := SyncEC2NodePoolConfiguration(ctx, client, "cluster-1", desired, customfield.NullObjectList[api.EC2NodePoolTemplateModel](ctx), nil); err == nil {
+		t.Fatal("SyncEC2NodePoolConfiguration() error = nil, want invalid schedule error")
+	}
+	if len(client.applied) != 0 {
+		t.Fatalf("invalid nodepool list made writes: %#v", client.applied)
+	}
+}
+
 func (f *fakeRebalanceConfigurationClient) GetRebalanceConfiguration(string) (*api.RebalanceConfig, error) {
 	return f.config, nil
 }

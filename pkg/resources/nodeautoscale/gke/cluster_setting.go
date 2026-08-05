@@ -19,6 +19,14 @@ func (m ClusterSettingModel) ToAPI() *api.ClusterSetting {
 		v := m.EnableDiskMonitor.ValueBool()
 		out.EnableDiskMonitor = &v
 	}
+	if !m.EnableNodePoolDecommission.IsNull() && !m.EnableNodePoolDecommission.IsUnknown() {
+		v := m.EnableNodePoolDecommission.ValueBool()
+		out.EnableNodePoolDecommission = &v
+	}
+	if !m.EnableWorkloadMinNonSpot.IsNull() && !m.EnableWorkloadMinNonSpot.IsUnknown() {
+		v := m.EnableWorkloadMinNonSpot.ValueBool()
+		out.EnableWorkloadMinNonSpot = &v
+	}
 	if !m.Discount.IsNull() && !m.Discount.IsUnknown() {
 		v := m.Discount.ValueFloat64()
 		out.Discount = &v
@@ -48,6 +56,14 @@ func clusterSettingObjectFromAPI(ctx context.Context, in *api.ClusterSetting) cu
 	}
 	if in.EnableDiskMonitor != nil {
 		model.EnableDiskMonitor = types.BoolValue(*in.EnableDiskMonitor)
+		hasValue = true
+	}
+	if in.EnableNodePoolDecommission != nil {
+		model.EnableNodePoolDecommission = types.BoolValue(*in.EnableNodePoolDecommission)
+		hasValue = true
+	}
+	if in.EnableWorkloadMinNonSpot != nil {
+		model.EnableWorkloadMinNonSpot = types.BoolValue(*in.EnableWorkloadMinNonSpot)
 		hasValue = true
 	}
 	if in.Discount != nil {

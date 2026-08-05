@@ -137,6 +137,7 @@ type RecommendationPolicyModel struct {
 	RequestMaxMemory types.String `tfsdk:"request_max_memory"`
 
 	JVMHeapBuffer              types.String `tfsdk:"jvm_heap_buffer"`
+	JVMMinHeapXms              types.String `tfsdk:"jvm_min_heap_xms"`
 	JVMMinHeapXmsRatioOfMemory types.String `tfsdk:"jvm_min_heap_xms_ratio_of_memory"`
 	JVMRecentNonHeapWindow     types.String `tfsdk:"jvm_recent_non_heap_window"`
 	JVMHeapUsedPercentile      types.Int32  `tfsdk:"jvm_heap_used_percentile"`
@@ -272,6 +273,14 @@ func (m *RecommendationPolicyModel) ToResourceFromBase(base *RecommendationPolic
 			jvm.MinHeapXmsRatioOfMemory = &v
 		}
 	}
+	if !m.JVMMinHeapXms.IsNull() && !m.JVMMinHeapXms.IsUnknown() {
+		if m.JVMMinHeapXms.ValueString() == "" {
+			jvm.MinHeapXms = nil
+		} else {
+			v := m.JVMMinHeapXms.ValueString()
+			jvm.MinHeapXms = &v
+		}
+	}
 	if !m.JVMRecentNonHeapWindow.IsNull() && !m.JVMRecentNonHeapWindow.IsUnknown() {
 		if m.JVMRecentNonHeapWindow.ValueString() == "" {
 			jvm.RecentNonHeapWindow = nil
@@ -284,7 +293,7 @@ func (m *RecommendationPolicyModel) ToResourceFromBase(base *RecommendationPolic
 		v := m.JVMHeapUsedPercentile.ValueInt32()
 		jvm.HeapUsedPercentile = &v
 	}
-	if jvm.HeapBuffer != nil || jvm.MinHeapXmsRatioOfMemory != nil || jvm.RecentNonHeapWindow != nil || jvm.HeapUsedPercentile != nil {
+	if jvm.HeapBuffer != nil || jvm.MinHeapXms != nil || jvm.MinHeapXmsRatioOfMemory != nil || jvm.RecentNonHeapWindow != nil || jvm.HeapUsedPercentile != nil {
 		rp.Spec.JVM = jvm
 	} else {
 		rp.Spec.JVM = nil
@@ -333,6 +342,9 @@ func RecommendationPolicyModelFromResource(rp *RecommendationPolicyResource) Rec
 		}
 		if rp.Spec.JVM.MinHeapXmsRatioOfMemory != nil {
 			m.JVMMinHeapXmsRatioOfMemory = types.StringValue(*rp.Spec.JVM.MinHeapXmsRatioOfMemory)
+		}
+		if rp.Spec.JVM.MinHeapXms != nil {
+			m.JVMMinHeapXms = types.StringValue(*rp.Spec.JVM.MinHeapXms)
 		}
 		if rp.Spec.JVM.RecentNonHeapWindow != nil {
 			m.JVMRecentNonHeapWindow = types.StringValue(NormalizeDuration(*rp.Spec.JVM.RecentNonHeapWindow))

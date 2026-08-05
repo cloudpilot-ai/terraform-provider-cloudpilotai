@@ -28,6 +28,7 @@ import (
 
 // GCENodeClassSpec is the top level specification for the GCP Karpenter Provider.
 // This will contain the configuration necessary to launch instances in GCP.
+// +kubebuilder:validation:XValidation:message="ephemeralStorageLocalSSD cannot be combined with disks using category local-ssd",rule="!has(self.ephemeralStorageLocalSSD) || !has(self.disks) || self.disks.all(d, !has(d.category) || d.category != 'local-ssd')"
 type GCENodeClassSpec struct {
 	// ServiceAccount is the GCP IAM service account email to assign to the instance
 	// +kubebuilder:validation:Pattern=`^[^@]+@(developer\.gserviceaccount\.com|[^@]+\.iam\.gserviceaccount\.com)$`
@@ -37,6 +38,13 @@ type GCENodeClassSpec struct {
 	// +kubebuilder:validation:MaxItems=10
 	// +optional
 	Disks []Disk `json:"disks,omitempty"`
+	// EphemeralStorageLocalSSD enables GKE-style Local SSD backed node ephemeral storage.
+	// Local SSDs are combined and mounted by the GKE node image before kubelet starts,
+	// so emptyDir volumes, writable container layers, images, and pod logs use them.
+	// For machine types with bundled Local SSDs, Count is ignored and the fixed bundled
+	// capacity is used. For other supported machine types, Count is required.
+	// +optional
+	EphemeralStorageLocalSSD *EphemeralStorageLocalSSDConfig `json:"ephemeralStorageLocalSSD,omitempty"`
 	// ImageSelectorTerms is a list of or image selector terms. The terms are ORed.
 	// +kubebuilder:validation:XValidation:message="each term must set exactly one of: alias, id, or family (with channel or version)",rule="self.all(x, has(x.alias) || has(x.id) || has(x.family))"
 	// +kubebuilder:validation:XValidation:message="channel: and version: latest cannot both appear in the same imageSelectorTerms",rule="!(self.exists(t, has(t.channel)) && self.exists(t, has(t.family) && t.family == 'ContainerOptimizedOS' && has(t.version) && t.version == 'latest'))"
@@ -110,6 +118,17 @@ type GCENodeClassSpec struct {
 	// +kubebuilder:default=default
 	// +optional
 	GPUDriverVersion string `json:"gpuDriverVersion,omitempty"`
+}
+
+// EphemeralStorageLocalSSDConfig configures Local SSDs as the node's ephemeral storage.
+// The presence of this object enables the feature.
+type EphemeralStorageLocalSSDConfig struct {
+	// Count is the number of NVMe Local SSDs to attach to machine types that do not
+	// already bundle Local SSDs. It is ignored for machine types with bundled Local SSDs.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=32
+	// +optional
+	Count *int32 `json:"count,omitempty"`
 }
 
 // NetworkConfig holds network settings for provisioned nodes.
