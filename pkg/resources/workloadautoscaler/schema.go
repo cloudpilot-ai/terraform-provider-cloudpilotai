@@ -187,6 +187,10 @@ func recommendationPolicyAttributes() map[string]schema.Attribute {
 			Description: "JVM heap buffer for HeapXmx, for example '25%' or '300Mi'.",
 			Optional:    true,
 		},
+		"jvm_min_heap_xms": schema.StringAttribute{
+			Optional:    true,
+			Description: "Minimum JVM heap size (Xms), for example 512Mi. When omitted, Terraform does not manage this setting.",
+		},
 		"jvm_min_heap_xms_ratio_of_memory": schema.StringAttribute{
 			Description: "Minimum ratio of HeapXms to JVM memory recommendation, for example '0.25'.",
 			Optional:    true,

@@ -101,10 +101,11 @@ type RebalanceNodePoolList struct {
 }
 
 type EC2NodeClass struct {
-	Name                   string                          `json:"name"`
-	NodeClassAnnotation    map[string]string               `json:"nodeClassAnnotation"`
-	NodeClassSpec          *awsproviderv1.EC2NodeClassSpec `json:"nodeClassSpec"`
-	EnableImageAccelerator bool                            `json:"enableImageAccelerator"`
+	Name                           string                          `json:"name"`
+	NodeClassAnnotation            map[string]string               `json:"nodeClassAnnotation"`
+	NodeClassSpec                  *awsproviderv1.EC2NodeClassSpec `json:"nodeClassSpec"`
+	EnableImageAccelerator         bool                            `json:"enableImageAccelerator"`
+	EnableLocalSSDEphemeralStorage bool                            `json:"enableLocalSSDEphemeralStorage,omitempty"`
 }
 
 type ECSNodePool struct {
@@ -127,10 +128,11 @@ type GCENodePool struct {
 }
 
 type GCENodeClass struct {
-	Name                   string                                `json:"name"`
-	EnableImageAccelerator bool                                  `json:"enableImageAccelerator"`
-	NodeClassSpec          *gcpproviderv1alpha1.GCENodeClassSpec `json:"nodeClassSpec"`
-	rawJSON                []byte                                `json:"-"`
+	Name                           string                                `json:"name"`
+	EnableImageAccelerator         bool                                  `json:"enableImageAccelerator"`
+	EnableLocalSSDEphemeralStorage *bool                                 `json:"enableLocalSSDEphemeralStorage,omitempty"`
+	NodeClassSpec                  *gcpproviderv1alpha1.GCENodeClassSpec `json:"nodeClassSpec"`
+	rawJSON                        []byte                                `json:"-"`
 }
 
 func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassModel, error) {
@@ -141,6 +143,11 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	var nodeClassModel EC2NodeClassModel
 	nodeClassModel.Name = types.StringValue(e.Name)
 	nodeClassModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
+	localSSDEphemeralStorageEnabled := e.EnableLocalSSDEphemeralStorage
+	if e.NodeClassSpec.InstanceStorePolicy != nil && *e.NodeClassSpec.InstanceStorePolicy == awsproviderv1.InstanceStorePolicyRAID0 {
+		localSSDEphemeralStorageEnabled = true
+	}
+	nodeClassModel.EnableLocalSSDEphemeralStorage = types.BoolValue(localSSDEphemeralStorageEnabled)
 	nodeClassModel.OriginNodeClassJSON = types.StringNull()
 
 	if e.NodeClassSpec.Role != "" {
@@ -383,6 +390,20 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 
 	if len(e.NodePoolSpec.Disruption.Budgets) != 0 {
 		nodePoolModel.NodeDisruptionLimit = types.StringValue(e.NodePoolSpec.Disruption.Budgets[0].Nodes)
+	}
+	if len(e.NodePoolSpec.Disruption.Budgets) > 0 {
+		budgetModels := make([]DisruptionBudgetModel, 0, len(e.NodePoolSpec.Disruption.Budgets))
+		for _, budget := range e.NodePoolSpec.Disruption.Budgets {
+			budgetModels = append(budgetModels, newDisruptionBudgetModel(
+				budget.Nodes,
+				lo.Map(budget.Reasons, func(reason awscorev1.DisruptionReason, _ int) string { return string(reason) }),
+				budget.Schedule,
+				budget.Duration,
+			))
+		}
+		nodePoolModel.NodeDisruptionBudgets = customfield.NewObjectListMust(context.Background(), budgetModels)
+	} else {
+		nodePoolModel.NodeDisruptionBudgets = customfield.NullObjectList[DisruptionBudgetModel](context.Background())
 	}
 
 	if e.NodePoolSpec.Disruption.ConsolidateAfter.Duration != nil {

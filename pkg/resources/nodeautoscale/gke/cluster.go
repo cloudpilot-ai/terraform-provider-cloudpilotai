@@ -44,6 +44,7 @@ type postWriteStateHydratorClient interface {
 	GetRebalanceConfiguration(clusterID string) (*api.RebalanceConfig, error)
 	ListNodeClasses(clusterID string) (api.RebalanceNodeClassList, error)
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
+	ListScheduledRebalances(clusterID string) (api.ScheduledRebalancePolicyList, error)
 }
 
 type clusterSummaryReader interface {
@@ -159,8 +160,23 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		resp.Diagnostics.AddError("failed to install cloudpilot ai agent", err.Error())
 		return
 	}
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterID, data.ScheduledRebalances, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid scheduled rebalance configuration", err.Error())
+		return
+	}
 	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install gke node autoscaler component", err.Error())
+		return
+	}
+	nodePoolPlan, err := helper.PrepareGCENodePoolConfiguration(ctx, c.client, clusterID, data.NodePools, nil)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid gke nodepool configuration", err.Error())
+		return
+	}
+	nodeClassPlan, err := helper.PrepareGCENodeClassConfiguration(ctx, c.client, clusterID, data.NodeClasses)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid gke nodeclass configuration", err.Error())
 		return
 	}
 
@@ -173,7 +189,7 @@ func (c *Cluster) Create(ctx context.Context, req resource.CreateRequest, resp *
 		resp.Diagnostics.AddError("failed to upgrade cloudpilot ai components", err.Error())
 		return
 	}
-	if err := c.syncConfiguration(ctx, &data, clusterID, nil, nil); err != nil {
+	if err := c.syncConfigurationWithScheduledPlan(ctx, &data, clusterID, nil, scheduledRebalancePlan, nodeClassPlan, nodePoolPlan); err != nil {
 		resp.Diagnostics.AddError("failed to sync gke node autoscaler configuration", err.Error())
 		return
 	}
@@ -216,13 +232,37 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 
 	clusterID := resolveClusterUID(data.ClusterID, state.ClusterID, data.ClusterName, data.Region, data.ClusterUID)
 	data.ClusterID = types.StringValue(clusterID)
+	previousNCNames := extractResourceNames(ctx, state.NodeClasses, func(m api.GCENodeClassModel) string {
+		return m.Name.ValueString()
+	})
+	previousNPNames := extractResourceNames(ctx, state.NodePools, func(m api.GCENodePoolModel) string {
+		return m.Name.ValueString()
+	})
+	previousScheduledRebalanceNames := extractResourceNames(ctx, state.ScheduledRebalances, func(m api.ScheduledRebalancePolicyModel) string {
+		return m.Name.ValueString()
+	})
 
 	if err := c.ensureAgentInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install cloudpilot ai agent", err.Error())
 		return
 	}
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterID, data.ScheduledRebalances, previousScheduledRebalanceNames)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid scheduled rebalance configuration", err.Error())
+		return
+	}
 	if err := c.ensureNodeAutoscalerInstalled(ctx, &data, clusterID, kubeconfigPath); err != nil {
 		resp.Diagnostics.AddError("failed to install gke node autoscaler component", err.Error())
+		return
+	}
+	nodePoolPlan, err := helper.PrepareGCENodePoolConfiguration(ctx, c.client, clusterID, data.NodePools, previousNPNames)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid gke nodepool configuration", err.Error())
+		return
+	}
+	nodeClassPlan, err := helper.PrepareGCENodeClassConfiguration(ctx, c.client, clusterID, data.NodeClasses)
+	if err != nil {
+		resp.Diagnostics.AddError("invalid gke nodeclass configuration", err.Error())
 		return
 	}
 
@@ -235,13 +275,7 @@ func (c *Cluster) Update(ctx context.Context, req resource.UpdateRequest, resp *
 		resp.Diagnostics.AddError("failed to upgrade cloudpilot ai components", err.Error())
 		return
 	}
-	previousNCNames := extractResourceNames(ctx, state.NodeClasses, func(m api.GCENodeClassModel) string {
-		return m.Name.ValueString()
-	})
-	previousNPNames := extractResourceNames(ctx, state.NodePools, func(m api.GCENodePoolModel) string {
-		return m.Name.ValueString()
-	})
-	if err := c.syncConfiguration(ctx, &data, clusterID, previousNCNames, previousNPNames); err != nil {
+	if err := c.syncConfigurationWithScheduledPlan(ctx, &data, clusterID, previousNCNames, scheduledRebalancePlan, nodeClassPlan, nodePoolPlan); err != nil {
 		resp.Diagnostics.AddError("failed to sync gke node autoscaler configuration", err.Error())
 		return
 	}
@@ -618,6 +652,31 @@ func (c *Cluster) syncConfiguration(
 	data *ClusterModel,
 	clusterID string,
 	previousNCNames, previousNPNames map[string]struct{},
+	previousScheduledRebalanceNames map[string]struct{},
+) error {
+	scheduledRebalancePlan, err := helper.PrepareScheduledRebalanceConfiguration(ctx, c.client, clusterID, data.ScheduledRebalances, previousScheduledRebalanceNames)
+	if err != nil {
+		return fmt.Errorf("failed to prepare scheduled rebalance configuration: %w", err)
+	}
+	nodePoolPlan, err := helper.PrepareGCENodePoolConfiguration(ctx, c.client, clusterID, data.NodePools, previousNPNames)
+	if err != nil {
+		return fmt.Errorf("failed to prepare nodepool configuration: %w", err)
+	}
+	nodeClassPlan, err := helper.PrepareGCENodeClassConfiguration(ctx, c.client, clusterID, data.NodeClasses)
+	if err != nil {
+		return fmt.Errorf("failed to prepare nodeclass configuration: %w", err)
+	}
+	return c.syncConfigurationWithScheduledPlan(ctx, data, clusterID, previousNCNames, scheduledRebalancePlan, nodeClassPlan, nodePoolPlan)
+}
+
+func (c *Cluster) syncConfigurationWithScheduledPlan(
+	ctx context.Context,
+	data *ClusterModel,
+	clusterID string,
+	previousNCNames map[string]struct{},
+	scheduledRebalancePlan *helper.ScheduledRebalancePlan,
+	nodeClassPlan *helper.GCENodeClassPlan,
+	nodePoolPlan *helper.GCENodePoolPlan,
 ) error {
 	enableRebalanceManaged := !data.EnableRebalance.IsNull() && !data.EnableRebalance.IsUnknown()
 	if enableRebalanceManaged && !data.EnableRebalance.ValueBool() {
@@ -636,13 +695,13 @@ func (c *Cluster) syncConfiguration(
 	}
 
 	tflog.Info(ctx, "syncing gke nodeclass configuration")
-	nodeClassNames, err := helper.ApplyGCENodeClassConfiguration(ctx, c.client, clusterID, data.NodeClasses)
+	nodeClassNames, err := helper.ApplyGCENodeClassConfiguration(c.client, nodeClassPlan)
 	if err != nil {
 		return fmt.Errorf("failed to sync nodeclass configuration: %w", err)
 	}
 
 	tflog.Info(ctx, "syncing gke nodepool configuration")
-	if err := helper.SyncGCENodePoolConfiguration(ctx, c.client, clusterID, data.NodePools, previousNPNames); err != nil {
+	if err := helper.ApplyGCENodePoolConfiguration(c.client, nodePoolPlan); err != nil {
 		return fmt.Errorf("failed to sync nodepool configuration: %w", err)
 	}
 
@@ -655,6 +714,9 @@ func (c *Cluster) syncConfiguration(
 		if err := helper.SyncRebalanceConfiguration(ctx, c.client, clusterID, true); err != nil {
 			return fmt.Errorf("failed to sync rebalance configuration: %w", err)
 		}
+	}
+	if err := helper.ApplyScheduledRebalanceConfiguration(c.client, scheduledRebalancePlan); err != nil {
+		return fmt.Errorf("failed to sync scheduled rebalance configuration: %w", err)
 	}
 
 	return nil
@@ -767,6 +829,10 @@ func hydrateClusterPostWriteState(ctx context.Context, client postWriteStateHydr
 	if err != nil {
 		return err
 	}
+	data.ScheduledRebalances, err = helper.HydrateScheduledRebalancesPostWrite(ctx, client, clusterUID, data.ScheduledRebalances)
+	if err != nil {
+		return fmt.Errorf("failed to hydrate scheduled rebalances: %w", err)
+	}
 
 	if !data.EnableRebalance.IsNull() && !data.EnableRebalance.IsUnknown() {
 		rebalanceConfig, err := client.GetRebalanceConfiguration(clusterUID)
@@ -782,6 +848,9 @@ func hydrateClusterPostWriteState(ctx context.Context, client postWriteStateHydr
 }
 
 func hydrateClusterSettingPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObject[ClusterSettingModel]) (customfield.NestedObject[ClusterSettingModel], error) {
+	if current.IsNull() || current.IsUnknown() {
+		return current, nil
+	}
 	remote, err := client.GetClusterSetting(clusterUID)
 	if err != nil {
 		return current, fmt.Errorf("failed to get cluster setting: %w", err)
@@ -802,9 +871,9 @@ func clusterSettingObjectPreservingState(ctx context.Context, current customfiel
 	hydrated := ClusterSettingModel{}
 	if value != nil {
 		hydrated = *value
-		normalizeClusterSettingUnknowns(&hydrated)
 	}
 	mergeClusterSettingFromAPI(&hydrated, remote)
+	normalizeClusterSettingUnknowns(&hydrated)
 
 	object, diags := customfield.NewObject(ctx, &hydrated)
 	if diags.HasError() {
@@ -820,6 +889,12 @@ func normalizeClusterSettingUnknowns(setting *ClusterSettingModel) {
 	if setting.EnableDiskMonitor.IsUnknown() {
 		setting.EnableDiskMonitor = types.BoolNull()
 	}
+	if setting.EnableNodePoolDecommission.IsUnknown() {
+		setting.EnableNodePoolDecommission = types.BoolNull()
+	}
+	if setting.EnableWorkloadMinNonSpot.IsUnknown() {
+		setting.EnableWorkloadMinNonSpot = types.BoolNull()
+	}
 	if setting.Discount.IsUnknown() {
 		setting.Discount = types.Float64Null()
 	}
@@ -833,23 +908,50 @@ func normalizeClusterSettingUnknowns(setting *ClusterSettingModel) {
 
 func mergeClusterSettingFromAPI(setting *ClusterSettingModel, remote *api.ClusterSetting) {
 	if remote == nil {
-		return
+		remote = &api.ClusterSetting{}
 	}
-	if remote.EnableNodeRepair != nil && !setting.EnableNodeRepair.IsNull() {
-		setting.EnableNodeRepair = types.BoolValue(*remote.EnableNodeRepair)
+	if !setting.EnableNodeRepair.IsNull() {
+		setting.EnableNodeRepair = boolPointerToTerraform(remote.EnableNodeRepair)
 	}
-	if remote.EnableDiskMonitor != nil && !setting.EnableDiskMonitor.IsNull() {
-		setting.EnableDiskMonitor = types.BoolValue(*remote.EnableDiskMonitor)
+	if !setting.EnableDiskMonitor.IsNull() {
+		setting.EnableDiskMonitor = boolPointerToTerraform(remote.EnableDiskMonitor)
 	}
-	if remote.Discount != nil && !setting.Discount.IsNull() {
-		setting.Discount = types.Float64Value(*remote.Discount)
+	if !setting.EnableNodePoolDecommission.IsNull() {
+		setting.EnableNodePoolDecommission = boolPointerToTerraform(remote.EnableNodePoolDecommission)
 	}
-	if remote.PreRunCommand != nil && !setting.PreRunCommand.IsNull() {
-		setting.PreRunCommand = types.StringValue(*remote.PreRunCommand)
+	if !setting.EnableWorkloadMinNonSpot.IsNull() {
+		setting.EnableWorkloadMinNonSpot = boolPointerToTerraform(remote.EnableWorkloadMinNonSpot)
 	}
-	if remote.PostRunCommand != nil && !setting.PostRunCommand.IsNull() {
-		setting.PostRunCommand = types.StringValue(*remote.PostRunCommand)
+	if !setting.Discount.IsNull() {
+		setting.Discount = float64PointerToTerraform(remote.Discount)
 	}
+	if !setting.PreRunCommand.IsNull() {
+		setting.PreRunCommand = stringPointerToTerraform(remote.PreRunCommand)
+	}
+	if !setting.PostRunCommand.IsNull() {
+		setting.PostRunCommand = stringPointerToTerraform(remote.PostRunCommand)
+	}
+}
+
+func boolPointerToTerraform(value *bool) types.Bool {
+	if value == nil {
+		return types.BoolNull()
+	}
+	return types.BoolValue(*value)
+}
+
+func float64PointerToTerraform(value *float64) types.Float64 {
+	if value == nil {
+		return types.Float64Null()
+	}
+	return types.Float64Value(*value)
+}
+
+func stringPointerToTerraform(value *string) types.String {
+	if value == nil {
+		return types.StringNull()
+	}
+	return types.StringValue(*value)
 }
 
 func mergeClusterIdentityFromSummary(data *ClusterModel, summary *api.ClusterCostsSummary) {
@@ -889,7 +991,7 @@ func (c *Cluster) readClusterManagementState(ctx context.Context, data *ClusterM
 	}
 
 	if !data.NodeClasses.IsNullOrUnknown() {
-		data.NodeClasses, err = hydrateNodeClassesPostWrite(ctx, c.client, clusterID, data.NodeClasses)
+		data.NodeClasses, err = refreshNodeClassesState(ctx, c.client, clusterID, data.NodeClasses)
 		if err != nil {
 			return err
 		}
@@ -908,7 +1010,7 @@ func (c *Cluster) readClusterManagementState(ctx context.Context, data *ClusterM
 	}
 
 	if !data.NodePools.IsNullOrUnknown() {
-		data.NodePools, err = hydrateNodePoolsPostWrite(ctx, c.client, clusterID, data.NodePools)
+		data.NodePools, err = refreshNodePoolsState(ctx, c.client, clusterID, data.NodePools)
 		if err != nil {
 			return err
 		}
@@ -925,11 +1027,30 @@ func (c *Cluster) readClusterManagementState(ctx context.Context, data *ClusterM
 			data.NodePools = importedNodePools
 		}
 	}
+	if !data.ScheduledRebalances.IsNullOrUnknown() {
+		data.ScheduledRebalances, err = helper.RefreshScheduledRebalances(ctx, c.client, clusterID, data.ScheduledRebalances)
+		if err != nil {
+			return fmt.Errorf("failed to hydrate scheduled rebalances: %w", err)
+		}
+	} else if isImport {
+		data.ScheduledRebalances, err = helper.ImportScheduledRebalances(ctx, c.client, clusterID)
+		if err != nil {
+			return fmt.Errorf("failed to import scheduled rebalances: %w", err)
+		}
+	}
 
 	return nil
 }
 
 func hydrateNodeClassesPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodeClassModel]) (customfield.NestedObjectList[api.GCENodeClassModel], error) {
+	return hydrateNodeClassesState(ctx, client, clusterUID, current, true)
+}
+
+func refreshNodeClassesState(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodeClassModel]) (customfield.NestedObjectList[api.GCENodeClassModel], error) {
+	return hydrateNodeClassesState(ctx, client, clusterUID, current, false)
+}
+
+func hydrateNodeClassesState(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodeClassModel], preserveMissing bool) (customfield.NestedObjectList[api.GCENodeClassModel], error) {
 	if current.IsNullOrUnknown() {
 		return current, nil
 	}
@@ -958,10 +1079,12 @@ func hydrateNodeClassesPostWrite(ctx context.Context, client postWriteStateHydra
 	hydrated := make([]api.GCENodeClassModel, 0, len(stateNodeClasses))
 	for _, stateNodeClass := range stateNodeClasses {
 		if remote, ok := remoteByName[stateNodeClass.Name.ValueString()]; ok {
-			hydrated = append(hydrated, preserveNodeClassStateRepresentation(ctx, remote, stateNodeClass))
+			hydrated = append(hydrated, preserveNodeClassStateRepresentationForRefresh(ctx, remote, stateNodeClass, preserveMissing))
 			continue
 		}
-		hydrated = append(hydrated, stateNodeClass)
+		if preserveMissing {
+			hydrated = append(hydrated, stateNodeClass)
+		}
 	}
 
 	list, diags := customfield.NewObjectList(ctx, hydrated)
@@ -972,6 +1095,14 @@ func hydrateNodeClassesPostWrite(ctx context.Context, client postWriteStateHydra
 }
 
 func hydrateNodePoolsPostWrite(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodePoolModel]) (customfield.NestedObjectList[api.GCENodePoolModel], error) {
+	return hydrateNodePoolsState(ctx, client, clusterUID, current, true)
+}
+
+func refreshNodePoolsState(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodePoolModel]) (customfield.NestedObjectList[api.GCENodePoolModel], error) {
+	return hydrateNodePoolsState(ctx, client, clusterUID, current, false)
+}
+
+func hydrateNodePoolsState(ctx context.Context, client postWriteStateHydratorClient, clusterUID string, current customfield.NestedObjectList[api.GCENodePoolModel], preserveMissing bool) (customfield.NestedObjectList[api.GCENodePoolModel], error) {
 	if current.IsNullOrUnknown() {
 		return current, nil
 	}
@@ -1003,7 +1134,9 @@ func hydrateNodePoolsPostWrite(ctx context.Context, client postWriteStateHydrato
 			hydrated = append(hydrated, normalizeNodePoolComputedUnknowns(preserveNodePoolStateRepresentation(ctx, remote, stateNodePool)))
 			continue
 		}
-		hydrated = append(hydrated, normalizeNodePoolComputedUnknowns(stateNodePool))
+		if preserveMissing {
+			hydrated = append(hydrated, normalizeNodePoolComputedUnknowns(stateNodePool))
+		}
 	}
 
 	list, diags := customfield.NewObjectList(ctx, hydrated)
@@ -1014,7 +1147,13 @@ func hydrateNodePoolsPostWrite(ctx context.Context, client postWriteStateHydrato
 }
 
 func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api.GCENodeClassModel) api.GCENodeClassModel {
+	return preserveNodeClassStateRepresentationForRefresh(ctx, remote, state, true)
+}
+
+func preserveNodeClassStateRepresentationForRefresh(ctx context.Context, remote, state api.GCENodeClassModel, preserveMissing bool) api.GCENodeClassModel {
 	remote.EnableImageAccelerator = preserveManagedBool(state.EnableImageAccelerator, remote.EnableImageAccelerator)
+	remote.EnableLocalSSDEphemeralStorage = preserveManagedBool(state.EnableLocalSSDEphemeralStorage, remote.EnableLocalSSDEphemeralStorage)
+	remote.EphemeralStorageLocalSSD = preserveGCEEphemeralStorageLocalSSDStateRepresentation(ctx, remote.EphemeralStorageLocalSSD, state.EphemeralStorageLocalSSD, preserveMissing)
 	remote.ServiceAccount = preserveManagedString(state.ServiceAccount, remote.ServiceAccount)
 	remote.Disks = preserveGCEDiskStateRepresentation(ctx, remote.Disks, state.Disks)
 	remote.ImageSelectorTerms = preserveGCEImageSelectorTermStateRepresentation(ctx, remote.ImageSelectorTerms, state.ImageSelectorTerms)
@@ -1029,6 +1168,28 @@ func preserveNodeClassStateRepresentation(ctx context.Context, remote, state api
 	remote.GPUDriverVersion = preserveManagedString(state.GPUDriverVersion, remote.GPUDriverVersion)
 	remote.OriginNodeClassJSON = preserveStateStringWhenRemoteNull(state.OriginNodeClassJSON, remote.OriginNodeClassJSON)
 	return remote
+}
+
+func preserveGCEEphemeralStorageLocalSSDStateRepresentation(ctx context.Context, remote, state customfield.NestedObject[api.GCEEphemeralStorageLocalSSDModel], preserveMissing bool) customfield.NestedObject[api.GCEEphemeralStorageLocalSSDModel] {
+	if state.IsNull() || state.IsUnknown() {
+		return state
+	}
+	if remote.IsNull() {
+		if preserveMissing {
+			return state
+		}
+		return remote
+	}
+	if remote.IsUnknown() {
+		return state
+	}
+	stateValue, stateDiags := state.Value(ctx)
+	remoteValue, remoteDiags := remote.Value(ctx)
+	if stateDiags.HasError() || remoteDiags.HasError() || stateValue == nil || remoteValue == nil {
+		return state
+	}
+	remoteValue.Count = preserveManagedInt32(stateValue.Count, remoteValue.Count)
+	return customfield.NewObjectMust(ctx, remoteValue)
 }
 
 func preserveNodePoolStateRepresentation(ctx context.Context, remote, state api.GCENodePoolModel) api.GCENodePoolModel {
@@ -1048,6 +1209,10 @@ func preserveNodePoolStateRepresentation(ctx context.Context, remote, state api.
 	remote.Labels = preserveManagedMap(ctx, state.Labels, remote.Labels)
 	remote.Taints = preserveTaintStateRepresentation(ctx, remote.Taints, state.Taints)
 	remote.NodeDisruptionLimit = preserveManagedString(state.NodeDisruptionLimit, remote.NodeDisruptionLimit)
+	remote.NodeDisruptionBudgets = preserveManagedObjectListByIndex(ctx, state.NodeDisruptionBudgets, remote.NodeDisruptionBudgets, func(remoteBudget, stateBudget api.DisruptionBudgetModel) api.DisruptionBudgetModel {
+		remoteBudget.Duration = preserveSemanticDuration(stateBudget.Duration, remoteBudget.Duration)
+		return remoteBudget
+	})
 	remote.NodeDisruptionDelay = preserveManagedDuration(state.NodeDisruptionDelay, remote.NodeDisruptionDelay)
 	remote.OriginNodePoolJSON = preserveStateStringWhenRemoteNull(state.OriginNodePoolJSON, remote.OriginNodePoolJSON)
 	return remote

@@ -39,6 +39,19 @@ type workloadConfigurationClient interface {
 	UpdateWorkloadRebalanceConfiguration(clusterID string, workload api.Workload) error
 }
 
+type ec2NodePoolConfigurationClient interface {
+	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
+	ApplyNodePool(clusterID string, rebalanceNodePool api.RebalanceNodePool) error
+	DeleteNodePool(clusterID, nodePoolName string) error
+}
+
+type EC2NodePoolPlan struct {
+	clusterUID        string
+	preparedNodePools []*api.EC2NodePool
+	desiredNames      map[string]struct{}
+	previousNames     map[string]struct{}
+}
+
 type agentScriptClient interface {
 	GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error)
 }
@@ -386,6 +399,7 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 	})
 
 	nodeClassNames := make(map[string]struct{}, len(nodeClasses))
+	preparedNodeClasses := make([]*api.EC2NodeClass, 0, len(nodeClasses))
 
 	for nci := range nodeClasses {
 		nodeClassNames[nodeClasses[nci].Name.ValueString()] = struct{}{}
@@ -409,7 +423,10 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 		if err != nil {
 			return err
 		}
+		preparedNodeClasses = append(preparedNodeClasses, nodeClass)
+	}
 
+	for _, nodeClass := range preparedNodeClasses {
 		if err := client.ApplyNodeClass(clusterUID, api.RebalanceNodeClass{
 			EC2NodeClass: nodeClass,
 		}); err != nil {
@@ -431,20 +448,32 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 	return nil
 }
 
-func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient.Interface, clusterUID string,
+func SyncEC2NodePoolConfiguration(ctx context.Context, client ec2NodePoolConfigurationClient, clusterUID string,
 	nodePoolsNestedObjectList customfield.NestedObjectList[api.EC2NodePoolModel],
 	nodePoolsTemplateNestedObjectList customfield.NestedObjectList[api.EC2NodePoolTemplateModel],
 	previousStateNames map[string]struct{},
 ) error {
+	plan, err := PrepareEC2NodePoolConfiguration(ctx, client, clusterUID, nodePoolsNestedObjectList, nodePoolsTemplateNestedObjectList, previousStateNames)
+	if err != nil {
+		return err
+	}
+	return ApplyEC2NodePoolConfiguration(client, plan)
+}
+
+func PrepareEC2NodePoolConfiguration(ctx context.Context, client ec2NodePoolConfigurationClient, clusterUID string,
+	nodePoolsNestedObjectList customfield.NestedObjectList[api.EC2NodePoolModel],
+	nodePoolsTemplateNestedObjectList customfield.NestedObjectList[api.EC2NodePoolTemplateModel],
+	previousStateNames map[string]struct{},
+) (*EC2NodePoolPlan, error) {
 	if nodePoolsNestedObjectList.IsNullOrUnknown() {
-		return nil
+		return nil, nil
 	}
 
 	templateM := make(map[string]api.EC2NodePoolTemplateModel)
 	if !nodePoolsTemplateNestedObjectList.IsNullOrUnknown() {
 		nodePoolTemplates, diagnostics := nodePoolsTemplateNestedObjectList.AsStructSliceT(ctx)
 		if diagnostics.HasError() {
-			return fmt.Errorf("failed to parse nodepool template configuration: %v", diagnostics)
+			return nil, fmt.Errorf("failed to parse nodepool template configuration: %v", diagnostics)
 		}
 
 		for ni := range nodePoolTemplates {
@@ -454,12 +483,12 @@ func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient
 
 	nodePools, diagnostics := nodePoolsNestedObjectList.AsStructSliceT(ctx)
 	if diagnostics.HasError() {
-		return fmt.Errorf("failed to parse nodepool configuration: %v", diagnostics)
+		return nil, fmt.Errorf("failed to parse nodepool configuration: %v", diagnostics)
 	}
 
 	existingNodePools, err := client.ListNodePools(clusterUID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	nodePoolM := lo.SliceToMap(existingNodePools.EC2NodePools, func(item api.EC2NodePool) (string, api.EC2NodePool) {
@@ -467,6 +496,7 @@ func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient
 	})
 
 	nodePoolNames := make(map[string]struct{}, len(nodePools))
+	preparedNodePools := make([]*api.EC2NodePool, 0, len(nodePools))
 
 	for npi := range nodePools {
 		nodePoolNames[nodePools[npi].Name.ValueString()] = struct{}{}
@@ -488,16 +518,32 @@ func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient
 
 		nodePool, err := nodePools[npi].ToEC2NodePool(ctx, ec2NodePool, nodePoolTemplate)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if nodePool.NodePoolSpec == nil ||
 			nodePool.NodePoolSpec.Template.Spec.NodeClassRef == nil ||
 			nodePool.NodePoolSpec.Template.Spec.NodeClassRef.Name == "" {
-			return fmt.Errorf("nodepool %s must reference a valid nodeclass", nodePool.Name)
+			return nil, fmt.Errorf("nodepool %s must reference a valid nodeclass", nodePool.Name)
 		}
+		preparedNodePools = append(preparedNodePools, nodePool)
+	}
 
-		if err := client.ApplyNodePool(clusterUID, api.RebalanceNodePool{
+	return &EC2NodePoolPlan{
+		clusterUID:        clusterUID,
+		preparedNodePools: preparedNodePools,
+		desiredNames:      nodePoolNames,
+		previousNames:     previousStateNames,
+	}, nil
+}
+
+func ApplyEC2NodePoolConfiguration(client ec2NodePoolConfigurationClient, plan *EC2NodePoolPlan) error {
+	if plan == nil {
+		return nil
+	}
+
+	for _, nodePool := range plan.preparedNodePools {
+		if err := client.ApplyNodePool(plan.clusterUID, api.RebalanceNodePool{
 			EC2NodePool: nodePool,
 		}); err != nil {
 			return err
@@ -507,9 +553,9 @@ func SyncEC2NodePoolConfiguration(ctx context.Context, client cloudpilotaiclient
 	// Only delete nodepools that were previously tracked in Terraform state
 	// but are no longer in the desired configuration. Server-side nodepools
 	// not managed by Terraform are left untouched.
-	for name := range previousStateNames {
-		if _, stillDesired := nodePoolNames[name]; !stillDesired {
-			if err := client.DeleteNodePool(clusterUID, name); err != nil {
+	for name := range plan.previousNames {
+		if _, stillDesired := plan.desiredNames[name]; !stillDesired {
+			if err := client.DeleteNodePool(plan.clusterUID, name); err != nil {
 				return err
 			}
 		}

@@ -62,6 +62,12 @@ type Interface interface {
 	ApplyNodeClass(clusterID string, rebalanceNodeClass api.RebalanceNodeClass) error
 	DeleteNodeClass(clusterID string, nodeClassName string) error
 
+	// scheduled rebalance
+	ListScheduledRebalances(clusterID string) (api.ScheduledRebalancePolicyList, error)
+	CreateScheduledRebalance(clusterID string, request *api.ApplyScheduledRebalancePolicyRequest) (*api.ScheduledRebalancePolicy, error)
+	UpdateScheduledRebalance(clusterID, policyID string, request *api.ApplyScheduledRebalancePolicyRequest) (*api.ScheduledRebalancePolicy, error)
+	DeleteScheduledRebalance(clusterID, policyID string) error
+
 	// workload autoscaler
 	GetWorkloadAutoscalerSH() (string, error)
 	GetWAConfiguration(clusterID string) (*api.WAConfiguration, error)
@@ -135,6 +141,28 @@ func (c *Client) DeleteCluster(clusterID string) error {
 	}
 
 	return nil
+}
+
+func (c *Client) ListScheduledRebalances(clusterID string) (api.ScheduledRebalancePolicyList, error) {
+	url := fmt.Sprintf("%s/api/v1/schedule/clusters/%s/nodepool-rebalances", c.Endpoint, clusterID)
+	return doJSON[api.ScheduledRebalancePolicyList](c, http.MethodGet, url, nil)
+}
+
+func (c *Client) CreateScheduledRebalance(clusterID string, request *api.ApplyScheduledRebalancePolicyRequest) (*api.ScheduledRebalancePolicy, error) {
+	url := fmt.Sprintf("%s/api/v1/schedule/clusters/%s/nodepool-rebalances", c.Endpoint, clusterID)
+	out, err := doJSON[api.ScheduledRebalancePolicy](c, http.MethodPost, url, request)
+	return &out, err
+}
+
+func (c *Client) UpdateScheduledRebalance(clusterID, policyID string, request *api.ApplyScheduledRebalancePolicyRequest) (*api.ScheduledRebalancePolicy, error) {
+	url := fmt.Sprintf("%s/api/v1/schedule/clusters/%s/nodepool-rebalances/%s", c.Endpoint, clusterID, policyID)
+	out, err := doJSON[api.ScheduledRebalancePolicy](c, http.MethodPost, url, request)
+	return &out, err
+}
+
+func (c *Client) DeleteScheduledRebalance(clusterID, policyID string) error {
+	url := fmt.Sprintf("%s/api/v1/schedule/clusters/%s/nodepool-rebalances/%s", c.Endpoint, clusterID, policyID)
+	return doJSONNoData(c, http.MethodDelete, url, nil)
 }
 
 func (c *Client) GetAgentSH(provider, clusterName string, disableWorkloadUploading bool) (string, error) {

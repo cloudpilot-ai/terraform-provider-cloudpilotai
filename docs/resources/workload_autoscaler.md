@@ -303,6 +303,7 @@ Optional:
 - `buffer_memory` (String) Memory buffer as a quantity or percent (e.g. '10%' or '128Mi').
 - `jvm_heap_buffer` (String) JVM heap buffer for HeapXmx, for example '25%' or '300Mi'.
 - `jvm_heap_used_percentile` (Number) JVM heap-used percentile, valid server range is 20 to 100.
+- `jvm_min_heap_xms` (String) Minimum JVM heap size (Xms), for example 512Mi. When omitted, Terraform does not manage this setting.
 - `jvm_min_heap_xms_ratio_of_memory` (String) Minimum ratio of HeapXms to JVM memory recommendation, for example '0.25'.
 - `jvm_recent_non_heap_window` (String) Recent non-heap protection window, for example '2h'.
 - `percentile_cpu` (Number) Target CPU percentile (50-100) when strategy_type is 'percentile'.

@@ -10,11 +10,13 @@ import (
 )
 
 type ClusterSettingModel struct {
-	EnableNodeRepair  types.Bool    `tfsdk:"enable_node_repair"`
-	EnableDiskMonitor types.Bool    `tfsdk:"enable_disk_monitor"`
-	Discount          types.Float64 `tfsdk:"discount"`
-	PreRunCommand     types.String  `tfsdk:"pre_run_command"`
-	PostRunCommand    types.String  `tfsdk:"post_run_command"`
+	EnableNodeRepair           types.Bool    `tfsdk:"enable_node_repair"`
+	EnableDiskMonitor          types.Bool    `tfsdk:"enable_disk_monitor"`
+	EnableNodePoolDecommission types.Bool    `tfsdk:"enable_node_pool_decommission"`
+	EnableWorkloadMinNonSpot   types.Bool    `tfsdk:"enable_workload_min_non_spot"`
+	Discount                   types.Float64 `tfsdk:"discount"`
+	PreRunCommand              types.String  `tfsdk:"pre_run_command"`
+	PostRunCommand             types.String  `tfsdk:"post_run_command"`
 }
 
 func (m ClusterSettingModel) ToAPI() *api.ClusterSetting {
@@ -26,6 +28,14 @@ func (m ClusterSettingModel) ToAPI() *api.ClusterSetting {
 	if !m.EnableDiskMonitor.IsNull() && !m.EnableDiskMonitor.IsUnknown() {
 		v := m.EnableDiskMonitor.ValueBool()
 		out.EnableDiskMonitor = &v
+	}
+	if !m.EnableNodePoolDecommission.IsNull() && !m.EnableNodePoolDecommission.IsUnknown() {
+		v := m.EnableNodePoolDecommission.ValueBool()
+		out.EnableNodePoolDecommission = &v
+	}
+	if !m.EnableWorkloadMinNonSpot.IsNull() && !m.EnableWorkloadMinNonSpot.IsUnknown() {
+		v := m.EnableWorkloadMinNonSpot.ValueBool()
+		out.EnableWorkloadMinNonSpot = &v
 	}
 	if !m.Discount.IsNull() && !m.Discount.IsUnknown() {
 		v := m.Discount.ValueFloat64()
@@ -56,6 +66,14 @@ func clusterSettingObjectFromAPI(ctx context.Context, in *api.ClusterSetting) cu
 	}
 	if in.EnableDiskMonitor != nil {
 		model.EnableDiskMonitor = types.BoolValue(*in.EnableDiskMonitor)
+		hasValue = true
+	}
+	if in.EnableNodePoolDecommission != nil {
+		model.EnableNodePoolDecommission = types.BoolValue(*in.EnableNodePoolDecommission)
+		hasValue = true
+	}
+	if in.EnableWorkloadMinNonSpot != nil {
+		model.EnableWorkloadMinNonSpot = types.BoolValue(*in.EnableWorkloadMinNonSpot)
 		hasValue = true
 	}
 	if in.Discount != nil {

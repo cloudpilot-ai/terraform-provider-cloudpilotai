@@ -81,6 +81,35 @@ func TestSyncGCENodeClassConfigurationDeletesOnlyPreviouslyTrackedNames(t *testi
 	}
 }
 
+func TestSyncGCENodeClassConfigurationPrevalidatesAllNodeClasses(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeGCPNodeClassConfigurationClient{}
+	imageSelectorTerms := func() customfield.NestedObjectList[api.GCEImageSelectorTermModel] {
+		return customfield.NewObjectListMust(ctx, []api.GCEImageSelectorTermModel{{
+			Family:  types.StringValue("ContainerOptimizedOS"),
+			Channel: types.StringValue("cluster"),
+		}})
+	}
+	desired := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{
+		{Name: types.StringValue("valid"), ImageSelectorTerms: imageSelectorTerms()},
+		{
+			Name:                           types.StringValue("invalid"),
+			EnableLocalSSDEphemeralStorage: types.BoolValue(false),
+			EphemeralStorageLocalSSD: customfield.NewObjectMust(ctx, &api.GCEEphemeralStorageLocalSSDModel{
+				Count: types.Int32Value(2),
+			}),
+			ImageSelectorTerms: imageSelectorTerms(),
+		},
+	})
+
+	if err := SyncGCENodeClassConfiguration(ctx, client, "cluster-1", desired, nil); err == nil {
+		t.Fatal("SyncGCENodeClassConfiguration() error = nil, want Local SSD conflict")
+	}
+	if len(client.applied) != 0 {
+		t.Fatalf("invalid nodeclass list made writes: %#v", client.applied)
+	}
+}
+
 func TestSyncGCENodePoolConfigurationDeletesOnlyPreviouslyTrackedNames(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeGCPNodePoolConfigurationClient{
@@ -137,5 +166,28 @@ func TestSyncGCENodePoolConfigurationDeletesOnlyPreviouslyTrackedNames(t *testin
 	}
 	if len(client.deleted) != 1 || client.deleted[0] != "terraform-old" {
 		t.Fatalf("deleted = %#v", client.deleted)
+	}
+}
+
+func TestSyncGCENodePoolConfigurationPrevalidatesAllNodePools(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeGCPNodePoolConfigurationClient{}
+	budget := func(schedule string) customfield.NestedObjectList[api.DisruptionBudgetModel] {
+		return customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Schedule: types.StringValue(schedule),
+			Duration: types.StringValue("1h"),
+		}})
+	}
+	desired := customfield.NewObjectListMust(ctx, []api.GCENodePoolModel{
+		{Name: types.StringValue("valid"), NodeClass: types.StringValue("default"), NodeDisruptionBudgets: budget("@daily")},
+		{Name: types.StringValue("invalid"), NodeClass: types.StringValue("default"), NodeDisruptionBudgets: budget("daily")},
+	})
+
+	if err := SyncGCENodePoolConfiguration(ctx, client, "cluster-1", desired, nil); err == nil {
+		t.Fatal("SyncGCENodePoolConfiguration() error = nil, want invalid schedule error")
+	}
+	if len(client.applied) != 0 {
+		t.Fatalf("invalid nodepool list made writes: %#v", client.applied)
 	}
 }

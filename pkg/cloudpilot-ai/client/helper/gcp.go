@@ -22,20 +22,37 @@ type gcpNodePoolConfigurationClient interface {
 	DeleteNodePool(clusterID, nodePoolName string) error
 }
 
+type GCENodeClassPlan struct {
+	clusterUID          string
+	preparedNodeClasses []*api.GCENodeClass
+	desiredNames        map[string]struct{}
+}
+
+type GCENodePoolPlan struct {
+	clusterUID        string
+	preparedNodePools []*api.GCENodePool
+	desiredNames      map[string]struct{}
+	previousNames     map[string]struct{}
+}
+
 func SyncGCENodeClassConfiguration(ctx context.Context, client gcpNodeClassConfigurationClient, clusterUID string,
 	nodeClassesNestedObjectList customfield.NestedObjectList[api.GCENodeClassModel],
 	previousStateNames map[string]struct{},
 ) error {
-	nodeClassNames, err := ApplyGCENodeClassConfiguration(ctx, client, clusterUID, nodeClassesNestedObjectList)
+	plan, err := PrepareGCENodeClassConfiguration(ctx, client, clusterUID, nodeClassesNestedObjectList)
 	if err != nil {
 		return err
 	}
-	return DeleteStaleGCENodeClasses(ctx, client, clusterUID, nodeClassNames, previousStateNames)
+	desiredNames, err := ApplyGCENodeClassConfiguration(client, plan)
+	if err != nil {
+		return err
+	}
+	return DeleteStaleGCENodeClasses(ctx, client, clusterUID, desiredNames, previousStateNames)
 }
 
-func ApplyGCENodeClassConfiguration(ctx context.Context, client gcpNodeClassConfigurationClient, clusterUID string,
+func PrepareGCENodeClassConfiguration(ctx context.Context, client gcpNodeClassConfigurationClient, clusterUID string,
 	nodeClassesNestedObjectList customfield.NestedObjectList[api.GCENodeClassModel],
-) (map[string]struct{}, error) {
+) (*GCENodeClassPlan, error) {
 	if nodeClassesNestedObjectList.IsNullOrUnknown() {
 		return nil, nil
 	}
@@ -55,6 +72,7 @@ func ApplyGCENodeClassConfiguration(ctx context.Context, client gcpNodeClassConf
 	})
 
 	nodeClassNames := make(map[string]struct{}, len(nodeClasses))
+	preparedNodeClasses := make([]*api.GCENodeClass, 0, len(nodeClasses))
 	for i := range nodeClasses {
 		nodeClassNames[nodeClasses[i].Name.ValueString()] = struct{}{}
 
@@ -67,15 +85,30 @@ func ApplyGCENodeClassConfiguration(ctx context.Context, client gcpNodeClassConf
 		if err != nil {
 			return nil, err
 		}
+		preparedNodeClasses = append(preparedNodeClasses, nodeClass)
+	}
 
-		if err := client.ApplyNodeClass(clusterUID, api.RebalanceNodeClass{
+	return &GCENodeClassPlan{
+		clusterUID:          clusterUID,
+		preparedNodeClasses: preparedNodeClasses,
+		desiredNames:        nodeClassNames,
+	}, nil
+}
+
+func ApplyGCENodeClassConfiguration(client gcpNodeClassConfigurationClient, plan *GCENodeClassPlan) (map[string]struct{}, error) {
+	if plan == nil {
+		return nil, nil
+	}
+
+	for _, nodeClass := range plan.preparedNodeClasses {
+		if err := client.ApplyNodeClass(plan.clusterUID, api.RebalanceNodeClass{
 			GCENodeClass: nodeClass,
 		}); err != nil {
 			return nil, err
 		}
 	}
 
-	return nodeClassNames, nil
+	return plan.desiredNames, nil
 }
 
 func DeleteStaleGCENodeClasses(ctx context.Context, client gcpNodeClassConfigurationClient, clusterUID string,
@@ -101,18 +134,29 @@ func SyncGCENodePoolConfiguration(ctx context.Context, client gcpNodePoolConfigu
 	nodePoolsNestedObjectList customfield.NestedObjectList[api.GCENodePoolModel],
 	previousStateNames map[string]struct{},
 ) error {
+	plan, err := PrepareGCENodePoolConfiguration(ctx, client, clusterUID, nodePoolsNestedObjectList, previousStateNames)
+	if err != nil {
+		return err
+	}
+	return ApplyGCENodePoolConfiguration(client, plan)
+}
+
+func PrepareGCENodePoolConfiguration(ctx context.Context, client gcpNodePoolConfigurationClient, clusterUID string,
+	nodePoolsNestedObjectList customfield.NestedObjectList[api.GCENodePoolModel],
+	previousStateNames map[string]struct{},
+) (*GCENodePoolPlan, error) {
 	if nodePoolsNestedObjectList.IsNullOrUnknown() {
-		return nil
+		return nil, nil
 	}
 
 	nodePools, diagnostics := nodePoolsNestedObjectList.AsStructSliceT(ctx)
 	if diagnostics.HasError() {
-		return fmt.Errorf("failed to parse gcp nodepool configuration: %v", diagnostics)
+		return nil, fmt.Errorf("failed to parse gcp nodepool configuration: %v", diagnostics)
 	}
 
 	existingNodePools, err := client.ListNodePools(clusterUID)
 	if err != nil {
-		return err
+		return nil, err
 	}
 
 	nodePoolM := lo.SliceToMap(existingNodePools.GCENodePools, func(item api.GCENodePool) (string, api.GCENodePool) {
@@ -120,6 +164,7 @@ func SyncGCENodePoolConfiguration(ctx context.Context, client gcpNodePoolConfigu
 	})
 
 	nodePoolNames := make(map[string]struct{}, len(nodePools))
+	preparedNodePools := make([]*api.GCENodePool, 0, len(nodePools))
 	for i := range nodePools {
 		nodePoolNames[nodePools[i].Name.ValueString()] = struct{}{}
 
@@ -130,25 +175,41 @@ func SyncGCENodePoolConfiguration(ctx context.Context, client gcpNodePoolConfigu
 
 		nodePool, err := nodePools[i].ToGCENodePool(ctx, current)
 		if err != nil {
-			return err
+			return nil, err
 		}
 
 		if nodePool.NodePoolSpec == nil ||
 			nodePool.NodePoolSpec.Template.Spec.NodeClassRef == nil ||
 			nodePool.NodePoolSpec.Template.Spec.NodeClassRef.Name == "" {
-			return fmt.Errorf("nodepool %s must reference a valid nodeclass", nodePool.Name)
+			return nil, fmt.Errorf("nodepool %s must reference a valid nodeclass", nodePool.Name)
 		}
+		preparedNodePools = append(preparedNodePools, nodePool)
+	}
 
-		if err := client.ApplyNodePool(clusterUID, api.RebalanceNodePool{
+	return &GCENodePoolPlan{
+		clusterUID:        clusterUID,
+		preparedNodePools: preparedNodePools,
+		desiredNames:      nodePoolNames,
+		previousNames:     previousStateNames,
+	}, nil
+}
+
+func ApplyGCENodePoolConfiguration(client gcpNodePoolConfigurationClient, plan *GCENodePoolPlan) error {
+	if plan == nil {
+		return nil
+	}
+
+	for _, nodePool := range plan.preparedNodePools {
+		if err := client.ApplyNodePool(plan.clusterUID, api.RebalanceNodePool{
 			GCENodePool: nodePool,
 		}); err != nil {
 			return err
 		}
 	}
 
-	for name := range previousStateNames {
-		if _, stillDesired := nodePoolNames[name]; !stillDesired {
-			if err := client.DeleteNodePool(clusterUID, name); err != nil {
+	for name := range plan.previousNames {
+		if _, stillDesired := plan.desiredNames[name]; !stillDesired {
+			if err := client.DeleteNodePool(plan.clusterUID, name); err != nil {
 				return err
 			}
 		}

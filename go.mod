@@ -4,7 +4,7 @@ go 1.25.9
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.0
-	github.com/cloudpilot-ai/lib v0.0.0-20260616033607-e61ea13c902f
+	github.com/cloudpilot-ai/lib v0.0.0-20260720094657-1d777cba7aae
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-retryablehttp v0.7.8
@@ -13,6 +13,7 @@ require (
 	github.com/hashicorp/terraform-plugin-framework-validators v0.18.0
 	github.com/hashicorp/terraform-plugin-go v0.27.0
 	github.com/hashicorp/terraform-plugin-log v0.9.0
+	github.com/robfig/cron/v3 v3.0.1
 	github.com/samber/lo v1.49.1
 	k8s.io/api v0.30.3
 	k8s.io/apimachinery v0.30.3
@@ -87,7 +88,6 @@ require (
 	github.com/prometheus/client_model v0.6.1 // indirect
 	github.com/prometheus/common v0.62.0 // indirect
 	github.com/prometheus/procfs v0.15.1 // indirect
-	github.com/robfig/cron/v3 v3.0.1 // indirect
 	github.com/shopspring/decimal v1.3.1 // indirect
 	github.com/spf13/cast v1.5.0 // indirect
 	github.com/spf13/pflag v1.0.6 // indirect

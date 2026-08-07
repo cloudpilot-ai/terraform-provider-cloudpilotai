@@ -86,6 +86,7 @@ type RecommendationLimits struct {
 
 type JVMRecommendationConfiguration struct {
 	RecentNonHeapWindow     *string `json:"recentNonHeapWindow,omitempty"`
+	MinHeapXms              *string `json:"minHeapXms,omitempty"`
 	MinHeapXmsRatioOfMemory *string `json:"minHeapXmsRatioOfMemory,omitempty"`
 	HeapBuffer              *string `json:"heapBuffer,omitempty"`
 	HeapUsedPercentile      *int32  `json:"heapUsedPercentile,omitempty"`

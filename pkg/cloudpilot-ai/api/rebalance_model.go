@@ -113,10 +113,11 @@ type BlockDeviceMappingModel struct {
 type EC2NodeClassTemplateModel struct {
 	TemplateName types.String `tfsdk:"template_name"`
 
-	Role                   types.String `tfsdk:"role"`
-	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
-	AmiAlias               types.String `tfsdk:"ami_alias"`
-	UserData               types.String `tfsdk:"user_data"`
+	Role                           types.String `tfsdk:"role"`
+	EnableImageAccelerator         types.Bool   `tfsdk:"enable_image_accelerator"`
+	EnableLocalSSDEphemeralStorage types.Bool   `tfsdk:"enable_local_ssd_ephemeral_storage"`
+	AmiAlias                       types.String `tfsdk:"ami_alias"`
+	UserData                       types.String `tfsdk:"user_data"`
 
 	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
 	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
@@ -133,10 +134,11 @@ type EC2NodeClassModel struct {
 
 	TemplateName types.String `tfsdk:"template_name"`
 
-	Role                   types.String `tfsdk:"role"`
-	EnableImageAccelerator types.Bool   `tfsdk:"enable_image_accelerator"`
-	AmiAlias               types.String `tfsdk:"ami_alias"`
-	UserData               types.String `tfsdk:"user_data"`
+	Role                           types.String `tfsdk:"role"`
+	EnableImageAccelerator         types.Bool   `tfsdk:"enable_image_accelerator"`
+	EnableLocalSSDEphemeralStorage types.Bool   `tfsdk:"enable_local_ssd_ephemeral_storage"`
+	AmiAlias                       types.String `tfsdk:"ami_alias"`
+	UserData                       types.String `tfsdk:"user_data"`
 
 	SubnetSelectorTerms        customfield.NestedObjectList[SubnetSelectorTermModel]        `tfsdk:"subnet_selector_terms"`
 	SecurityGroupSelectorTerms customfield.NestedObjectList[SecurityGroupSelectorTermModel] `tfsdk:"security_group_selector_terms"`
@@ -155,10 +157,11 @@ func (e *EC2NodeClassModel) ToEC2NodeClassTemplateModel() *EC2NodeClassTemplateM
 	return &EC2NodeClassTemplateModel{
 		TemplateName: e.TemplateName,
 
-		Role:                   e.Role,
-		EnableImageAccelerator: e.EnableImageAccelerator,
-		AmiAlias:               e.AmiAlias,
-		UserData:               e.UserData,
+		Role:                           e.Role,
+		EnableImageAccelerator:         e.EnableImageAccelerator,
+		EnableLocalSSDEphemeralStorage: e.EnableLocalSSDEphemeralStorage,
+		AmiAlias:                       e.AmiAlias,
+		UserData:                       e.UserData,
 
 		SubnetSelectorTerms:        e.SubnetSelectorTerms,
 		SecurityGroupSelectorTerms: e.SecurityGroupSelectorTerms,
@@ -203,6 +206,16 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 
 	if !ec2NodeClassTemplate.EnableImageAccelerator.IsNull() && !ec2NodeClassTemplate.EnableImageAccelerator.IsUnknown() {
 		nodeclass.EnableImageAccelerator = ec2NodeClassTemplate.EnableImageAccelerator.ValueBool()
+	}
+	if !ec2NodeClassTemplate.EnableLocalSSDEphemeralStorage.IsNull() && !ec2NodeClassTemplate.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		enabled := ec2NodeClassTemplate.EnableLocalSSDEphemeralStorage.ValueBool()
+		nodeclass.EnableLocalSSDEphemeralStorage = enabled
+		if enabled {
+			policy := awsproviderv1.InstanceStorePolicyRAID0
+			nodeclass.NodeClassSpec.InstanceStorePolicy = &policy
+		} else {
+			nodeclass.NodeClassSpec.InstanceStorePolicy = nil
+		}
 	}
 
 	if !ec2NodeClassTemplate.SubnetSelectorTerms.IsNull() && !ec2NodeClassTemplate.SubnetSelectorTerms.IsUnknown() {
@@ -446,19 +459,20 @@ type EC2NodePoolTemplateModel struct {
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
-	ProvisionPriority   types.Int32                              `tfsdk:"provision_priority"`
-	InstanceFamily      *[]types.String                          `tfsdk:"instance_family"`
-	InstanceArch        *[]types.String                          `tfsdk:"instance_arch"`
-	CapacityType        *[]types.String                          `tfsdk:"capacity_type"`
-	Zone                *[]types.String                          `tfsdk:"zone"`
-	InstanceCPUMAX      types.Int64                              `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN      types.Int64                              `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX   types.Int64                              `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN   types.Int64                              `tfsdk:"instance_memory_min"`
-	NodeDisruptionLimit types.String                             `tfsdk:"node_disruption_limit"`
-	NodeDisruptionDelay types.String                             `tfsdk:"node_disruption_delay"`
-	Labels              customfield.Map[types.String]            `tfsdk:"labels"`
-	Taints              customfield.NestedObjectList[TaintModel] `tfsdk:"taints"`
+	ProvisionPriority     types.Int32                                         `tfsdk:"provision_priority"`
+	InstanceFamily        *[]types.String                                     `tfsdk:"instance_family"`
+	InstanceArch          *[]types.String                                     `tfsdk:"instance_arch"`
+	CapacityType          *[]types.String                                     `tfsdk:"capacity_type"`
+	Zone                  *[]types.String                                     `tfsdk:"zone"`
+	InstanceCPUMAX        types.Int64                                         `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN        types.Int64                                         `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX     types.Int64                                         `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN     types.Int64                                         `tfsdk:"instance_memory_min"`
+	NodeDisruptionLimit   types.String                                        `tfsdk:"node_disruption_limit"`
+	NodeDisruptionBudgets customfield.NestedObjectList[DisruptionBudgetModel] `tfsdk:"node_disruption_budgets"`
+	NodeDisruptionDelay   types.String                                        `tfsdk:"node_disruption_delay"`
+	Labels                customfield.Map[types.String]                       `tfsdk:"labels"`
+	Taints                customfield.NestedObjectList[TaintModel]            `tfsdk:"taints"`
 }
 
 type TaintModel struct {
@@ -478,19 +492,20 @@ type EC2NodePoolModel struct {
 
 	EnableGPU types.Bool `tfsdk:"enable_gpu"`
 
-	ProvisionPriority   types.Int32                              `tfsdk:"provision_priority"`
-	InstanceFamily      *[]types.String                          `tfsdk:"instance_family"`
-	InstanceArch        *[]types.String                          `tfsdk:"instance_arch"`
-	CapacityType        *[]types.String                          `tfsdk:"capacity_type"`
-	Zone                *[]types.String                          `tfsdk:"zone"`
-	InstanceCPUMAX      types.Int64                              `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN      types.Int64                              `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX   types.Int64                              `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN   types.Int64                              `tfsdk:"instance_memory_min"`
-	NodeDisruptionLimit types.String                             `tfsdk:"node_disruption_limit"`
-	NodeDisruptionDelay types.String                             `tfsdk:"node_disruption_delay"`
-	Labels              customfield.Map[types.String]            `tfsdk:"labels"`
-	Taints              customfield.NestedObjectList[TaintModel] `tfsdk:"taints"`
+	ProvisionPriority     types.Int32                                         `tfsdk:"provision_priority"`
+	InstanceFamily        *[]types.String                                     `tfsdk:"instance_family"`
+	InstanceArch          *[]types.String                                     `tfsdk:"instance_arch"`
+	CapacityType          *[]types.String                                     `tfsdk:"capacity_type"`
+	Zone                  *[]types.String                                     `tfsdk:"zone"`
+	InstanceCPUMAX        types.Int64                                         `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN        types.Int64                                         `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX     types.Int64                                         `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN     types.Int64                                         `tfsdk:"instance_memory_min"`
+	NodeDisruptionLimit   types.String                                        `tfsdk:"node_disruption_limit"`
+	NodeDisruptionBudgets customfield.NestedObjectList[DisruptionBudgetModel] `tfsdk:"node_disruption_budgets"`
+	NodeDisruptionDelay   types.String                                        `tfsdk:"node_disruption_delay"`
+	Labels                customfield.Map[types.String]                       `tfsdk:"labels"`
+	Taints                customfield.NestedObjectList[TaintModel]            `tfsdk:"taints"`
 
 	// TODO: When the origin_nodepool_json is configured, the other configuration items are invalid.
 	OriginNodePoolJSON types.String `tfsdk:"origin_nodepool_json"`
@@ -506,19 +521,20 @@ func (e *EC2NodePoolModel) ToEC2NodePoolTemplateModel() *EC2NodePoolTemplateMode
 
 		EnableGPU: e.EnableGPU,
 
-		ProvisionPriority:   e.ProvisionPriority,
-		InstanceFamily:      e.InstanceFamily,
-		InstanceArch:        e.InstanceArch,
-		CapacityType:        e.CapacityType,
-		Zone:                e.Zone,
-		InstanceCPUMAX:      e.InstanceCPUMAX,
-		InstanceCPUMIN:      e.InstanceCPUMIN,
-		InstanceMemoryMAX:   e.InstanceMemoryMAX,
-		InstanceMemoryMIN:   e.InstanceMemoryMIN,
-		NodeDisruptionLimit: e.NodeDisruptionLimit,
-		NodeDisruptionDelay: e.NodeDisruptionDelay,
-		Labels:              e.Labels,
-		Taints:              e.Taints,
+		ProvisionPriority:     e.ProvisionPriority,
+		InstanceFamily:        e.InstanceFamily,
+		InstanceArch:          e.InstanceArch,
+		CapacityType:          e.CapacityType,
+		Zone:                  e.Zone,
+		InstanceCPUMAX:        e.InstanceCPUMAX,
+		InstanceCPUMIN:        e.InstanceCPUMIN,
+		InstanceMemoryMAX:     e.InstanceMemoryMAX,
+		InstanceMemoryMIN:     e.InstanceMemoryMIN,
+		NodeDisruptionLimit:   e.NodeDisruptionLimit,
+		NodeDisruptionBudgets: e.NodeDisruptionBudgets,
+		NodeDisruptionDelay:   e.NodeDisruptionDelay,
+		Labels:                e.Labels,
+		Taints:                e.Taints,
 	}
 }
 
@@ -615,7 +631,32 @@ func applyEC2NodePoolTemplateModel(ctx context.Context, nodepool *EC2NodePool, e
 		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceMemoryMIN.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
 	}
 
-	if !ec2NodePoolTemplate.NodeDisruptionLimit.IsNull() && !ec2NodePoolTemplate.NodeDisruptionLimit.IsUnknown() {
+	if !ec2NodePoolTemplate.NodeDisruptionBudgets.IsNullOrUnknown() {
+		budgets, diags := ec2NodePoolTemplate.NodeDisruptionBudgets.AsStructSliceT(ctx)
+		if diags.HasError() {
+			return nodepool, fmt.Errorf("node_disruption_budgets: %v", diags)
+		}
+		if err := validateDisruptionBudgetCount(len(budgets)); err != nil {
+			return nodepool, err
+		}
+		if !ec2NodePoolTemplate.NodeDisruptionLimit.IsNull() && !ec2NodePoolTemplate.NodeDisruptionLimit.IsUnknown() &&
+			ec2NodePoolTemplate.NodeDisruptionLimit.ValueString() != budgets[0].Nodes.ValueString() {
+			return nodepool, fmt.Errorf("node_disruption_limit must match node_disruption_budgets[0].nodes when both are configured")
+		}
+		nodepool.NodePoolSpec.Disruption.Budgets = make([]awscorev1.Budget, 0, len(budgets))
+		for i, budget := range budgets {
+			values, err := budget.values(ctx)
+			if err != nil {
+				return nodepool, fmt.Errorf("node_disruption_budgets[%d]: %w", i, err)
+			}
+			nodepool.NodePoolSpec.Disruption.Budgets = append(nodepool.NodePoolSpec.Disruption.Budgets, awscorev1.Budget{
+				Nodes:    values.nodes,
+				Reasons:  lo.Map(values.reasons, func(reason string, _ int) awscorev1.DisruptionReason { return awscorev1.DisruptionReason(reason) }),
+				Schedule: values.schedule,
+				Duration: values.duration,
+			})
+		}
+	} else if !ec2NodePoolTemplate.NodeDisruptionLimit.IsNull() && !ec2NodePoolTemplate.NodeDisruptionLimit.IsUnknown() {
 		ensureFirstDisruptionBudget(nodepool).Nodes = ec2NodePoolTemplate.NodeDisruptionLimit.ValueString()
 	}
 

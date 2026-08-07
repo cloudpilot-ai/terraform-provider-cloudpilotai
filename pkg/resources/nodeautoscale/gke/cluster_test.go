@@ -31,6 +31,7 @@ type fakeClusterClient struct {
 	clusterSetting      *api.ClusterSetting
 	nodeClasses         api.RebalanceNodeClassList
 	nodePools           api.RebalanceNodePoolList
+	scheduledRebalances api.ScheduledRebalancePolicyList
 	appliedNodeClasses  []api.RebalanceNodeClass
 	appliedNodePools    []api.RebalanceNodePool
 	rebalanceUpdates    []*api.RebalanceConfig
@@ -100,6 +101,10 @@ func (f *fakeClusterClient) ListNodePools(string) (api.RebalanceNodePoolList, er
 		return api.RebalanceNodePoolList{}, f.listNodePoolsErr
 	}
 	return f.nodePools, nil
+}
+
+func (f *fakeClusterClient) ListScheduledRebalances(string) (api.ScheduledRebalancePolicyList, error) {
+	return f.scheduledRebalances, nil
 }
 
 func (f *fakeClusterClient) ApplyNodeClass(_ string, nodeClass api.RebalanceNodeClass) error {
@@ -271,6 +276,14 @@ func TestSchemaExposesGKEIdentityAndClusterFields(t *testing.T) {
 	}
 }
 
+func TestNodeDisruptionLimitIsDeprecated(t *testing.T) {
+	nodepools := Schema(context.Background()).Attributes["nodepools"].(schema.ListNestedAttribute)
+	limit := nodepools.NestedObject.Attributes["node_disruption_limit"].(schema.StringAttribute)
+	if limit.DeprecationMessage == "" {
+		t.Fatalf("nodepools.node_disruption_limit should be deprecated")
+	}
+}
+
 func TestResolveClusterUIDPrefersConfiguredIDThenStateThenGeneratedGCPID(t *testing.T) {
 	got := resolveClusterUID(
 		types.StringValue("configured-uid"),
@@ -383,7 +396,7 @@ func TestSyncConfigurationAppliesRebalanceNodeClassAndNodePool(t *testing.T) {
 		}),
 	}
 
-	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil); err != nil {
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
 	if len(client.rebalanceUpdates) != 1 || client.rebalanceUpdates[0] == nil || !client.rebalanceUpdates[0].Enable {
@@ -417,6 +430,76 @@ func TestSyncConfigurationAppliesRebalanceNodeClassAndNodePool(t *testing.T) {
 	}
 }
 
+func TestSyncConfigurationPrevalidatesScheduledRebalancesBeforeWrites(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterClient{}
+	cluster := &Cluster{client: client}
+	data := ClusterModel{
+		NodeClasses: customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{testNodeClassModel(ctx, "default")}),
+		NodePools:   customfield.NullObjectList[api.GCENodePoolModel](ctx),
+		ScheduledRebalances: customfield.NewObjectListMust(ctx, []api.ScheduledRebalancePolicyModel{
+			{Name: types.StringValue("valid"), Cron: types.StringValue("0 2 * * *")},
+			{Name: types.StringValue("invalid-cron"), Cron: types.StringValue("61 2 * * *")},
+		}),
+	}
+
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err == nil {
+		t.Fatal("syncConfiguration() error = nil, want invalid cron error")
+	}
+	if len(client.operations) != 0 {
+		t.Fatalf("invalid scheduled rebalance configuration made writes: %#v", client.operations)
+	}
+}
+
+func TestSyncConfigurationPrevalidatesNodePoolsBeforeWrites(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterClient{rebalanceConfig: &api.RebalanceConfig{Enable: true}}
+	cluster := &Cluster{client: client}
+	data := ClusterModel{
+		EnableRebalance: types.BoolValue(false),
+		NodeClasses:     customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{testNodeClassModel(ctx, "default")}),
+		NodePools: customfield.NewObjectListMust(ctx, []api.GCENodePoolModel{{
+			Name:      types.StringValue("invalid"),
+			NodeClass: types.StringValue("default"),
+			NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+				Nodes: types.StringValue("10%"), Schedule: types.StringValue("daily"), Duration: types.StringValue("1h"),
+			}}),
+		}}),
+		ScheduledRebalances: customfield.NullObjectList[api.ScheduledRebalancePolicyModel](ctx),
+	}
+
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err == nil {
+		t.Fatal("syncConfiguration() error = nil, want invalid disruption schedule error")
+	}
+	if len(client.operations) != 0 {
+		t.Fatalf("invalid nodepool configuration made writes: %#v", client.operations)
+	}
+}
+
+func TestSyncConfigurationPrevalidatesNodeClassesBeforeWrites(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterClient{rebalanceConfig: &api.RebalanceConfig{Enable: true}}
+	cluster := &Cluster{client: client}
+	invalidNodeClass := testNodeClassModel(ctx, "invalid")
+	invalidNodeClass.EnableLocalSSDEphemeralStorage = types.BoolValue(false)
+	invalidNodeClass.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &api.GCEEphemeralStorageLocalSSDModel{
+		Count: types.Int32Value(2),
+	})
+	data := ClusterModel{
+		EnableRebalance:     types.BoolValue(false),
+		NodeClasses:         customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{testNodeClassModel(ctx, "valid"), invalidNodeClass}),
+		NodePools:           customfield.NullObjectList[api.GCENodePoolModel](ctx),
+		ScheduledRebalances: customfield.NullObjectList[api.ScheduledRebalancePolicyModel](ctx),
+	}
+
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err == nil {
+		t.Fatal("syncConfiguration() error = nil, want invalid nodeclass error")
+	}
+	if len(client.operations) != 0 {
+		t.Fatalf("invalid nodeclass configuration made writes: %#v", client.operations)
+	}
+}
+
 func TestSyncConfigurationDeletesStaleNodePoolsBeforeNodeClasses(t *testing.T) {
 	ctx := context.Background()
 	client := &fakeClusterClient{
@@ -439,7 +522,7 @@ func TestSyncConfigurationDeletesStaleNodePoolsBeforeNodeClasses(t *testing.T) {
 	previousNCNames := map[string]struct{}{"old-class": {}}
 	previousNPNames := map[string]struct{}{"old-pool": {}}
 
-	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", previousNCNames, previousNPNames); err != nil {
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", previousNCNames, previousNPNames, nil); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
 
@@ -463,7 +546,7 @@ func TestSyncConfigurationSkipsAgentOnlyRebalanceDisable(t *testing.T) {
 		NodePools:        customfield.NullObjectList[api.GCENodePoolModel](ctx),
 	}
 
-	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil); err != nil {
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
 	if len(client.rebalanceUpdates) != 0 {
@@ -485,7 +568,7 @@ func TestSyncConfigurationDisablesExplicitRebalanceWithoutNodeAutoscalerConfig(t
 		NodePools:       customfield.NullObjectList[api.GCENodePoolModel](ctx),
 	}
 
-	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil); err != nil {
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
 	if len(client.rebalanceUpdates) != 1 || client.rebalanceUpdates[0] == nil || client.rebalanceUpdates[0].Enable {
@@ -509,7 +592,7 @@ func TestSyncConfigurationTreatsMissingRebalanceDisableAsNoop(t *testing.T) {
 		NodePools:       customfield.NullObjectList[api.GCENodePoolModel](ctx),
 	}
 
-	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil); err != nil {
+	if err := cluster.syncConfiguration(ctx, &data, "cluster-1", nil, nil, nil); err != nil {
 		t.Fatalf("syncConfiguration() error = %v", err)
 	}
 	if len(client.rebalanceUpdates) != 0 {
@@ -1287,6 +1370,126 @@ func TestReadClusterManagementStateToleratesMissingNodeAutoscalerListsOnImport(t
 	}
 }
 
+func TestReadClusterManagementStateImportsScheduledRebalances(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterClient{scheduledRebalances: api.ScheduledRebalancePolicyList{
+		ScheduledRebalancePolicies: []api.ScheduledRebalancePolicy{{
+			Name: "nightly", Cron: "0 2 * * *", Timezone: "UTC", Enabled: true,
+		}},
+	}}
+	data := ClusterModel{
+		NodeClasses:         customfield.NullObjectList[api.GCENodeClassModel](ctx),
+		NodePools:           customfield.NullObjectList[api.GCENodePoolModel](ctx),
+		ScheduledRebalances: customfield.NullObjectList[api.ScheduledRebalancePolicyModel](ctx),
+	}
+
+	if err := (&Cluster{client: client}).readClusterManagementState(ctx, &data, "cluster-1", true); err != nil {
+		t.Fatalf("readClusterManagementState() error = %v", err)
+	}
+	models, diags := data.ScheduledRebalances.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("scheduled_rebalances diagnostics = %v", diags)
+	}
+	if len(models) != 1 || models[0].Name.ValueString() != "nightly" || models[0].Cron.ValueString() != "0 2 * * *" {
+		t.Fatalf("scheduled_rebalances = %#v, want imported nightly policy", models)
+	}
+}
+
+func TestRefreshNodeAutoscalerStateDropsMissingRemoteObjects(t *testing.T) {
+	ctx := context.Background()
+	client := &fakeClusterClient{}
+	nodeClasses := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{testNodeClassModel(ctx, "deleted-class")})
+	nodePools := customfield.NewObjectListMust(ctx, []api.GCENodePoolModel{testNodePoolModel("deleted-pool", "deleted-class", nil, "0s")})
+
+	refreshedNodeClasses, err := refreshNodeClassesState(ctx, client, "cluster-1", nodeClasses)
+	if err != nil {
+		t.Fatalf("refreshNodeClassesState() error = %v", err)
+	}
+	refreshedNodePools, err := refreshNodePoolsState(ctx, client, "cluster-1", nodePools)
+	if err != nil {
+		t.Fatalf("refreshNodePoolsState() error = %v", err)
+	}
+	classModels, classDiags := refreshedNodeClasses.AsStructSliceT(ctx)
+	poolModels, poolDiags := refreshedNodePools.AsStructSliceT(ctx)
+	if classDiags.HasError() || poolDiags.HasError() {
+		t.Fatalf("refresh diagnostics: nodeclasses=%v nodepools=%v", classDiags, poolDiags)
+	}
+	if len(classModels) != 0 || len(poolModels) != 0 {
+		t.Fatalf("refreshed state kept deleted objects: nodeclasses=%#v nodepools=%#v", classModels, poolModels)
+	}
+}
+
+func TestRefreshNodeClassStateDropsMissingManagedLocalSSDConfiguration(t *testing.T) {
+	ctx := context.Background()
+	stateNodeClass := testNodeClassModel(ctx, "default")
+	stateNodeClass.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &api.GCEEphemeralStorageLocalSSDModel{
+		Count: types.Int32Value(4),
+	})
+	current := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{stateNodeClass})
+	client := &fakeClusterClient{nodeClasses: api.RebalanceNodeClassList{
+		GCENodeClasses: []api.GCENodeClass{testRemoteNodeClass("default")},
+	}}
+
+	refreshed, err := refreshNodeClassesState(ctx, client, "cluster-1", current)
+	if err != nil {
+		t.Fatalf("refreshNodeClassesState() error = %v", err)
+	}
+	models, diags := refreshed.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("refreshed diagnostics = %v", diags)
+	}
+	if len(models) != 1 || !models[0].EphemeralStorageLocalSSD.IsNull() {
+		t.Fatalf("refreshed Local SSD state = %#v, want remote null", models)
+	}
+}
+
+func TestPostWriteNodeClassHydrationPreservesPendingLocalSSDConfiguration(t *testing.T) {
+	ctx := context.Background()
+	stateNodeClass := testNodeClassModel(ctx, "default")
+	stateNodeClass.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &api.GCEEphemeralStorageLocalSSDModel{
+		Count: types.Int32Value(4),
+	})
+	current := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{stateNodeClass})
+	client := &fakeClusterClient{nodeClasses: api.RebalanceNodeClassList{
+		GCENodeClasses: []api.GCENodeClass{testRemoteNodeClass("default")},
+	}}
+
+	hydrated, err := hydrateNodeClassesPostWrite(ctx, client, "cluster-1", current)
+	if err != nil {
+		t.Fatalf("hydrateNodeClassesPostWrite() error = %v", err)
+	}
+	models, diags := hydrated.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("hydrated diagnostics = %v", diags)
+	}
+	localSSD, localSSDDiags := models[0].EphemeralStorageLocalSSD.Value(ctx)
+	if localSSDDiags.HasError() || localSSD == nil || localSSD.Count.ValueInt32() != 4 {
+		t.Fatalf("post-write Local SSD state = %#v, diagnostics = %v; want pending count preserved", localSSD, localSSDDiags)
+	}
+}
+
+func TestPostWriteNodeClassHydrationNormalizesOmittedLocalSSDSwitchToFalse(t *testing.T) {
+	ctx := context.Background()
+	stateNodeClass := testNodeClassModel(ctx, "default")
+	stateNodeClass.EnableLocalSSDEphemeralStorage = types.BoolValue(false)
+	current := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{stateNodeClass})
+	client := &fakeClusterClient{nodeClasses: api.RebalanceNodeClassList{
+		GCENodeClasses: []api.GCENodeClass{testRemoteNodeClass("default")},
+	}}
+
+	hydrated, err := hydrateNodeClassesPostWrite(ctx, client, "cluster-1", current)
+	if err != nil {
+		t.Fatalf("hydrateNodeClassesPostWrite() error = %v", err)
+	}
+	models, diags := hydrated.AsStructSliceT(ctx)
+	if diags.HasError() {
+		t.Fatalf("hydrated diagnostics = %v", diags)
+	}
+	if len(models) != 1 || models[0].EnableLocalSSDEphemeralStorage != types.BoolValue(false) {
+		t.Fatalf("hydrated Local SSD switch = %#v, want false", models)
+	}
+}
+
 func TestReadHydratesRemoteNodeAutoscalerState(t *testing.T) {
 	ctx := context.Background()
 
@@ -1441,23 +1644,29 @@ func TestClusterSettingObjectPreservingStateLeavesUnmanagedRemoteValuesNull(t *t
 	ctx := context.Background()
 	enableNodeRepair := false
 	enableDiskMonitor := false
+	enableNodePoolDecommission := true
+	enableWorkloadMinNonSpot := true
 	discount := 0.2
 	preRunCommand := "remote-pre"
 	postRunCommand := "remote-post"
 	current := customfield.NewObjectMust(ctx, &ClusterSettingModel{
-		EnableNodeRepair:  types.BoolNull(),
-		EnableDiskMonitor: types.BoolValue(true),
-		Discount:          types.Float64Null(),
-		PreRunCommand:     types.StringNull(),
-		PostRunCommand:    types.StringValue("configured-post"),
+		EnableNodeRepair:           types.BoolNull(),
+		EnableDiskMonitor:          types.BoolValue(true),
+		EnableNodePoolDecommission: types.BoolNull(),
+		EnableWorkloadMinNonSpot:   types.BoolValue(false),
+		Discount:                   types.Float64Null(),
+		PreRunCommand:              types.StringNull(),
+		PostRunCommand:             types.StringValue("configured-post"),
 	})
 
 	got, err := clusterSettingObjectPreservingState(ctx, current, &api.ClusterSetting{
-		EnableNodeRepair:  &enableNodeRepair,
-		EnableDiskMonitor: &enableDiskMonitor,
-		Discount:          &discount,
-		PreRunCommand:     &preRunCommand,
-		PostRunCommand:    &postRunCommand,
+		EnableNodeRepair:           &enableNodeRepair,
+		EnableDiskMonitor:          &enableDiskMonitor,
+		EnableNodePoolDecommission: &enableNodePoolDecommission,
+		EnableWorkloadMinNonSpot:   &enableWorkloadMinNonSpot,
+		Discount:                   &discount,
+		PreRunCommand:              &preRunCommand,
+		PostRunCommand:             &postRunCommand,
 	})
 	if err != nil {
 		t.Fatalf("clusterSettingObjectPreservingState() error = %v", err)
@@ -1475,6 +1684,12 @@ func TestClusterSettingObjectPreservingStateLeavesUnmanagedRemoteValuesNull(t *t
 	if value.EnableDiskMonitor != types.BoolValue(false) {
 		t.Fatalf("enable_disk_monitor = %#v, want managed remote false", value.EnableDiskMonitor)
 	}
+	if !value.EnableNodePoolDecommission.IsNull() {
+		t.Fatalf("enable_node_pool_decommission = %#v, want null", value.EnableNodePoolDecommission)
+	}
+	if value.EnableWorkloadMinNonSpot != types.BoolValue(true) {
+		t.Fatalf("enable_workload_min_non_spot = %#v, want managed remote true", value.EnableWorkloadMinNonSpot)
+	}
 	if !value.Discount.IsNull() {
 		t.Fatalf("discount = %#v, want null", value.Discount)
 	}
@@ -1483,6 +1698,26 @@ func TestClusterSettingObjectPreservingStateLeavesUnmanagedRemoteValuesNull(t *t
 	}
 	if value.PostRunCommand != types.StringValue("remote-post") {
 		t.Fatalf("post_run_command = %#v, want managed remote value", value.PostRunCommand)
+	}
+}
+
+func TestClusterSettingObjectPreservingStateReflectsManagedRemoteRemoval(t *testing.T) {
+	ctx := context.Background()
+	current := customfield.NewObjectMust(ctx, &ClusterSettingModel{
+		EnableNodePoolDecommission: types.BoolValue(true),
+		EnableWorkloadMinNonSpot:   types.BoolValue(false),
+	})
+
+	got, err := clusterSettingObjectPreservingState(ctx, current, &api.ClusterSetting{})
+	if err != nil {
+		t.Fatalf("clusterSettingObjectPreservingState() error = %v", err)
+	}
+	value, diags := got.Value(ctx)
+	if diags.HasError() || value == nil {
+		t.Fatalf("cluster_setting = %#v, diagnostics = %v", value, diags)
+	}
+	if !value.EnableNodePoolDecommission.IsNull() || !value.EnableWorkloadMinNonSpot.IsNull() {
+		t.Fatalf("managed removed values were preserved: %#v", value)
 	}
 }
 
@@ -1498,6 +1733,9 @@ func TestPreserveNodePoolStateRepresentationDropsUnmanagedRemoteLabels(t *testin
 			"codex-test":                 types.StringValue("update-1"),
 			"node.cloudpilot.ai/managed": types.StringValue("true"),
 		}),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes: types.StringValue("10%"),
+		}}),
 	}
 
 	got := preserveNodePoolStateRepresentation(ctx, remote, state)
@@ -1510,6 +1748,35 @@ func TestPreserveNodePoolStateRepresentationDropsUnmanagedRemoteLabels(t *testin
 	}
 	if _, ok := values["node.cloudpilot.ai/managed"]; ok {
 		t.Fatalf("labels should not keep unmanaged remote default: %#v", values)
+	}
+	if !got.NodeDisruptionBudgets.IsNull() {
+		t.Fatalf("NodeDisruptionBudgets should remain null when budgets are omitted from state")
+	}
+}
+
+func TestPreserveNodePoolStateRepresentationKeepsBudgetDurationRepresentation(t *testing.T) {
+	ctx := context.Background()
+	state := api.GCENodePoolModel{
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Duration: types.StringValue("60m"),
+		}}),
+	}
+	remote := api.GCENodePoolModel{
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []api.DisruptionBudgetModel{{
+			Nodes:    types.StringValue("10%"),
+			Reasons:  nil,
+			Duration: types.StringValue("1h"),
+		}}),
+	}
+
+	got := preserveNodePoolStateRepresentation(ctx, remote, state)
+	budgets, diags := got.NodeDisruptionBudgets.AsStructSliceT(ctx)
+	if diags.HasError() || len(budgets) != 1 {
+		t.Fatalf("budgets = %#v, diagnostics = %v", budgets, diags)
+	}
+	if budgets[0].Duration != types.StringValue("60m") {
+		t.Fatalf("duration = %#v, want preserved 60m", budgets[0].Duration)
 	}
 }
 

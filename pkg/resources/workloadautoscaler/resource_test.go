@@ -1120,3 +1120,13 @@ func TestWorkloadAutoscalerDeleteWarnsAndContinuesWhenRemotePolicyDeletionFails(
 		t.Fatalf("expected remote policy delete warnings, got %d", resp.Diagnostics.WarningsCount())
 	}
 }
+
+func TestPreserveRecommendationPolicyStateRepresentationKeepsExplicitEmptyJVMMinHeapXms(t *testing.T) {
+	state := api.RecommendationPolicyModel{JVMMinHeapXms: types.StringValue("")}
+	remote := api.RecommendationPolicyModel{JVMMinHeapXms: types.StringNull()}
+
+	got := preserveRecommendationPolicyStateRepresentation(remote, state)
+	if got.JVMMinHeapXms != types.StringValue("") {
+		t.Fatalf("JVMMinHeapXms = %#v, want explicit empty string", got.JVMMinHeapXms)
+	}
+}

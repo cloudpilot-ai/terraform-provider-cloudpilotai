@@ -2,6 +2,7 @@ package api
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -35,6 +36,46 @@ func TestEC2NodeClassToModelLeavesExtraAllocationsNullWhenKubeReservedKeysMissin
 
 	if !model.ExtraMemoryAllocationMib.IsNull() {
 		t.Fatalf("ExtraMemoryAllocationMib should be null when kubeReserved.memory is missing")
+	}
+}
+
+func TestEC2NodeClassModelEnablesLocalSSDEphemeralStorage(t *testing.T) {
+	model := EC2NodeClassModel{
+		Name:                           types.StringValue("cloudpilot"),
+		EnableLocalSSDEphemeralStorage: types.BoolValue(true),
+	}
+	nodeClass, err := model.ToEC2NodeClass(context.Background(), "test-cluster", EC2NodeClass{}, nil)
+	if err != nil {
+		t.Fatalf("ToEC2NodeClass() error = %v", err)
+	}
+	if !nodeClass.EnableLocalSSDEphemeralStorage || nodeClass.NodeClassSpec.InstanceStorePolicy == nil || *nodeClass.NodeClassSpec.InstanceStorePolicy != awsproviderv1.InstanceStorePolicyRAID0 {
+		t.Fatalf("local SSD configuration = %#v", nodeClass)
+	}
+}
+
+func TestEC2NodeClassToModelInfersLocalSSDFromInstanceStorePolicy(t *testing.T) {
+	policy := awsproviderv1.InstanceStorePolicyRAID0
+	remote := EC2NodeClass{
+		Name: "cloudpilot",
+		NodeClassSpec: &awsproviderv1.EC2NodeClassSpec{
+			InstanceStorePolicy: &policy,
+		},
+	}
+
+	model, err := remote.ToEC2NodeClassModel(context.Background())
+	if err != nil {
+		t.Fatalf("ToEC2NodeClassModel() error = %v", err)
+	}
+	if !model.EnableLocalSSDEphemeralStorage.ValueBool() {
+		t.Fatalf("EnableLocalSSDEphemeralStorage = %#v, want true from InstanceStorePolicy", model.EnableLocalSSDEphemeralStorage)
+	}
+
+	updated, err := model.ToEC2NodeClass(context.Background(), "test-cluster", remote, nil)
+	if err != nil {
+		t.Fatalf("ToEC2NodeClass() error = %v", err)
+	}
+	if updated.NodeClassSpec.InstanceStorePolicy == nil || *updated.NodeClassSpec.InstanceStorePolicy != awsproviderv1.InstanceStorePolicyRAID0 {
+		t.Fatalf("InstanceStorePolicy = %#v, want RAID0", updated.NodeClassSpec.InstanceStorePolicy)
 	}
 }
 
@@ -399,6 +440,107 @@ func TestEC2NodePoolDisruptionLimitCreatesFirstBudget(t *testing.T) {
 	}
 	if got.NodePoolSpec.Disruption.Budgets[0].Nodes != "2" {
 		t.Fatalf("budget nodes = %q", got.NodePoolSpec.Disruption.Budgets[0].Nodes)
+	}
+}
+
+func TestEC2NodePoolDisruptionLimitPreservesExistingBudgets(t *testing.T) {
+	schedule := "0 9 * * mon-fri"
+	existing := EC2NodePool{
+		Name:         "cloudpilot-general",
+		NodePoolSpec: DefaultGeneralEC2NodePoolSpec(),
+	}
+	existing.NodePoolSpec.Disruption.Budgets = []awscorev1.Budget{
+		{Nodes: "10%", Schedule: &schedule},
+		{Nodes: "0", Reasons: []awscorev1.DisruptionReason{awscorev1.DisruptionReasonDrifted}},
+	}
+	model := EC2NodePoolModel{
+		Name:                types.StringValue("cloudpilot-general"),
+		NodeDisruptionLimit: types.StringValue("2"),
+	}
+
+	got, err := model.ToEC2NodePool(context.Background(), existing, nil)
+	if err != nil {
+		t.Fatalf("ToEC2NodePool() error = %v", err)
+	}
+	if len(got.NodePoolSpec.Disruption.Budgets) != 2 {
+		t.Fatalf("budgets = %#v", got.NodePoolSpec.Disruption.Budgets)
+	}
+	if got.NodePoolSpec.Disruption.Budgets[0].Nodes != "2" || got.NodePoolSpec.Disruption.Budgets[0].Schedule == nil || *got.NodePoolSpec.Disruption.Budgets[0].Schedule != schedule {
+		t.Fatalf("first budget = %#v", got.NodePoolSpec.Disruption.Budgets[0])
+	}
+	if got.NodePoolSpec.Disruption.Budgets[1].Nodes != "0" {
+		t.Fatalf("second budget = %#v", got.NodePoolSpec.Disruption.Budgets[1])
+	}
+}
+
+func TestEC2NodePoolSupportsMultipleDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	reasons := []types.String{types.StringValue("Drifted")}
+	model := EC2NodePoolModel{
+		Name: types.StringValue("cloudpilot-general"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []DisruptionBudgetModel{
+			{Nodes: types.StringValue("10%")},
+			{
+				Nodes:    types.StringValue("0"),
+				Reasons:  &reasons,
+				Schedule: types.StringValue("0 9 * * mon-fri"),
+				Duration: types.StringValue("8h"),
+			},
+		}),
+	}
+
+	got, err := model.ToEC2NodePool(ctx, EC2NodePool{}, nil)
+	if err != nil {
+		t.Fatalf("ToEC2NodePool() error = %v", err)
+	}
+	if len(got.NodePoolSpec.Disruption.Budgets) != 2 {
+		t.Fatalf("budgets = %#v", got.NodePoolSpec.Disruption.Budgets)
+	}
+	if got.NodePoolSpec.Disruption.Budgets[1].Schedule == nil || *got.NodePoolSpec.Disruption.Budgets[1].Schedule != "0 9 * * mon-fri" {
+		t.Fatalf("scheduled budget = %#v", got.NodePoolSpec.Disruption.Budgets[1])
+	}
+	if got.NodePoolSpec.Disruption.Budgets[1].Duration == nil || got.NodePoolSpec.Disruption.Budgets[1].Duration.Duration.String() != "8h0m0s" {
+		t.Fatalf("scheduled budget duration = %#v", got.NodePoolSpec.Disruption.Budgets[1].Duration)
+	}
+}
+
+func TestEC2NodePoolRejectsEmptyDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	model := EC2NodePoolModel{
+		Name:                  types.StringValue("cloudpilot-general"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, []DisruptionBudgetModel{}),
+	}
+
+	if _, err := model.ToEC2NodePool(ctx, EC2NodePool{}, nil); err == nil || !strings.Contains(err.Error(), "at least one") {
+		t.Fatalf("ToEC2NodePool() error = %v, want empty budgets error", err)
+	}
+}
+
+func TestEC2NodePoolRejectsTooManyDisruptionBudgets(t *testing.T) {
+	ctx := context.Background()
+	budgets := make([]DisruptionBudgetModel, maxDisruptionBudgets+1)
+	for i := range budgets {
+		budgets[i].Nodes = types.StringValue("10%")
+	}
+	model := EC2NodePoolModel{
+		Name:                  types.StringValue("cloudpilot-general"),
+		NodeDisruptionBudgets: customfield.NewObjectListMust(ctx, budgets),
+	}
+
+	if _, err := model.ToEC2NodePool(ctx, EC2NodePool{}, nil); err == nil || !strings.Contains(err.Error(), "at most 50") {
+		t.Fatalf("ToEC2NodePool() error = %v, want maximum budgets error", err)
+	}
+}
+
+func TestEC2NodePoolToModelKeepsAbsentDisruptionBudgetsNull(t *testing.T) {
+	spec := DefaultGeneralEC2NodePoolSpec()
+	spec.Disruption.Budgets = nil
+	model, err := (&EC2NodePool{Name: "cloudpilot-general", NodePoolSpec: spec}).ToEC2NodePoolModel()
+	if err != nil {
+		t.Fatalf("ToEC2NodePoolModel() error = %v", err)
+	}
+	if !model.NodeDisruptionBudgets.IsNull() {
+		t.Fatalf("NodeDisruptionBudgets = %#v, want null for absent remote budgets", model.NodeDisruptionBudgets)
 	}
 }
 

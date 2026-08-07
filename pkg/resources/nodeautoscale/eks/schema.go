@@ -112,6 +112,14 @@ func Schema(ctx context.Context) schema.Schema {
 						Description: "Enable disk monitor for this cluster.",
 						Optional:    true,
 					},
+					"enable_node_pool_decommission": schema.BoolAttribute{
+						Description: "Enable node pool decommissioning. When omitted, Terraform does not manage this setting.",
+						Optional:    true,
+					},
+					"enable_workload_min_non_spot": schema.BoolAttribute{
+						Description: "Enable minimum non-spot workload replicas. When omitted, Terraform does not manage this setting.",
+						Optional:    true,
+					},
 					"discount": schema.Float64Attribute{
 						Description: "Cluster-level discount ratio used by cost calculations.",
 						Optional:    true,
@@ -238,6 +246,7 @@ func Schema(ctx context.Context) schema.Schema {
 					}, nodePoolTemplateSchema(ctx)),
 				},
 			},
+			"scheduled_rebalances": commonschemas.ScheduledRebalancesSchema(ctx),
 		},
 	}
 }
@@ -250,6 +259,10 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 		},
 		"enable_image_accelerator": schema.BoolAttribute{
 			Description: "Enable image accelerator (for example Spegel) for this nodeclass.",
+			Optional:    true,
+		},
+		"enable_local_ssd_ephemeral_storage": schema.BoolAttribute{
+			Description: "Use EC2 instance-store NVMe disks as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.",
 			Optional:    true,
 		},
 		"ami_alias": schema.StringAttribute{
@@ -428,8 +441,35 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			Optional:    true,
 		},
 		"node_disruption_limit": schema.StringAttribute{
-			Description: "This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%).",
+			Description:        "This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.",
+			Optional:           true,
+			DeprecationMessage: "node_disruption_limit is deprecated; use node_disruption_budgets instead.",
+		},
+		"node_disruption_budgets": schema.ListNestedAttribute{
+			Description: "Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value.",
 			Optional:    true,
+			CustomType:  customfield.NewNestedObjectListType[api.DisruptionBudgetModel](ctx),
+			NestedObject: schema.NestedAttributeObject{
+				Attributes: map[string]schema.Attribute{
+					"nodes": schema.StringAttribute{
+						Description: "Maximum number or percentage of nodes that may be disrupted.",
+						Required:    true,
+					},
+					"reasons": schema.ListAttribute{
+						Description: "Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.",
+						Optional:    true,
+						ElementType: types.StringType,
+					},
+					"schedule": schema.StringAttribute{
+						Description: "Optional cron schedule. Must be configured together with duration.",
+						Optional:    true,
+					},
+					"duration": schema.StringAttribute{
+						Description: "How long the scheduled budget remains active. Must be configured together with schedule.",
+						Optional:    true,
+					},
+				},
+			},
 		},
 		"node_disruption_delay": schema.StringAttribute{
 			Description: "Specify the duration (e.g., 10s, 10m, or 10h) that the controller waits before terminating underutilized nodes.",

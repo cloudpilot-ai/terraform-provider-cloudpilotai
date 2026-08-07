@@ -44,6 +44,52 @@ func TestClientGetClusterSetting(t *testing.T) {
 	}
 }
 
+func TestClientScheduledRebalanceEndpoints(t *testing.T) {
+	requests := make([]string, 0, 4)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests = append(requests, r.Method+" "+r.URL.Path)
+		data := any(nil)
+		switch r.Method {
+		case http.MethodGet:
+			data = map[string]any{"scheduledRebalancePolicies": []map[string]any{{"id": "policy-1", "name": "nightly"}}}
+		case http.MethodPost:
+			data = map[string]any{"id": "policy-1", "name": "nightly"}
+		}
+		_ = json.NewEncoder(w).Encode(api.ResponseBody{Data: data})
+	}))
+	defer server.Close()
+
+	c := client.NewCloudPilotClient(server.URL, "test-key")
+	list, err := c.ListScheduledRebalances("cluster-1")
+	if err != nil || len(list.ScheduledRebalancePolicies) != 1 {
+		t.Fatalf("ListScheduledRebalances() = %#v, %v", list, err)
+	}
+	request := &api.ApplyScheduledRebalancePolicyRequest{Name: "nightly", Cron: "0 2 * * *"}
+	if _, err := c.CreateScheduledRebalance("cluster-1", request); err != nil {
+		t.Fatalf("CreateScheduledRebalance() error = %v", err)
+	}
+	if _, err := c.UpdateScheduledRebalance("cluster-1", "policy-1", request); err != nil {
+		t.Fatalf("UpdateScheduledRebalance() error = %v", err)
+	}
+	if err := c.DeleteScheduledRebalance("cluster-1", "policy-1"); err != nil {
+		t.Fatalf("DeleteScheduledRebalance() error = %v", err)
+	}
+	want := []string{
+		"GET /api/v1/schedule/clusters/cluster-1/nodepool-rebalances",
+		"POST /api/v1/schedule/clusters/cluster-1/nodepool-rebalances",
+		"POST /api/v1/schedule/clusters/cluster-1/nodepool-rebalances/policy-1",
+		"DELETE /api/v1/schedule/clusters/cluster-1/nodepool-rebalances/policy-1",
+	}
+	if len(requests) != len(want) {
+		t.Fatalf("requests = %#v", requests)
+	}
+	for index := range want {
+		if requests[index] != want[index] {
+			t.Fatalf("requests[%d] = %q, want %q", index, requests[index], want[index])
+		}
+	}
+}
+
 func TestClientUpdateClusterSetting(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost {

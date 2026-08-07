@@ -491,6 +491,7 @@ func preserveRecommendationPolicyStateRepresentation(remote, state api.Recommend
 	remote.RequestMaxMemory = preserveManagedString(state.RequestMaxMemory, remote.RequestMaxMemory)
 	remote.JVMHeapBuffer = preserveManagedString(state.JVMHeapBuffer, remote.JVMHeapBuffer)
 	remote.JVMMinHeapXmsRatioOfMemory = preserveManagedString(state.JVMMinHeapXmsRatioOfMemory, remote.JVMMinHeapXmsRatioOfMemory)
+	remote.JVMMinHeapXms = preserveExplicitEmptyString(state.JVMMinHeapXms, remote.JVMMinHeapXms)
 	remote.JVMRecentNonHeapWindow = preserveManagedString(state.JVMRecentNonHeapWindow, remote.JVMRecentNonHeapWindow)
 	remote.JVMHeapUsedPercentile = preserveManagedInt32(state.JVMHeapUsedPercentile, remote.JVMHeapUsedPercentile)
 	return remote
@@ -964,6 +965,16 @@ func preserveManagedInt32(stateVal, remoteVal types.Int32) types.Int32 {
 func preserveManagedString(stateVal, remoteVal types.String) types.String {
 	if stateVal.IsNull() {
 		return types.StringNull()
+	}
+	return remoteVal
+}
+
+func preserveExplicitEmptyString(stateVal, remoteVal types.String) types.String {
+	if stateVal.IsNull() {
+		return types.StringNull()
+	}
+	if !stateVal.IsUnknown() && stateVal.ValueString() == "" && remoteVal.IsNull() {
+		return stateVal
 	}
 	return remoteVal
 }
