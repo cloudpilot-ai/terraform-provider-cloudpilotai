@@ -122,20 +122,21 @@ func (p *CloudpilotaiProvider) Schema(ctx context.Context, req provider.SchemaRe
 
 func ProviderSchema(ctx context.Context) schema.Schema {
 	return schema.Schema{
+		Description: "Configures access to the CloudPilot API. Set `api_key` directly or provide `api_key_profile`; `api_key` takes precedence when both are configured.",
 		Attributes: map[string]schema.Attribute{
 			"api_key": schema.StringAttribute{
-				Description: "API key for the Cloudpilotai API.",
+				Description: "CloudPilot API key. Required unless `api_key_profile` is configured. Avoid hardcoding or committing this credential, and protect saved plan files and other artifacts that may contain sensitive data.",
 				Optional:    true,
 				Sensitive:   true,
 			},
 
 			"api_key_profile": schema.StringAttribute{
-				Description: "API key profile for the Cloudpilotai API.",
+				Description: "Path to a local file containing the CloudPilot API key. Used only when `api_key` is omitted. The path must be readable in every environment that runs Terraform.",
 				Optional:    true,
 			},
 
 			"api_endpoint": schema.StringAttribute{
-				Description: "API Endpoint for the Cloudpilotai API.",
+				Description: "HTTPS CloudPilot API base URL. Defaults to `https://api.cloudpilot.ai`. Plain HTTP and URLs without a host are rejected.",
 				Optional:    true,
 			},
 		},
