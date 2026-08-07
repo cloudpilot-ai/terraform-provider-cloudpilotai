@@ -16,7 +16,7 @@ import (
 
 func Schema(ctx context.Context) schema.Schema {
 	return schema.Schema{
-		Description: "EKS Cluster",
+		Description: "Manages an Amazon EKS cluster registration, CloudPilot agents, cluster settings, NodeClasses, NodePools, workloads, and scheduled rebalances.",
 		Attributes: map[string]schema.Attribute{
 			"aws_profile": schema.StringAttribute{
 				Description: "AWS CLI named profile to use as the source credential for AWS operations. If empty, the default AWS credential chain is used.",
@@ -60,6 +60,7 @@ func Schema(ctx context.Context) schema.Schema {
 			"restore_node_number": schema.Int64Attribute{
 				Description: "Number of nodes to provision from the original node group when destroying the CloudPilot AI resource. Set to 0 (the default) to leave the cluster in its current optimized state without restoring original nodes. Set to a positive integer to restore that many nodes before uninstalling. Only effective when `skip_restore` is false.",
 				Optional:    true,
+				Validators:  commonvalidators.Int64AtLeast(0),
 			},
 
 			"cluster_id": schema.StringAttribute{
@@ -100,7 +101,7 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"cluster_setting": schema.SingleNestedAttribute{
-				Description: "Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting.",
+				Description: "Optional cluster-level settings managed through `/api/v1/clusters/{cluster_id}/setting`. When omitted, Terraform does not manage these settings. Omit individual fields to preserve their server values.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectType[ClusterSettingModel](ctx),
 				Attributes: map[string]schema.Attribute{
@@ -166,14 +167,14 @@ func Schema(ctx context.Context) schema.Schema {
 			"workloads":          commonschemas.WorkloadSchema(ctx),
 
 			"nodeclass_templates": schema.ListNestedAttribute{
-				Description:        "NodeClass templates configuration",
+				Description:        "Deprecated provider-side NodeClass templates. Omit to leave provider-side templates unmanaged. Use the EKS module for reusable template composition.",
 				Optional:           true,
 				DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 				CustomType:         customfield.NewNestedObjectListType[api.EC2NodeClassTemplateModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"template_name": schema.StringAttribute{
-							Description:        "NodeClass Template Name",
+							Description:        "Unique provider-side NodeClass template name.",
 							Required:           true,
 							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
@@ -182,24 +183,24 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"nodeclasses": schema.ListNestedAttribute{
-				Description: "NodeClasses configuration (no change if not set)",
+				Description: "EC2NodeClasses managed by Terraform. Omit to leave NodeClasses unmanaged; use an empty list to remove NodeClasses previously managed by this resource.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectListType[api.EC2NodeClassModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "NodeClass Name",
+							Description: "EC2NodeClass name. NodePools reference this value through `nodeclass`.",
 							Required:    true,
 						},
 
 						"template_name": schema.StringAttribute{
-							Description:        "NodeVlass Template Name",
+							Description:        "Deprecated provider-side NodeClass template name to merge before applying this NodeClass.",
 							Optional:           true,
 							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 
 						"origin_nodeclass_json": schema.StringAttribute{
-							Description: "The origin node class json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.",
+							Description: "Raw EC2NodeClass JSON. When configured, it replaces the generated NodeClass and all other typed fields on this object are ignored. The JSON must contain a valid EC2NodeClass object.",
 							Optional:    true,
 						},
 					}, nodeClassTemplateSchema(ctx)),
@@ -207,14 +208,14 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"nodepool_templates": schema.ListNestedAttribute{
-				Description:        "NodePools configuration (no change if not set)",
+				Description:        "Deprecated provider-side NodePool templates. Omit to leave provider-side templates unmanaged. Use the EKS module for reusable template composition.",
 				Optional:           true,
 				DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 				CustomType:         customfield.NewNestedObjectListType[api.EC2NodePoolTemplateModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"template_name": schema.StringAttribute{
-							Description:        "NodePool Template Name",
+							Description:        "Unique provider-side NodePool template name.",
 							Required:           true,
 							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
@@ -223,24 +224,24 @@ func Schema(ctx context.Context) schema.Schema {
 			},
 
 			"nodepools": schema.ListNestedAttribute{
-				Description: "NodePools configuration (no change if not set)",
+				Description: "Karpenter NodePools managed by Terraform. Omit to leave NodePools unmanaged; use an empty list to remove NodePools previously managed by this resource.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectListType[api.EC2NodePoolModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
 					Attributes: lo.Assign(map[string]schema.Attribute{
 						"name": schema.StringAttribute{
-							Description: "Name",
+							Description: "Karpenter NodePool name.",
 							Required:    true,
 						},
 
 						"template_name": schema.StringAttribute{
-							Description:        "NodePool Template Name",
+							Description:        "Deprecated provider-side NodePool template name to merge before applying this NodePool.",
 							Optional:           true,
 							DeprecationMessage: commonschemas.ProviderSideTemplateDeprecationMessage,
 						},
 
 						"origin_nodepool_json": schema.StringAttribute{
-							Description: "The origin nodepool json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.",
+							Description: "Raw Karpenter NodePool JSON. When configured, it replaces the generated NodePool and all other typed fields on this object are ignored. The JSON must contain a valid NodePool object.",
 							Optional:    true,
 						},
 					}, nodePoolTemplateSchema(ctx)),
@@ -322,15 +323,17 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			ElementType: types.StringType,
 		},
 		"system_disk_size_gib": schema.Int64Attribute{
-			Description: "Each provisioned node's system storage size. Do not combine with block_device_mappings on the same NodeClass.",
+			Description: "System disk size in GiB. Must be at least 1. Do not combine with `block_device_mappings` on the same NodeClass.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(1),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
 		},
 		"block_device_mappings": schema.ListNestedAttribute{
-			Description: "Full EC2 blockDeviceMappings list. Do not combine with system_disk_size_gib on the same NodeClass.",
+			Description: "EC2 block device mappings. Use an empty list to clear inherited mappings; a non-empty list supports at most 50 mappings and at most one mapping with `root_volume = true`. Do not combine with `system_disk_size_gib` on the same NodeClass.",
 			Optional:    true,
+			Validators:  commonvalidators.ListSizeAtMost(50),
 			CustomType:  customfield.NewNestedObjectListType[api.BlockDeviceMappingModel](ctx),
 			NestedObject: schema.NestedAttributeObject{
 				Attributes: map[string]schema.Attribute{
@@ -347,24 +350,36 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 						Optional:    true,
 						CustomType:  customfield.NewNestedObjectType[api.BlockDeviceModel](ctx),
 						Attributes: map[string]schema.Attribute{
-							"encrypted":   schema.BoolAttribute{Optional: true},
-							"volume_size": schema.StringAttribute{Optional: true},
-							"volume_type": schema.StringAttribute{Optional: true},
+							"encrypted": schema.BoolAttribute{
+								Description: "Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.",
+								Optional:    true,
+							},
+							"volume_size": schema.StringAttribute{
+								Description: "EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.",
+								Optional:    true,
+							},
+							"volume_type": schema.StringAttribute{
+								Description: "EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.",
+								Optional:    true,
+								Validators:  commonvalidators.StringOneOf("standard", "io1", "io2", "gp2", "sc1", "st1", "gp3"),
+							},
 						},
 					},
 				},
 			},
 		},
 		"extra_cpu_allocation_mcore": schema.Int64Attribute{
-			Description: "Each provisioned node will have extra CPU allocation, used only for burstable pods.",
+			Description: "Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
 		},
 		"extra_memory_allocation_mib": schema.Int64Attribute{
-			Description: "Each provisioned node will have extra Memory allocation, used only for burstable pods.",
+			Description: "Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
@@ -375,7 +390,7 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"enable": schema.BoolAttribute{
-			Description: "Enable",
+			Description: "Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.",
 			Optional:    true,
 		},
 		"nodeclass": schema.StringAttribute{
@@ -393,34 +408,36 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 		},
 
 		"provision_priority": schema.Int32Attribute{
-			Description: "The priority level of this nodepool. A larger number means a higher priority.",
+			Description: "Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.",
 			Optional:    true,
+			Validators:  commonvalidators.Int32Between(1, 100),
 		},
 		"instance_family": schema.ListAttribute{
-			Description: "The target instance family, like t3, m5 and so on, split by comma.",
+			Description: "Allowed EC2 instance families, for example `[\"t3\", \"m5\"]`. When configured, this filter takes precedence over `instance_arch`.",
 			Optional:    true,
 			ElementType: types.StringType,
 		},
 		"instance_arch": schema.ListAttribute{
-			Description: "The target instance architecture, if the instance family is configured, this field will be ignored.",
+			Description: "Allowed CPU architectures. Allowed values: `amd64`, `arm64`. Ignored when `instance_family` is configured.",
 			Optional:    true,
 			ElementType: types.StringType,
 			Validators:  commonvalidators.ArchValidators(),
 		},
 		"capacity_type": schema.ListAttribute{
-			Description: "The provisioned node's capacity type, on-demand or spot.",
+			Description: "Allowed capacity types. Allowed values: `on-demand`, `spot`.",
 			Optional:    true,
 			ElementType: types.StringType,
 			Validators:  commonvalidators.CapacityTypeValidators(),
 		},
 		"zone": schema.ListAttribute{
-			Description: "Each provisioned node will located in the configured zone, formatted as us-west-1a,us-west-1b.",
+			Description: "AWS availability zones where nodes may be provisioned, for example `[\"us-west-2a\", \"us-west-2b\"]`.",
 			Optional:    true,
 			ElementType: types.StringType,
 		},
 		"instance_cpu_min": schema.Int64Attribute{
 			Description: "Minimum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
@@ -428,10 +445,12 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 		"instance_cpu_max": schema.Int64Attribute{
 			Description: "Maximum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 		},
 		"instance_memory_min": schema.Int64Attribute{
 			Description: "Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
@@ -439,6 +458,7 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 		"instance_memory_max": schema.Int64Attribute{
 			Description: "Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 		},
 		"node_disruption_limit": schema.StringAttribute{
 			Description:        "This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.",
@@ -446,19 +466,22 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			DeprecationMessage: "node_disruption_limit is deprecated; use node_disruption_budgets instead.",
 		},
 		"node_disruption_budgets": schema.ListNestedAttribute{
-			Description: "Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value.",
+			Description: "Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value.",
 			Optional:    true,
+			Validators:  commonvalidators.ListSizeBetween(1, 50),
 			CustomType:  customfield.NewNestedObjectListType[api.DisruptionBudgetModel](ctx),
 			NestedObject: schema.NestedAttributeObject{
 				Attributes: map[string]schema.Attribute{
 					"nodes": schema.StringAttribute{
-						Description: "Maximum number or percentage of nodes that may be disrupted.",
+						Description: "Maximum nodes that may be disrupted, expressed as a non-negative integer such as `2` or a percentage from `0%` to `100%`.",
 						Required:    true,
+						Validators:  commonvalidators.StringMatches(`^((100|[0-9]{1,2})%|[0-9]+)$`, "must be a non-negative integer or percentage from 0% to 100%"),
 					},
 					"reasons": schema.ListAttribute{
 						Description: "Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.",
 						Optional:    true,
 						ElementType: types.StringType,
+						Validators:  commonvalidators.StringListOneOfWithSize(1, 50, "Empty", "Underutilized", "Drifted"),
 					},
 					"schedule": schema.StringAttribute{
 						Description: "Optional cron schedule. Must be configured together with duration.",
@@ -472,8 +495,9 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"node_disruption_delay": schema.StringAttribute{
-			Description: "Specify the duration (e.g., 10s, 10m, or 10h) that the controller waits before terminating underutilized nodes.",
+			Description: "How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.",
 			Optional:    true,
+			Validators:  commonvalidators.StringMatches(`^(([0-9]+(s|m|h))+|Never)$`, "must be a duration using s, m, or h components, or Never"),
 		},
 		"labels": schema.MapAttribute{
 			Description: "Labels applied to provisioned nodes through spec.template.metadata.labels.",
@@ -498,6 +522,7 @@ func nodePoolTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 					"effect": schema.StringAttribute{
 						Description: "Taint effect: NoSchedule, PreferNoSchedule, or NoExecute.",
 						Required:    true,
+						Validators:  commonvalidators.StringOneOf("NoSchedule", "PreferNoSchedule", "NoExecute"),
 					},
 				},
 			},

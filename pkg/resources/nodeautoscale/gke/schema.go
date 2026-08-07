@@ -15,21 +15,21 @@ import (
 
 func Schema(ctx context.Context) schema.Schema {
 	return schema.Schema{
-		Description: "GKE Cluster",
+		Description: "Manages a Google Kubernetes Engine cluster registration, CloudPilot agents, cluster settings, GCENodeClasses, NodePools, and scheduled rebalances.",
 		Attributes: map[string]schema.Attribute{
 			"kubeconfig": schema.StringAttribute{
 				Description: "Optional Kubernetes configuration file path for accessing the GKE cluster. If not set, the provider generates an execution-local kubeconfig when needed without storing its path in Terraform state.",
 				Optional:    true,
 			},
 			"cluster_name": schema.StringAttribute{
-				Description: "Name of the GKE cluster to be managed.",
+				Description: "Name of the GKE cluster to manage. Changing this value replaces the Terraform resource.",
 				Required:    true,
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceString(),
 				},
 			},
 			"region": schema.StringAttribute{
-				Description: "GCP region where the GKE cluster is located.",
+				Description: "GCP region associated with the CloudPilot cluster identity. Changing this value replaces the Terraform resource.",
 				Required:    true,
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceString(),
@@ -44,7 +44,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"cluster_id": schema.StringAttribute{
-				Description: "Optional override for the CloudPilot cluster ID. When omitted, the provider generates the same GCP cluster ID as the server from cluster_name, region, and cluster_uid.",
+				Description: "Optional CloudPilot cluster ID override. When omitted, the provider derives the ID from `cluster_name`, `region`, and `cluster_uid`. Changing a configured value replaces the Terraform resource.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -53,7 +53,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"cluster_uid": schema.StringAttribute{
-				Description: "Kubernetes cluster UID used to derive the deterministic CloudPilot cluster ID. For GKE, this matches the kube-system namespace UID. When unset, the provider tries to read it from the target cluster through kubeconfig before requiring manual input.",
+				Description: "Kubernetes cluster UID used to derive the deterministic CloudPilot cluster ID. For GKE, this is the `kube-system` namespace UID. When unset, the provider tries to discover it through kubeconfig. Changing a configured value replaces the Terraform resource.",
 				Optional:    true,
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
@@ -62,7 +62,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"cluster_location": schema.StringAttribute{
-				Description: "Optional GKE cluster location override for zonal clusters.",
+				Description: "Optional exact GKE location used for `gcloud container clusters get-credentials`. Set this for zonal clusters when it differs from `region`. Changing it replaces the Terraform resource.",
 				Optional:    true,
 				PlanModifiers: []planmodifier.String{
 					requiresReplaceString(),
@@ -112,14 +112,15 @@ func Schema(ctx context.Context) schema.Schema {
 			"restore_node_number": schema.Int64Attribute{
 				Description: "Total number of regular GKE node-pool nodes to restore during cluster destroy. For regional or multi-zone GKE node pools, this is the desired total across all locations. Set to 0 to skip restore unless restore_desired_sizes is set.",
 				Optional:    true,
+				Validators:  commonvalidators.Int64AtLeast(0),
 			},
 			"restore_desired_sizes": schema.MapAttribute{
-				Description: "Optional per-node-pool desired total node counts used during cluster destroy. Keys are GKE node-pool names and values are desired total nodes for each pool.",
+				Description: "Optional per-node-pool desired total node counts used during cluster destroy. Keys are GKE node-pool names and values are non-negative desired totals across all locations. Per-pool values take precedence over `restore_node_number`.",
 				Optional:    true,
 				ElementType: types.Int64Type,
 			},
 			"cluster_setting": schema.SingleNestedAttribute{
-				Description: "Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting.",
+				Description: "Optional cluster-level settings managed through `/api/v1/clusters/{cluster_id}/setting`. When omitted, Terraform does not manage these settings. Omit individual fields to preserve their server values.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectType[ClusterSettingModel](ctx),
 				Attributes: map[string]schema.Attribute{
@@ -154,7 +155,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"nodeclasses": schema.ListNestedAttribute{
-				Description: "GCENodeClasses configuration managed by the GKE cluster resource.",
+				Description: "GCENodeClasses managed by Terraform. Omit to leave NodeClasses unmanaged; use an empty list to remove NodeClasses previously managed by this resource.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectListType[api.GCENodeClassModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
@@ -162,7 +163,7 @@ func Schema(ctx context.Context) schema.Schema {
 				},
 			},
 			"nodepools": schema.ListNestedAttribute{
-				Description: "GCENodePools configuration managed by the GKE cluster resource.",
+				Description: "Karpenter NodePools managed by Terraform. Omit to leave NodePools unmanaged; use an empty list to remove NodePools previously managed by this resource.",
 				Optional:    true,
 				CustomType:  customfield.NewNestedObjectListType[api.GCENodePoolModel](ctx),
 				NestedObject: schema.NestedAttributeObject{
@@ -177,7 +178,7 @@ func Schema(ctx context.Context) schema.Schema {
 func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 	return map[string]schema.Attribute{
 		"name": schema.StringAttribute{
-			Description: "NodeClass name.",
+			Description: "GCENodeClass name. NodePools reference this value through `nodeclass`.",
 			Required:    true,
 		},
 		"enable_image_accelerator": schema.BoolAttribute{
@@ -189,33 +190,40 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 			Optional:    true,
 		},
 		"ephemeral_storage_local_ssd": schema.SingleNestedAttribute{
-			Description: "Optional Local SSD configuration. When omitted, Terraform preserves the server configuration.",
+			Description: "Optional Local SSD configuration. Configure `enable_local_ssd_ephemeral_storage = true` on the same NodeClass. When omitted, Terraform preserves the server configuration.",
 			Optional:    true,
 			CustomType:  customfield.NewNestedObjectType[api.GCEEphemeralStorageLocalSSDModel](ctx),
 			Attributes: map[string]schema.Attribute{
 				"count": schema.Int32Attribute{
-					Description: "Number of Local SSDs to attach (1-32). Omit for machine types with bundled Local SSDs.",
+					Description: "Number of NVMe Local SSDs to attach. Allowed range: 1 to 32. Omit for machine types with bundled Local SSDs, where the fixed bundled count is used.",
 					Optional:    true,
+					Validators:  commonvalidators.Int32Between(1, 32),
 				},
 			},
 		},
 		"service_account": schema.StringAttribute{
-			Description: "Service account used by nodes launched from this NodeClass.",
+			Description: "IAM service account email used by nodes launched from this NodeClass. When omitted, the cluster or Compute Engine default applies.",
 			Optional:    true,
 		},
 		"disks": schema.ListNestedAttribute{
-			Description: "GCE disks attached to provisioned nodes.",
+			Description: "GCE disks attached to provisioned nodes. Supports at most 10 disks.",
 			Optional:    true,
+			Validators:  commonvalidators.ListSizeAtMost(10),
 			CustomType:  customfield.NewNestedObjectListType[api.GCEDiskModel](ctx),
 			NestedObject: schema.NestedAttributeObject{
 				Attributes: map[string]schema.Attribute{
 					"size_gib": schema.Int64Attribute{
-						Description: "Disk size in GiB.",
+						Description: "Disk size in GiB. Must be at least 10 when configured.",
 						Optional:    true,
+						Validators:  commonvalidators.Int64AtLeast(10),
 					},
 					"category": schema.StringAttribute{
-						Description: "Disk category, for example pd-balanced.",
+						Description: "GCE disk category. Allowed values: `hyperdisk-balanced`, `hyperdisk-balanced-high-availability`, `hyperdisk-extreme`, `hyperdisk-ml`, `hyperdisk-throughput`, `local-ssd`, `pd-balanced`, `pd-extreme`, `pd-ssd`, `pd-standard`.",
 						Optional:    true,
+						Validators: commonvalidators.StringOneOf(
+							"hyperdisk-balanced", "hyperdisk-balanced-high-availability", "hyperdisk-extreme", "hyperdisk-ml", "hyperdisk-throughput",
+							"local-ssd", "pd-balanced", "pd-extreme", "pd-ssd", "pd-standard",
+						),
 					},
 					"boot": schema.BoolAttribute{
 						Description: "Whether this is the boot disk.",
@@ -225,33 +233,37 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"image_selector_terms": schema.ListNestedAttribute{
-			Description: "Image selector terms for the GCENodeClass.",
+			Description: "Image selector terms for the GCENodeClass. Configure 1 to 30 terms. Each term must set either `id`, or `family` with exactly one of `channel` or `version`; terms are ORed.",
 			Optional:    true,
+			Validators:  commonvalidators.ListSizeBetween(1, 30),
 			CustomType:  customfield.NewNestedObjectListType[api.GCEImageSelectorTermModel](ctx),
 			NestedObject: schema.NestedAttributeObject{
 				Attributes: map[string]schema.Attribute{
 					"id": schema.StringAttribute{
-						Description: "Image ID selector.",
+						Description: "Full GCE image resource ID. Mutually exclusive with `family`, `channel`, and `version`.",
 						Optional:    true,
 					},
 					"family": schema.StringAttribute{
-						Description: "Image family selector.",
+						Description: "OS image family. Allowed values: `ContainerOptimizedOS`, `Ubuntu2404`, `Ubuntu2204`. Requires exactly one of `channel` or `version`.",
 						Optional:    true,
+						Validators:  commonvalidators.StringOneOf("ContainerOptimizedOS", "Ubuntu2404", "Ubuntu2204"),
 					},
 					"channel": schema.StringAttribute{
-						Description: "ContainerOptimizedOS channel selector.",
+						Description: "GKE release channel for `ContainerOptimizedOS`. Allowed values: `rapid`, `regular`, `stable`, `extended`, `cluster`. Mutually exclusive with `version`.",
 						Optional:    true,
+						Validators:  commonvalidators.StringOneOf("rapid", "regular", "stable", "extended", "cluster"),
 					},
 					"version": schema.StringAttribute{
-						Description: "Image version selector.",
+						Description: "Pinned image version or `latest`. ContainerOptimizedOS uses `milestone.build.build.build`, for example `125.19216.104.126`; Ubuntu uses `vYYYYMMDD`, for example `v20260416`. Mutually exclusive with `channel`.",
 						Optional:    true,
 					},
 				},
 			},
 		},
 		"subnet_range_name": schema.StringAttribute{
-			Description: "Alias IP secondary range name used for pods.",
+			Description: "Alias IP secondary range name used for pod IPs. Must be 1 to 63 RFC 1035 characters, start with a lowercase letter, and contain only lowercase letters, digits, and hyphens.",
 			Optional:    true,
+			Validators:  commonvalidators.StringMatches(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`, "must be a valid 1-63 character RFC 1035 name"),
 		},
 		"kubelet_configuration": schema.SingleNestedAttribute{
 			Description: "Kubelet configuration overrides for nodes in this NodeClass.",
@@ -297,13 +309,18 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 			CustomType:  customfield.NewMapType[types.String](ctx),
 		},
 		"network_tags": schema.ListAttribute{
-			Description: "Network tags applied to provisioned instances.",
+			Description: "GCE network tags applied to provisioned instances. Supports at most 20 unique RFC 1035 tag values.",
 			Optional:    true,
 			ElementType: types.StringType,
+			Validators: append(
+				commonvalidators.ListSizeAtMost(20),
+				commonvalidators.StringListMatches(`^[a-z]([-a-z0-9]{0,61}[a-z0-9])?$`, "must be a valid 1-63 character RFC 1035 network tag")...,
+			),
 		},
 		"confidential_instance_type": schema.StringAttribute{
-			Description: "Confidential instance type setting for this NodeClass.",
+			Description: "Confidential VM technology. Allowed values: `SEV`, `SEV_SNP`, `TDX`. Omit to disable confidential computing; availability depends on the selected machine family.",
 			Optional:    true,
+			Validators:  commonvalidators.StringOneOf("SEV", "SEV_SNP", "TDX"),
 		},
 		"network_config": schema.SingleNestedAttribute{
 			Description: "Network configuration for this NodeClass.",
@@ -311,25 +328,26 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 			CustomType:  customfield.NewNestedObjectType[api.GCENetworkConfigModel](ctx),
 			Attributes: map[string]schema.Attribute{
 				"enable_private_nodes": schema.BoolAttribute{
-					Description: "Enable private nodes for this NodeClass.",
+					Description: "Whether provisioned nodes receive internal IP addresses only. When omitted, the cluster's private-node setting applies.",
 					Optional:    true,
 				},
 				"subnetwork": schema.StringAttribute{
-					Description: "Subnetwork self link or resource path.",
+					Description: "Primary subnetwork resource path in the form `projects/{project}/regions/{region}/subnetworks/{name}`. When omitted, the cluster primary subnetwork applies.",
 					Optional:    true,
 				},
 				"additional_network_interfaces": schema.ListNestedAttribute{
-					Description: "Additional network interfaces to attach.",
+					Description: "Additional network interfaces to attach. Supports at most 7 interfaces; every entry must set `subnetwork`.",
 					Optional:    true,
+					Validators:  commonvalidators.ListSizeAtMost(7),
 					CustomType:  customfield.NewNestedObjectListType[api.GCEAdditionalNetworkInterfaceModel](ctx),
 					NestedObject: schema.NestedAttributeObject{
 						Attributes: map[string]schema.Attribute{
 							"network": schema.StringAttribute{
-								Description: "Additional interface network.",
+								Description: "VPC network resource path. When omitted, the cluster network applies.",
 								Optional:    true,
 							},
 							"subnetwork": schema.StringAttribute{
-								Description: "Additional interface subnetwork.",
+								Description: "Subnetwork resource path for this additional interface. Required for new typed configurations.",
 								Optional:    true,
 							},
 						},
@@ -338,15 +356,16 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"auto_gpu_taint": schema.BoolAttribute{
-			Description: "Automatically add taints for GPU nodes.",
+			Description: "Automatically apply `nvidia.com/gpu=present:NoSchedule` to provisioned GPU nodes. When omitted, Terraform preserves the server value.",
 			Optional:    true,
 		},
 		"gpu_driver_version": schema.StringAttribute{
-			Description: "GPU driver version to configure on provisioned nodes.",
+			Description: "GKE NVIDIA driver installation policy. Allowed values: `default`, `latest`, `disabled`. `latest` is supported only by Container-Optimized OS; the setting is ignored for non-GPU nodes.",
 			Optional:    true,
+			Validators:  commonvalidators.StringOneOf("default", "latest", "disabled"),
 		},
 		"origin_nodeclass_json": schema.StringAttribute{
-			Description: "The origin node class JSON. If configured, the other nodeclass configuration items are ignored.",
+			Description: "Raw GCENodeClass JSON. When configured, it replaces the generated NodeClass and all other typed fields on this object are ignored. The JSON must contain a valid GCENodeClass object.",
 			Optional:    true,
 		},
 	}
@@ -359,7 +378,7 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			Required:    true,
 		},
 		"enable": schema.BoolAttribute{
-			Description: "Enable this nodepool.",
+			Description: "Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.",
 			Optional:    true,
 		},
 		"enable_image_accelerator": schema.BoolAttribute{
@@ -375,8 +394,9 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			Optional:    true,
 		},
 		"provision_priority": schema.Int32Attribute{
-			Description: "The priority level of this nodepool. A larger number means a higher priority.",
+			Description: "Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.",
 			Optional:    true,
+			Validators:  commonvalidators.Int32Between(1, 100),
 		},
 		"instance_family": schema.ListAttribute{
 			Description: "Target GCE instance families for this nodepool.",
@@ -384,13 +404,13 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			ElementType: types.StringType,
 		},
 		"instance_arch": schema.ListAttribute{
-			Description: "Target instance architectures for this nodepool.",
+			Description: "Allowed CPU architectures. Allowed values: `amd64`, `arm64`.",
 			Optional:    true,
 			ElementType: types.StringType,
 			Validators:  commonvalidators.ArchValidators(),
 		},
 		"capacity_type": schema.ListAttribute{
-			Description: "Provisioned node capacity types, such as on-demand or spot.",
+			Description: "Allowed capacity types. Allowed values: `on-demand`, `spot`.",
 			Optional:    true,
 			ElementType: types.StringType,
 			Validators:  commonvalidators.CapacityTypeValidators(),
@@ -403,6 +423,7 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 		"instance_cpu_min": schema.Int64Attribute{
 			Description: "Minimum CPU cores per node. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
@@ -410,10 +431,12 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 		"instance_cpu_max": schema.Int64Attribute{
 			Description: "Maximum CPU cores per node. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 		},
 		"instance_memory_min": schema.Int64Attribute{
 			Description: "Minimum memory in MiB per node. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 			PlanModifiers: []planmodifier.Int64{
 				useStateForUnknownInt64(),
 			},
@@ -421,6 +444,7 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 		"instance_memory_max": schema.Int64Attribute{
 			Description: "Maximum memory in MiB per node. Set to 0 for unlimited.",
 			Optional:    true,
+			Validators:  commonvalidators.Int64AtLeast(0),
 		},
 		"labels": schema.MapAttribute{
 			Description: "Labels applied to provisioned nodes through spec.template.metadata.labels.",
@@ -445,6 +469,7 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 					"effect": schema.StringAttribute{
 						Description: "Taint effect: NoSchedule, PreferNoSchedule, or NoExecute.",
 						Required:    true,
+						Validators:  commonvalidators.StringOneOf("NoSchedule", "PreferNoSchedule", "NoExecute"),
 					},
 				},
 			},
@@ -455,19 +480,22 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			DeprecationMessage: "node_disruption_limit is deprecated; use node_disruption_budgets instead.",
 		},
 		"node_disruption_budgets": schema.ListNestedAttribute{
-			Description: "Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value.",
+			Description: "Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value.",
 			Optional:    true,
+			Validators:  commonvalidators.ListSizeBetween(1, 50),
 			CustomType:  customfield.NewNestedObjectListType[api.DisruptionBudgetModel](ctx),
 			NestedObject: schema.NestedAttributeObject{
 				Attributes: map[string]schema.Attribute{
 					"nodes": schema.StringAttribute{
-						Description: "Maximum number or percentage of nodes that may be disrupted.",
+						Description: "Maximum nodes that may be disrupted, expressed as a non-negative integer such as `2` or a percentage from `0%` to `100%`.",
 						Required:    true,
+						Validators:  commonvalidators.StringMatches(`^((100|[0-9]{1,2})%|[0-9]+)$`, "must be a non-negative integer or percentage from 0% to 100%"),
 					},
 					"reasons": schema.ListAttribute{
 						Description: "Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.",
 						Optional:    true,
 						ElementType: types.StringType,
+						Validators:  commonvalidators.StringListOneOfWithSize(1, 50, "Empty", "Underutilized", "Drifted"),
 					},
 					"schedule": schema.StringAttribute{
 						Description: "Optional cron schedule. Must be configured together with duration.",
@@ -481,11 +509,12 @@ func gkeNodePoolSchema(ctx context.Context) map[string]schema.Attribute {
 			},
 		},
 		"node_disruption_delay": schema.StringAttribute{
-			Description: "Duration the controller waits before terminating underutilized nodes.",
+			Description: "How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.",
 			Optional:    true,
+			Validators:  commonvalidators.StringMatches(`^(([0-9]+(s|m|h))+|Never)$`, "must be a duration using s, m, or h components, or Never"),
 		},
 		"origin_nodepool_json": schema.StringAttribute{
-			Description: "The origin nodepool JSON. If configured, the other nodepool configuration items are ignored.",
+			Description: "Raw Karpenter NodePool JSON. When configured, it replaces the generated NodePool and all other typed fields on this object are ignored. The JSON must contain a valid NodePool object.",
 			Optional:    true,
 		},
 	}

@@ -142,22 +142,22 @@ When the Terraform provider runs cluster-scoped rebalance or upgrade scripts its
 - `aws_assume_role` (Attributes) Optional IAM role to assume for CloudPilot AWS CLI and kubeconfig operations. Source credentials still come from aws_profile or the ambient AWS credential chain. (see [below for nested schema](#nestedatt--aws_assume_role))
 - `aws_profile` (String) AWS CLI named profile to use as the source credential for AWS operations. If empty, the default AWS credential chain is used.
 - `cluster_id` (String) Unique identifier of the EKS cluster. Optional override for existing clusters when the caller already knows the server-side cluster ID.
-- `cluster_setting` (Attributes) Optional cluster-level setting fields exposed by /api/v1/clusters/{cluster_id}/setting. (see [below for nested schema](#nestedatt--cluster_setting))
+- `cluster_setting` (Attributes) Optional cluster-level settings managed through `/api/v1/clusters/{cluster_id}/setting`. When omitted, Terraform does not manage these settings. Omit individual fields to preserve their server values. (see [below for nested schema](#nestedatt--cluster_setting))
 - `custom_node_role` (String) Custom IAM role name for EC2 instances. When set, this role will be added to the CloudPilot controller's PassNodeIAMRole policy during installation, allowing the controller to pass this role to EC2 instances.
 - `disable_workload_uploading` (Boolean) Disable automatic uploading of workload information to CloudPilot AI
 - `enable_rebalance` (Boolean) Enable automatic workload rebalancing across node pools. Ignores `only_install_agent` if set to true.
 - `enable_upgrade` (Boolean) Enable upgrading CloudPilot AI components through the cluster upgrade script. The provider checks whether the cluster needs upgrade first, and only runs the upgrade when required.
 - `kubeconfig` (String) Optional Kubernetes configuration file path for accessing the EKS cluster. If not set, the provider generates an execution-local kubeconfig for each operation without storing its path in Terraform state.
-- `nodeclass_templates` (Attributes List, Deprecated) NodeClass templates configuration (see [below for nested schema](#nestedatt--nodeclass_templates))
-- `nodeclasses` (Attributes List) NodeClasses configuration (no change if not set) (see [below for nested schema](#nestedatt--nodeclasses))
-- `nodepool_templates` (Attributes List, Deprecated) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepool_templates))
-- `nodepools` (Attributes List) NodePools configuration (no change if not set) (see [below for nested schema](#nestedatt--nodepools))
+- `nodeclass_templates` (Attributes List, Deprecated) Deprecated provider-side NodeClass templates. Omit to leave provider-side templates unmanaged. Use the EKS module for reusable template composition. (see [below for nested schema](#nestedatt--nodeclass_templates))
+- `nodeclasses` (Attributes List) EC2NodeClasses managed by Terraform. Omit to leave NodeClasses unmanaged; use an empty list to remove NodeClasses previously managed by this resource. (see [below for nested schema](#nestedatt--nodeclasses))
+- `nodepool_templates` (Attributes List, Deprecated) Deprecated provider-side NodePool templates. Omit to leave provider-side templates unmanaged. Use the EKS module for reusable template composition. (see [below for nested schema](#nestedatt--nodepool_templates))
+- `nodepools` (Attributes List) Karpenter NodePools managed by Terraform. Omit to leave NodePools unmanaged; use an empty list to remove NodePools previously managed by this resource. (see [below for nested schema](#nestedatt--nodepools))
 - `only_install_agent` (Boolean) Only install the CloudPilot AI agent without additional configuration
 - `restore_node_number` (Number) Number of nodes to provision from the original node group when destroying the CloudPilot AI resource. Set to 0 (the default) to leave the cluster in its current optimized state without restoring original nodes. Set to a positive integer to restore that many nodes before uninstalling. Only effective when `skip_restore` is false.
-- `scheduled_rebalances` (Attributes List) Scheduled rebalance policies managed by Terraform. Omit this attribute to leave all server policies unmanaged; set it to an empty list to remove only policies previously managed by this resource. (see [below for nested schema](#nestedatt--scheduled_rebalances))
+- `scheduled_rebalances` (Attributes List) Scheduled rebalance policies managed by Terraform. Omit this attribute to leave all server policies unmanaged; set it to an empty list to remove only policies previously managed by this resource. Policies are matched by name, which must be unique within this list. (see [below for nested schema](#nestedatt--scheduled_rebalances))
 - `skip_restore` (Boolean) When set to true, skip the node restore step during resource destruction. The cluster will be uninstalled without restoring original nodes first. Takes precedence over `restore_node_number`.
-- `workload_templates` (Attributes List, Deprecated) Workload templates configuration (no change if not set) (see [below for nested schema](#nestedatt--workload_templates))
-- `workloads` (Attributes List) Workloads configuration (no change if not set) (see [below for nested schema](#nestedatt--workloads))
+- `workload_templates` (Attributes List, Deprecated) Deprecated provider-side workload templates. Omit to leave provider-side templates unmanaged. Use the EKS module for reusable template composition. (see [below for nested schema](#nestedatt--workload_templates))
+- `workloads` (Attributes List) Workload optimization settings managed by Terraform. Omit to leave workloads unmanaged. An empty list stops managing all workloads but does not reset settings previously applied to the server. (see [below for nested schema](#nestedatt--workloads))
 
 ### Read-Only
 
@@ -197,21 +197,21 @@ Optional:
 
 Required:
 
-- `template_name` (String, Deprecated) NodeClass Template Name
+- `template_name` (String, Deprecated) Unique provider-side NodeClass template name.
 
 Optional:
 
 - `ami_alias` (String) EKS optimized AMI alias, for example 'al2023@latest'. Maps to spec.amiSelectorTerms alias.
-- `block_device_mappings` (Attributes List) Full EC2 blockDeviceMappings list. Do not combine with system_disk_size_gib on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings))
+- `block_device_mappings` (Attributes List) EC2 block device mappings. Use an empty list to clear inherited mappings; a non-empty list supports at most 50 mappings and at most one mapping with `root_volume = true`. Do not combine with `system_disk_size_gib` on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings))
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `enable_local_ssd_ephemeral_storage` (Boolean) Use EC2 instance-store NVMe disks as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.
-- `extra_cpu_allocation_mcore` (Number) Each provisioned node will have extra CPU allocation, used only for burstable pods.
-- `extra_memory_allocation_mib` (Number) Each provisioned node will have extra Memory allocation, used only for burstable pods.
+- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
+- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
 - `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--subnet_selector_terms))
-- `system_disk_size_gib` (Number) Each provisioned node's system storage size. Do not combine with block_device_mappings on the same NodeClass.
+- `system_disk_size_gib` (Number) System disk size in GiB. Must be at least 1. Do not combine with `block_device_mappings` on the same NodeClass.
 - `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData.
 
 <a id="nestedatt--nodeclass_templates--block_device_mappings"></a>
@@ -228,9 +228,9 @@ Optional:
 
 Optional:
 
-- `encrypted` (Boolean)
-- `volume_size` (String)
-- `volume_type` (String)
+- `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
+- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
+- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
 
 
 
@@ -259,23 +259,23 @@ Optional:
 
 Required:
 
-- `name` (String) NodeClass Name
+- `name` (String) EC2NodeClass name. NodePools reference this value through `nodeclass`.
 
 Optional:
 
 - `ami_alias` (String) EKS optimized AMI alias, for example 'al2023@latest'. Maps to spec.amiSelectorTerms alias.
-- `block_device_mappings` (Attributes List) Full EC2 blockDeviceMappings list. Do not combine with system_disk_size_gib on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings))
+- `block_device_mappings` (Attributes List) EC2 block device mappings. Use an empty list to clear inherited mappings; a non-empty list supports at most 50 mappings and at most one mapping with `root_volume = true`. Do not combine with `system_disk_size_gib` on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings))
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `enable_local_ssd_ephemeral_storage` (Boolean) Use EC2 instance-store NVMe disks as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.
-- `extra_cpu_allocation_mcore` (Number) Each provisioned node will have extra CPU allocation, used only for burstable pods.
-- `extra_memory_allocation_mib` (Number) Each provisioned node will have extra Memory allocation, used only for burstable pods.
+- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
+- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
 - `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
-- `origin_nodeclass_json` (String) The origin node class json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.
+- `origin_nodeclass_json` (String) Raw EC2NodeClass JSON. When configured, it replaces the generated NodeClass and all other typed fields on this object are ignored. The JSON must contain a valid EC2NodeClass object.
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--subnet_selector_terms))
-- `system_disk_size_gib` (Number) Each provisioned node's system storage size. Do not combine with block_device_mappings on the same NodeClass.
-- `template_name` (String, Deprecated) NodeVlass Template Name
+- `system_disk_size_gib` (Number) System disk size in GiB. Must be at least 1. Do not combine with `block_device_mappings` on the same NodeClass.
+- `template_name` (String, Deprecated) Deprecated provider-side NodeClass template name to merge before applying this NodeClass.
 - `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData.
 
 <a id="nestedatt--nodeclasses--block_device_mappings"></a>
@@ -292,9 +292,9 @@ Optional:
 
 Optional:
 
-- `encrypted` (Boolean)
-- `volume_size` (String)
-- `volume_type` (String)
+- `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
+- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
+- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
 
 
 
@@ -323,35 +323,35 @@ Optional:
 
 Required:
 
-- `template_name` (String, Deprecated) NodePool Template Name
+- `template_name` (String, Deprecated) Unique provider-side NodePool template name.
 
 Optional:
 
-- `capacity_type` (List of String) The provisioned node's capacity type, on-demand or spot.
-- `enable` (Boolean) Enable
+- `capacity_type` (List of String) Allowed capacity types. Allowed values: `on-demand`, `spot`.
+- `enable` (Boolean) Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.
 - `enable_gpu` (Boolean) Enable GPU instances in this nodepool.
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) in this nodepool.
-- `instance_arch` (List of String) The target instance architecture, if the instance family is configured, this field will be ignored.
+- `instance_arch` (List of String) Allowed CPU architectures. Allowed values: `amd64`, `arm64`. Ignored when `instance_family` is configured.
 - `instance_cpu_max` (Number) Maximum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_cpu_min` (Number) Minimum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
-- `instance_family` (List of String) The target instance family, like t3, m5 and so on, split by comma.
+- `instance_family` (List of String) Allowed EC2 instance families, for example `["t3", "m5"]`. When configured, this filter takes precedence over `instance_arch`.
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
-- `node_disruption_budgets` (Attributes List) Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value. (see [below for nested schema](#nestedatt--nodepool_templates--node_disruption_budgets))
-- `node_disruption_delay` (String) Specify the duration (e.g., 10s, 10m, or 10h) that the controller waits before terminating underutilized nodes.
+- `node_disruption_budgets` (Attributes List) Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value. (see [below for nested schema](#nestedatt--nodepool_templates--node_disruption_budgets))
+- `node_disruption_delay` (String) How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.
 - `node_disruption_limit` (String, Deprecated) This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.
 - `nodeclass` (String) Select the nodeclass to use for this nodepool.
-- `provision_priority` (Number) The priority level of this nodepool. A larger number means a higher priority.
+- `provision_priority` (Number) Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepool_templates--taints))
-- `zone` (List of String) Each provisioned node will located in the configured zone, formatted as us-west-1a,us-west-1b.
+- `zone` (List of String) AWS availability zones where nodes may be provisioned, for example `["us-west-2a", "us-west-2b"]`.
 
 <a id="nestedatt--nodepool_templates--node_disruption_budgets"></a>
 ### Nested Schema for `nodepool_templates.node_disruption_budgets`
 
 Required:
 
-- `nodes` (String) Maximum number or percentage of nodes that may be disrupted.
+- `nodes` (String) Maximum nodes that may be disrupted, expressed as a non-negative integer such as `2` or a percentage from `0%` to `100%`.
 
 Optional:
 
@@ -379,37 +379,37 @@ Optional:
 
 Required:
 
-- `name` (String) Name
+- `name` (String) Karpenter NodePool name.
 
 Optional:
 
-- `capacity_type` (List of String) The provisioned node's capacity type, on-demand or spot.
-- `enable` (Boolean) Enable
+- `capacity_type` (List of String) Allowed capacity types. Allowed values: `on-demand`, `spot`.
+- `enable` (Boolean) Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.
 - `enable_gpu` (Boolean) Enable GPU instances in this nodepool.
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) in this nodepool.
-- `instance_arch` (List of String) The target instance architecture, if the instance family is configured, this field will be ignored.
+- `instance_arch` (List of String) Allowed CPU architectures. Allowed values: `amd64`, `arm64`. Ignored when `instance_family` is configured.
 - `instance_cpu_max` (Number) Maximum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_cpu_min` (Number) Minimum CPU cores per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
-- `instance_family` (List of String) The target instance family, like t3, m5 and so on, split by comma.
+- `instance_family` (List of String) Allowed EC2 instance families, for example `["t3", "m5"]`. When configured, this filter takes precedence over `instance_arch`.
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
-- `node_disruption_budgets` (Attributes List) Complete non-empty disruption budget list. When null, Terraform does not manage the list and node_disruption_limit keeps its legacy first-budget behavior. If node_disruption_limit is also set, it must match the first budget's nodes value. (see [below for nested schema](#nestedatt--nodepools--node_disruption_budgets))
-- `node_disruption_delay` (String) Specify the duration (e.g., 10s, 10m, or 10h) that the controller waits before terminating underutilized nodes.
+- `node_disruption_budgets` (Attributes List) Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value. (see [below for nested schema](#nestedatt--nodepools--node_disruption_budgets))
+- `node_disruption_delay` (String) How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.
 - `node_disruption_limit` (String, Deprecated) This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.
 - `nodeclass` (String) Select the nodeclass to use for this nodepool.
-- `origin_nodepool_json` (String) The origin nodepool json, used to override the default configuration. If this field is configured, the other configuration items will be ignored.
-- `provision_priority` (Number) The priority level of this nodepool. A larger number means a higher priority.
+- `origin_nodepool_json` (String) Raw Karpenter NodePool JSON. When configured, it replaces the generated NodePool and all other typed fields on this object are ignored. The JSON must contain a valid NodePool object.
+- `provision_priority` (Number) Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepools--taints))
-- `template_name` (String, Deprecated) NodePool Template Name
-- `zone` (List of String) Each provisioned node will located in the configured zone, formatted as us-west-1a,us-west-1b.
+- `template_name` (String, Deprecated) Deprecated provider-side NodePool template name to merge before applying this NodePool.
+- `zone` (List of String) AWS availability zones where nodes may be provisioned, for example `["us-west-2a", "us-west-2b"]`.
 
 <a id="nestedatt--nodepools--node_disruption_budgets"></a>
 ### Nested Schema for `nodepools.node_disruption_budgets`
 
 Required:
 
-- `nodes` (String) Maximum number or percentage of nodes that may be disrupted.
+- `nodes` (String) Maximum nodes that may be disrupted, expressed as a non-negative integer such as `2` or a percentage from `0%` to `100%`.
 
 Optional:
 
@@ -437,26 +437,26 @@ Optional:
 
 Required:
 
-- `name` (String) Unique policy name.
+- `name` (String) Unique policy name used to create, update, and delete the policy.
 
 Optional:
 
-- `cron` (String) Five-field cron expression. Required for a new policy; when omitted for an existing policy, Terraform preserves the server value.
+- `cron` (String) Five-field cron expression such as `0 2 * * *`. Required for a new policy; when omitted for an existing policy, Terraform preserves the server value.
 - `enabled` (Boolean) Whether the policy is enabled. When omitted, Terraform preserves the server value.
-- `force_drain` (Boolean) Whether to force drain selected nodes.
-- `node_constraints` (Attributes) (see [below for nested schema](#nestedatt--scheduled_rebalances--node_constraints))
-- `scope` (Attributes) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope))
+- `force_drain` (Boolean) Whether to continue draining selected nodes when normal eviction is blocked. When omitted for an existing policy, Terraform preserves the server value.
+- `node_constraints` (Attributes) Optional limits applied after the scope is evaluated. All values must be non-negative. (see [below for nested schema](#nestedatt--scheduled_rebalances--node_constraints))
+- `scope` (Attributes) Optional node selection scope. `node_names` cannot be combined with `node_pool_name` or `node_selector_terms`. Include filters are evaluated before exclude filters. (see [below for nested schema](#nestedatt--scheduled_rebalances--scope))
 - `selection_order` (String) Node selection order: oldest_first, newest_first, name_asc, or lowest_utilization_first.
-- `timezone` (String) IANA timezone. When omitted, Terraform preserves the server value.
+- `timezone` (String) IANA timezone such as `America/Los_Angeles`. When omitted for an existing policy, Terraform preserves the server value.
 
 <a id="nestedatt--scheduled_rebalances--node_constraints"></a>
 ### Nested Schema for `scheduled_rebalances.node_constraints`
 
 Optional:
 
-- `max_nodes` (Number)
-- `min_age_seconds` (Number)
-- `min_cluster_size` (Number)
+- `max_nodes` (Number) Maximum number of matching nodes to select in one run. Omit or set to `0` to apply no maximum.
+- `min_age_seconds` (Number) Minimum node age in seconds. Nodes younger than this value are not selected. `0` disables the age filter.
+- `min_cluster_size` (Number) Minimum number of matching nodes to retain. The selection limit is reduced so at least this many matching nodes remain. `0` disables the retention floor.
 
 
 <a id="nestedatt--scheduled_rebalances--scope"></a>
@@ -464,31 +464,31 @@ Optional:
 
 Optional:
 
-- `capacity_types` (List of String)
-- `exclude_node_names` (List of String)
-- `exclude_node_selector_terms` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms))
-- `node_names` (List of String)
-- `node_pool_name` (String)
-- `node_selector_terms` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms))
+- `capacity_types` (List of String) Provider-supported capacity types to include. Common values are `on-demand` and `spot`; GKE also supports `reserved`.
+- `exclude_node_names` (List of String) Explicit Kubernetes node names to exclude after include filters are evaluated.
+- `exclude_node_selector_terms` (Attributes List) Kubernetes label selector terms used to exclude nodes after include filters are evaluated. Terms are ORed; expressions within a term are ANDed. (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms))
+- `node_names` (List of String) Explicit Kubernetes node names to include. Cannot be combined with `node_pool_name` or `node_selector_terms`.
+- `node_pool_name` (String) Select nodes from this NodePool. Cannot be combined with `node_names`.
+- `node_selector_terms` (Attributes List) Kubernetes label selector terms used to include nodes. Terms are ORed; expressions within a term are ANDed. Cannot be combined with `node_names`. (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms))
 
 <a id="nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms"></a>
 ### Nested Schema for `scheduled_rebalances.scope.exclude_node_selector_terms`
 
 Optional:
 
-- `match_expressions` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms--match_expressions))
+- `match_expressions` (Attributes List) Label selector requirements that are ANDed within this term. (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms--match_expressions))
 
 <a id="nestedatt--scheduled_rebalances--scope--exclude_node_selector_terms--match_expressions"></a>
 ### Nested Schema for `scheduled_rebalances.scope.exclude_node_selector_terms.match_expressions`
 
 Required:
 
-- `key` (String)
-- `operator` (String)
+- `key` (String) Kubernetes label key to evaluate.
+- `operator` (String) Label selector operator. Allowed values: `In`, `NotIn`, `Exists`, `DoesNotExist`.
 
 Optional:
 
-- `values` (List of String)
+- `values` (List of String) Values used by `In` and `NotIn`. Must be non-empty for those operators and omitted or empty for `Exists` and `DoesNotExist`.
 
 
 
@@ -497,19 +497,19 @@ Optional:
 
 Optional:
 
-- `match_expressions` (Attributes List) (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms--match_expressions))
+- `match_expressions` (Attributes List) Label selector requirements that are ANDed within this term. (see [below for nested schema](#nestedatt--scheduled_rebalances--scope--node_selector_terms--match_expressions))
 
 <a id="nestedatt--scheduled_rebalances--scope--node_selector_terms--match_expressions"></a>
 ### Nested Schema for `scheduled_rebalances.scope.node_selector_terms.match_expressions`
 
 Required:
 
-- `key` (String)
-- `operator` (String)
+- `key` (String) Kubernetes label key to evaluate.
+- `operator` (String) Label selector operator. Allowed values: `In`, `NotIn`, `Exists`, `DoesNotExist`.
 
 Optional:
 
-- `values` (List of String)
+- `values` (List of String) Values used by `In` and `NotIn`. Must be non-empty for those operators and omitted or empty for `Exists` and `DoesNotExist`.
 
 
 
@@ -520,13 +520,13 @@ Optional:
 
 Required:
 
-- `template_name` (String, Deprecated) Workload Template Name
+- `template_name` (String, Deprecated) Unique provider-side workload template name.
 
 Optional:
 
-- `min_non_spot_replicas` (Number) Min non spot replicas
-- `rebalance_able` (Boolean) Rebalance able
-- `spot_friendly` (Boolean) Spot friendly
+- `min_non_spot_replicas` (Number) Minimum replicas to keep on non-Spot capacity. Must be non-negative. When omitted, Terraform preserves the server value.
+- `rebalance_able` (Boolean) Whether CloudPilot may move this workload during node rebalancing. When omitted, Terraform preserves the server value.
+- `spot_friendly` (Boolean) Whether CloudPilot may place this workload on Spot instances. When omitted, Terraform preserves the server value.
 
 
 <a id="nestedatt--workloads"></a>
@@ -534,16 +534,16 @@ Optional:
 
 Required:
 
-- `name` (String) Name
-- `namespace` (String) Namespace
-- `type` (String) Type
+- `name` (String) Kubernetes workload name.
+- `namespace` (String) Kubernetes namespace containing the workload.
+- `type` (String) Kubernetes workload type as recognized by CloudPilot, for example `deployment` or `statefulset`.
 
 Optional:
 
-- `min_non_spot_replicas` (Number) Min non spot replicas
-- `rebalance_able` (Boolean) Rebalance able
-- `spot_friendly` (Boolean) Spot friendly
-- `template_name` (String, Deprecated) Workload Template Name
+- `min_non_spot_replicas` (Number) Minimum replicas to keep on non-Spot capacity. Must be non-negative. When omitted, Terraform preserves the server value.
+- `rebalance_able` (Boolean) Whether CloudPilot may move this workload during node rebalancing. When omitted, Terraform preserves the server value.
+- `spot_friendly` (Boolean) Whether CloudPilot may place this workload on Spot instances. When omitted, Terraform preserves the server value.
+- `template_name` (String, Deprecated) Deprecated provider-side workload template name to merge before applying this workload.
 
 ## Upgrading from Generated Kubeconfig State
 
