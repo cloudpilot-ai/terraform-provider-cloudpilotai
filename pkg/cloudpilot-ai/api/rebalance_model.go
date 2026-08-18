@@ -99,9 +99,15 @@ type SecurityGroupSelectorTermModel struct {
 }
 
 type BlockDeviceModel struct {
-	Encrypted  types.Bool   `tfsdk:"encrypted"`
-	VolumeSize types.String `tfsdk:"volume_size"`
-	VolumeType types.String `tfsdk:"volume_type"`
+	Encrypted        types.Bool                                      `tfsdk:"encrypted"`
+	VolumeSize       types.String                                    `tfsdk:"volume_size"`
+	VolumeSizePolicy customfield.NestedObject[VolumeSizePolicyModel] `tfsdk:"volume_size_policy"`
+	VolumeType       types.String                                    `tfsdk:"volume_type"`
+}
+
+type VolumeSizePolicyModel struct {
+	PerVCPUGiB types.Int64 `tfsdk:"per_vcpu_gib"`
+	MaxSizeGiB types.Int64 `tfsdk:"max_size_gib"`
 }
 
 type BlockDeviceMappingModel struct {
@@ -373,7 +379,7 @@ func applyBlockDeviceMappings(ctx context.Context, nodeclass *EC2NodeClass, mapp
 				return fmt.Errorf("block_device_mappings.ebs: %v", ebsDiags)
 			}
 			if ebsModel != nil {
-				ebs, err := blockDeviceModelToAWS(mapping.EBS, *ebsModel)
+				ebs, err := blockDeviceModelToAWS(ctx, mapping.EBS, *ebsModel)
 				if err != nil {
 					return err
 				}
@@ -382,11 +388,31 @@ func applyBlockDeviceMappings(ctx context.Context, nodeclass *EC2NodeClass, mapp
 		}
 		out = append(out, mapping)
 	}
+	policyCount := 0
+	for index, mapping := range out {
+		if mapping == nil || mapping.EBS == nil || mapping.EBS.VolumeSizePolicy == nil {
+			continue
+		}
+		policyCount++
+		if !mapping.RootVolume {
+			return fmt.Errorf("block_device_mappings[%d].ebs.volume_size_policy requires root_volume = true", index)
+		}
+		if mapping.EBS.VolumeSize == nil {
+			return fmt.Errorf("block_device_mappings[%d].ebs.volume_size is required with volume_size_policy", index)
+		}
+		baseGiB := (mapping.EBS.VolumeSize.Value() + (1 << 30) - 1) / (1 << 30)
+		if mapping.EBS.VolumeSizePolicy.MaxSizeGiB < baseGiB {
+			return fmt.Errorf("block_device_mappings[%d].ebs.volume_size_policy.max_size_gib must be at least %d", index, baseGiB)
+		}
+	}
+	if policyCount > 1 {
+		return fmt.Errorf("block_device_mappings supports at most one volume_size_policy")
+	}
 	nodeclass.NodeClassSpec.BlockDeviceMappings = out
 	return nil
 }
 
-func blockDeviceModelToAWS(base *awsproviderv1.BlockDevice, m BlockDeviceModel) (*awsproviderv1.BlockDevice, error) {
+func blockDeviceModelToAWS(ctx context.Context, base *awsproviderv1.BlockDevice, m BlockDeviceModel) (*awsproviderv1.BlockDevice, error) {
 	out := cloneHiddenBlockDeviceFields(base)
 	if !m.Encrypted.IsNull() && !m.Encrypted.IsUnknown() {
 		v := m.Encrypted.ValueBool()
@@ -402,6 +428,24 @@ func blockDeviceModelToAWS(base *awsproviderv1.BlockDevice, m BlockDeviceModel) 
 	if !m.VolumeType.IsNull() && !m.VolumeType.IsUnknown() && m.VolumeType.ValueString() != "" {
 		v := m.VolumeType.ValueString()
 		out.VolumeType = &v
+	}
+	if m.VolumeSizePolicy.IsUnknown() {
+		if base != nil {
+			out.VolumeSizePolicy = base.VolumeSizePolicy
+		}
+	} else if m.VolumeSizePolicy.IsNull() {
+		out.VolumeSizePolicy = nil
+	} else {
+		policy, diags := m.VolumeSizePolicy.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("block_device_mappings.ebs.volume_size_policy: %v", diags)
+		}
+		if policy != nil {
+			out.VolumeSizePolicy = &awsproviderv1.VolumeSizePolicy{
+				PerVCPUGiB: policy.PerVCPUGiB.ValueInt64(),
+				MaxSizeGiB: policy.MaxSizeGiB.ValueInt64(),
+			}
+		}
 	}
 	return out, nil
 }

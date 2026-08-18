@@ -152,6 +152,19 @@ Optional:
 - `boot` (Boolean) Whether this is the boot disk.
 - `category` (String) GCE disk category. Allowed values: `hyperdisk-balanced`, `hyperdisk-balanced-high-availability`, `hyperdisk-extreme`, `hyperdisk-ml`, `hyperdisk-throughput`, `local-ssd`, `pd-balanced`, `pd-extreme`, `pd-ssd`, `pd-standard`.
 - `size_gib` (Number) Disk size in GiB. Must be at least 10 when configured.
+- `size_policy` (Attributes) Dynamic size policy for the boot disk. Policy presence automatically includes Pod ephemeral-storage demand unless Local SSD backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclasses--disks--size_policy))
+
+<a id="nestedatt--nodeclasses--disks--size_policy"></a>
+### Nested Schema for `nodeclasses.disks.size_policy`
+
+Required:
+
+- `max_size_gib` (Number) Maximum raw boot disk size in GiB and the capacity bound used for scheduling.
+
+Optional:
+
+- `per_vcpu_gib` (Number) GiB added to the base boot disk for every vCPU.
+
 
 
 <a id="nestedatt--nodeclasses--ephemeral_storage_local_ssd"></a>

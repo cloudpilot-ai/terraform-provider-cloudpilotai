@@ -104,6 +104,8 @@ type EC2NodeClassSpec struct {
 	Kubelet *KubeletConfiguration `json:"kubelet,omitempty" hash:"ignore"`
 	// BlockDeviceMappings to be applied to provisioned nodes.
 	// +kubebuilder:validation:XValidation:message="must have only one blockDeviceMappings with rootVolume",rule="self.filter(x, has(x.rootVolume)?x.rootVolume==true:false).size() <= 1"
+	// +kubebuilder:validation:XValidation:message="volumeSizePolicy may only be configured on the rootVolume mapping",rule="self.all(x, !has(x.ebs) || !has(x.ebs.volumeSizePolicy) || (has(x.rootVolume) && x.rootVolume))"
+	// +kubebuilder:validation:XValidation:message="must have only one blockDeviceMapping with volumeSizePolicy",rule="self.filter(x, has(x.ebs) && has(x.ebs.volumeSizePolicy)).size() <= 1"
 	// +kubebuilder:validation:MaxItems:=50
 	// +optional
 	BlockDeviceMappings []*BlockDeviceMapping `json:"blockDeviceMappings,omitempty"`
@@ -336,6 +338,9 @@ type BlockDeviceMapping struct {
 	RootVolume bool `json:"rootVolume,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:message="volumeSize is required when volumeSizePolicy is configured",rule="!has(self.volumeSizePolicy) || has(self.volumeSize)"
+// +kubebuilder:validation:XValidation:message="maxSizeGiB must be at least volumeSize",rule="!has(self.volumeSizePolicy) || !has(self.volumeSize) || (self.volumeSize.endsWith('Gi') ? int(self.volumeSize.split('Gi')[0]) : self.volumeSize.endsWith('Ti') ? int(self.volumeSize.split('Ti')[0]) * 1024 : self.volumeSize.endsWith('G') ? (int(self.volumeSize.split('G')[0]) * 1000000000 + 1073741823) / 1073741824 : (int(self.volumeSize.split('T')[0]) * 1000000000000 + 1073741823) / 1073741824) <= self.volumeSizePolicy.maxSizeGiB"
+// +kubebuilder:validation:XValidation:message="maxSizeGiB cannot exceed 1024 for standard volumes",rule="!has(self.volumeSizePolicy) || !has(self.volumeType) || self.volumeType != 'standard' || self.volumeSizePolicy.maxSizeGiB <= 1024"
 type BlockDevice struct {
 	// DeleteOnTermination indicates whether the EBS volume is deleted on instance termination.
 	// +optional
@@ -394,12 +399,31 @@ type BlockDevice struct {
 	// +kubebuilder:validation:Type:=string
 	// +optional
 	VolumeSize *resource.Quantity `json:"volumeSize,omitempty" hash:"string"`
+	// VolumeSizePolicy dynamically resolves this volume's size for each newly
+	// provisioned node. VolumeSize remains the base size. When instance-store
+	// RAID0 is disabled, NodeClaim ephemeral-storage requests are also included.
+	// +optional
+	VolumeSizePolicy *VolumeSizePolicy `json:"volumeSizePolicy,omitempty" hash:"ignore"`
 	// VolumeType of the block device.
 	// For more information, see Amazon EBS volume types (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html)
 	// in the Amazon Elastic Compute Cloud User Guide.
 	// +kubebuilder:validation:Enum:={standard,io1,io2,gp2,sc1,st1,gp3}
 	// +optional
 	VolumeType *string `json:"volumeType,omitempty"`
+}
+
+// VolumeSizePolicy controls dynamic volume sizing in GiB.
+type VolumeSizePolicy struct {
+	// PerVCPUGiB is added to the configured base size for every vCPU.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=16384
+	// +optional
+	PerVCPUGiB int64 `json:"perVCPUGiB,omitempty"`
+	// MaxSizeGiB bounds the raw volume size and the storage capacity advertised
+	// during scheduling.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=16384
+	MaxSizeGiB int64 `json:"maxSizeGiB"`
 }
 
 // InstanceStorePolicy enumerates options for configuring instance store disks.
