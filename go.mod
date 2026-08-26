@@ -4,7 +4,7 @@ go 1.25.9
 
 require (
 	github.com/aws/aws-sdk-go-v2 v1.39.0
-	github.com/cloudpilot-ai/lib v0.0.0-20260720094657-1d777cba7aae
+	github.com/cloudpilot-ai/lib v0.0.0-20260828024437-c2bbc8660e72
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc
 	github.com/google/uuid v1.6.0
 	github.com/hashicorp/go-retryablehttp v0.7.8

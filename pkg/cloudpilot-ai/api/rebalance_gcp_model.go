@@ -90,7 +90,8 @@ type GCEKubeletConfigurationModel struct {
 }
 
 type GCEEphemeralStorageLocalSSDModel struct {
-	Count types.Int32 `tfsdk:"count"`
+	Count     types.Int32 `tfsdk:"count"`
+	AutoCount types.Bool  `tfsdk:"auto_count"`
 }
 
 type GCENodeClassModel struct {
@@ -206,9 +207,15 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 		return model, nil
 	}
 	if g.NodeClassSpec.EphemeralStorageLocalSSD != nil {
-		localSSD := GCEEphemeralStorageLocalSSDModel{Count: types.Int32Null()}
+		localSSD := GCEEphemeralStorageLocalSSDModel{
+			Count:     types.Int32Null(),
+			AutoCount: types.BoolNull(),
+		}
 		if g.NodeClassSpec.EphemeralStorageLocalSSD.Count != nil {
 			localSSD.Count = types.Int32Value(*g.NodeClassSpec.EphemeralStorageLocalSSD.Count)
+		}
+		if g.NodeClassSpec.EphemeralStorageLocalSSD.AutoCount {
+			localSSD.AutoCount = types.BoolValue(true)
 		}
 		model.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &localSSD)
 	}
@@ -341,6 +348,11 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = &count
 			} else if localSSD.Count.IsNull() {
 				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = nil
+			}
+			if !localSSD.AutoCount.IsNull() && !localSSD.AutoCount.IsUnknown() {
+				out.NodeClassSpec.EphemeralStorageLocalSSD.AutoCount = localSSD.AutoCount.ValueBool()
+			} else if localSSD.AutoCount.IsNull() {
+				out.NodeClassSpec.EphemeralStorageLocalSSD.AutoCount = false
 			}
 		}
 	}
@@ -498,6 +510,9 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 func validateGCENodeClassLocalSSD(spec *GCENodeClassSpec) error {
 	if spec == nil || spec.EphemeralStorageLocalSSD == nil {
 		return nil
+	}
+	if spec.EphemeralStorageLocalSSD.AutoCount && spec.EphemeralStorageLocalSSD.Count != nil {
+		return fmt.Errorf("ephemeral_storage_local_ssd.auto_count cannot be true when count is set")
 	}
 	for index, disk := range spec.Disks {
 		if disk.Category == gcpproviderv1alpha1.DiskCategory("local-ssd") {

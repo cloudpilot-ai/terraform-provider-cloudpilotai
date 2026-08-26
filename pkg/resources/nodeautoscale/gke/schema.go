@@ -199,6 +199,10 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 					Optional:    true,
 					Validators:  commonvalidators.Int32Between(1, 32),
 				},
+				"auto_count": schema.BoolAttribute{
+					Description: "Automatically attach the smallest supported Local SSD count that satisfies aggregate Pod ephemeral-storage requests. Cannot be true when count is set.",
+					Optional:    true,
+				},
 			},
 		},
 		"service_account": schema.StringAttribute{

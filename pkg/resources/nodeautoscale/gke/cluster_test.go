@@ -1468,6 +1468,78 @@ func TestPostWriteNodeClassHydrationPreservesPendingLocalSSDConfiguration(t *tes
 	}
 }
 
+func TestNodeClassStatePreservesManagedAutoCount(t *testing.T) {
+	tests := []struct {
+		name      string
+		postWrite bool
+		state     types.Bool
+		want      types.Bool
+	}{
+		{
+			name:      "post-write preserves explicit false",
+			postWrite: true,
+			state:     types.BoolValue(false),
+			want:      types.BoolValue(false),
+		},
+		{
+			name:      "post-write preserves pending true",
+			postWrite: true,
+			state:     types.BoolValue(true),
+			want:      types.BoolValue(true),
+		},
+		{
+			name:  "refresh preserves explicit false",
+			state: types.BoolValue(false),
+			want:  types.BoolValue(false),
+		},
+		{
+			name:  "refresh does not preserve true after remote clear",
+			state: types.BoolValue(true),
+			want:  types.BoolNull(),
+		},
+		{
+			name:  "refresh keeps omitted value null",
+			state: types.BoolNull(),
+			want:  types.BoolNull(),
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			ctx := context.Background()
+			stateNodeClass := testNodeClassModel(ctx, "default")
+			stateNodeClass.EphemeralStorageLocalSSD = customfield.NewObjectMust(ctx, &api.GCEEphemeralStorageLocalSSDModel{
+				AutoCount: tt.state,
+			})
+			current := customfield.NewObjectListMust(ctx, []api.GCENodeClassModel{stateNodeClass})
+			remoteNodeClass := testRemoteNodeClass("default")
+			remoteNodeClass.NodeClassSpec.EphemeralStorageLocalSSD = &api.GCEEphemeralStorageLocalSSD{}
+			client := &fakeClusterClient{nodeClasses: api.RebalanceNodeClassList{
+				GCENodeClasses: []api.GCENodeClass{remoteNodeClass},
+			}}
+
+			var hydrated customfield.NestedObjectList[api.GCENodeClassModel]
+			var err error
+			if tt.postWrite {
+				hydrated, err = hydrateNodeClassesPostWrite(ctx, client, "cluster-1", current)
+			} else {
+				hydrated, err = refreshNodeClassesState(ctx, client, "cluster-1", current)
+			}
+			if err != nil {
+				t.Fatalf("hydrate nodeclass state: %v", err)
+			}
+			models, diags := hydrated.AsStructSliceT(ctx)
+			if diags.HasError() || len(models) != 1 {
+				t.Fatalf("hydrated nodeclasses = %#v, diagnostics = %v", models, diags)
+			}
+			localSSD, localSSDDiags := models[0].EphemeralStorageLocalSSD.Value(ctx)
+			if localSSDDiags.HasError() || localSSD == nil || !localSSD.AutoCount.Equal(tt.want) {
+				t.Fatalf("auto_count = %#v, diagnostics = %v, want %#v", localSSD, localSSDDiags, tt.want)
+			}
+		})
+	}
+}
+
 func TestPostWriteNodeClassHydrationNormalizesOmittedLocalSSDSwitchToFalse(t *testing.T) {
 	ctx := context.Background()
 	stateNodeClass := testNodeClassModel(ctx, "default")
