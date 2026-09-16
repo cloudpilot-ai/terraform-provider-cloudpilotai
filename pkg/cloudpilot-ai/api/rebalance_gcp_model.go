@@ -66,9 +66,10 @@ var (
 )
 
 type GCEDiskModel struct {
-	SizeGiB  types.Int64  `tfsdk:"size_gib"`
-	Category types.String `tfsdk:"category"`
-	Boot     types.Bool   `tfsdk:"boot"`
+	SizeGiB    types.Int64                                     `tfsdk:"size_gib"`
+	SizePolicy customfield.NestedObject[VolumeSizePolicyModel] `tfsdk:"size_policy"`
+	Category   types.String                                    `tfsdk:"category"`
+	Boot       types.Bool                                      `tfsdk:"boot"`
 }
 
 type GCEAdditionalNetworkInterfaceModel struct {
@@ -218,11 +219,19 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 	}
 	if len(g.NodeClassSpec.Disks) > 0 {
 		model.Disks = customfield.NewObjectListMust(ctx, lo.Map(g.NodeClassSpec.Disks, func(d GCEDisk, _ int) GCEDiskModel {
-			return GCEDiskModel{
-				SizeGiB:  types.Int64Value(int64(d.SizeGiB)),
-				Category: stringValueOrNull(string(d.Category)),
-				Boot:     types.BoolValue(d.Boot),
+			model := GCEDiskModel{
+				SizeGiB:    types.Int64Value(int64(d.SizeGiB)),
+				SizePolicy: customfield.NullObject[VolumeSizePolicyModel](ctx),
+				Category:   stringValueOrNull(string(d.Category)),
+				Boot:       types.BoolValue(d.Boot),
 			}
+			if d.SizePolicy != nil {
+				model.SizePolicy = customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+					PerVCPUGiB: types.Int64Value(int64(d.SizePolicy.PerVCPUGiB)),
+					MaxSizeGiB: types.Int64Value(int64(d.SizePolicy.MaxSizeGiB)),
+				})
+			}
+			return model
 		}))
 	}
 	if len(g.NodeClassSpec.ImageSelectorTerms) > 0 {
@@ -374,6 +383,22 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 			if !diskModel.Boot.IsNull() && !diskModel.Boot.IsUnknown() {
 				disk.Boot = diskModel.Boot.ValueBool()
 			}
+			if diskModel.SizePolicy.IsUnknown() {
+				// Preserve the current value until Terraform resolves the unknown.
+			} else if diskModel.SizePolicy.IsNull() {
+				disk.SizePolicy = nil
+			} else {
+				policy, policyDiags := diskModel.SizePolicy.Value(ctx)
+				if policyDiags.HasError() {
+					return nil, fmt.Errorf("disks[%d].size_policy: %v", index, policyDiags)
+				}
+				if policy != nil {
+					disk.SizePolicy = &gcpproviderv1alpha1.VolumeSizePolicy{
+						PerVCPUGiB: int32(policy.PerVCPUGiB.ValueInt64()),
+						MaxSizeGiB: int32(policy.MaxSizeGiB.ValueInt64()),
+					}
+				}
+			}
 			out.NodeClassSpec.Disks = append(out.NodeClassSpec.Disks, disk)
 		}
 	}
@@ -483,6 +508,9 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	if err := validateGCENodeClassLocalSSD(out.NodeClassSpec); err != nil {
 		return nil, err
 	}
+	if err := validateGCENodeClassDiskSizePolicy(out.NodeClassSpec); err != nil {
+		return nil, err
+	}
 
 	if len(current.rawJSON) > 0 {
 		mergedRawJSON, err := mergeGCENodeClassModelIntoRawJSON(m, &out)
@@ -503,6 +531,32 @@ func validateGCENodeClassLocalSSD(spec *GCENodeClassSpec) error {
 		if disk.Category == gcpproviderv1alpha1.DiskCategory("local-ssd") {
 			return fmt.Errorf("ephemeral_storage_local_ssd cannot be combined with disks[%d].category = local-ssd", index)
 		}
+	}
+	return nil
+}
+
+func validateGCENodeClassDiskSizePolicy(spec *GCENodeClassSpec) error {
+	if spec == nil {
+		return nil
+	}
+	policyCount := 0
+	for index, disk := range spec.Disks {
+		if disk.SizePolicy == nil {
+			continue
+		}
+		policyCount++
+		if !disk.Boot {
+			return fmt.Errorf("disks[%d].size_policy requires boot = true", index)
+		}
+		if disk.SizePolicy.MaxSizeGiB < disk.SizeGiB {
+			return fmt.Errorf("disks[%d].size_policy.max_size_gib must be at least size_gib", index)
+		}
+		if disk.Category == gcpproviderv1alpha1.DiskCategory("hyperdisk-throughput") && disk.SizePolicy.MaxSizeGiB > 32768 {
+			return fmt.Errorf("disks[%d].size_policy.max_size_gib cannot exceed 32768 for hyperdisk-throughput", index)
+		}
+	}
+	if policyCount > 1 {
+		return fmt.Errorf("disks supports at most one size_policy")
 	}
 	return nil
 }

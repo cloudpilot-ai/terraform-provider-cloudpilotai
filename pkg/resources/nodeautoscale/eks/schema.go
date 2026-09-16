@@ -358,6 +358,23 @@ func nodeClassTemplateSchema(ctx context.Context) map[string]schema.Attribute {
 								Description: "EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.",
 								Optional:    true,
 							},
+							"volume_size_policy": schema.SingleNestedAttribute{
+								Description: "Dynamic size policy for the kubelet root volume. Policy presence automatically includes Pod ephemeral-storage demand unless instance-store RAID0 backs ephemeral storage.",
+								Optional:    true,
+								CustomType:  customfield.NewNestedObjectType[api.VolumeSizePolicyModel](ctx),
+								Attributes: map[string]schema.Attribute{
+									"per_vcpu_gib": schema.Int64Attribute{
+										Description: "GiB added to the base volume size for every vCPU.",
+										Optional:    true,
+										Validators:  commonvalidators.Int64AtLeast(0),
+									},
+									"max_size_gib": schema.Int64Attribute{
+										Description: "Maximum raw EBS volume size in GiB and the capacity bound used for scheduling.",
+										Required:    true,
+										Validators:  commonvalidators.Int64AtLeast(1),
+									},
+								},
+							},
 							"volume_type": schema.StringAttribute{
 								Description: "EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.",
 								Optional:    true,

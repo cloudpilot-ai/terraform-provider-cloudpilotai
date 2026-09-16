@@ -230,7 +230,20 @@ Optional:
 
 - `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
 - `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
+- `volume_size_policy` (Attributes) Dynamic size policy for the kubelet root volume. Policy presence automatically includes Pod ephemeral-storage demand unless instance-store RAID0 backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings--ebs--volume_size_policy))
 - `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
+
+<a id="nestedatt--nodeclass_templates--block_device_mappings--ebs--volume_size_policy"></a>
+### Nested Schema for `nodeclass_templates.block_device_mappings.ebs.volume_size_policy`
+
+Required:
+
+- `max_size_gib` (Number) Maximum raw EBS volume size in GiB and the capacity bound used for scheduling.
+
+Optional:
+
+- `per_vcpu_gib` (Number) GiB added to the base volume size for every vCPU.
+
 
 
 
@@ -294,7 +307,20 @@ Optional:
 
 - `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
 - `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
+- `volume_size_policy` (Attributes) Dynamic size policy for the kubelet root volume. Policy presence automatically includes Pod ephemeral-storage demand unless instance-store RAID0 backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings--ebs--volume_size_policy))
 - `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
+
+<a id="nestedatt--nodeclasses--block_device_mappings--ebs--volume_size_policy"></a>
+### Nested Schema for `nodeclasses.block_device_mappings.ebs.volume_size_policy`
+
+Required:
+
+- `max_size_gib` (Number) Maximum raw EBS volume size in GiB and the capacity bound used for scheduling.
+
+Optional:
+
+- `per_vcpu_gib` (Number) GiB added to the base volume size for every vCPU.
+
 
 
 

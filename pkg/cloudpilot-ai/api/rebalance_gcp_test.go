@@ -30,6 +30,10 @@ func TestGCENodeClassModelRoundTripPreservesTypedFields(t *testing.T) {
 				Boot:     true,
 				Category: "pd-balanced",
 				SizeGiB:  80,
+				SizePolicy: &gcpproviderv1alpha1.VolumeSizePolicy{
+					PerVCPUGiB: 10,
+					MaxSizeGiB: 512,
+				},
 			}},
 			Labels:      map[string]string{"cloudpilot.ai/managed": "true"},
 			Metadata:    map[string]string{"startup-script": "echo hi"},
@@ -62,6 +66,10 @@ func TestGCENodeClassModelRoundTripPreservesTypedFields(t *testing.T) {
 	}
 	if roundTrip.NodeClassSpec.NetworkConfig == nil || roundTrip.NodeClassSpec.NetworkConfig.EnablePrivateNodes == nil || !*roundTrip.NodeClassSpec.NetworkConfig.EnablePrivateNodes {
 		t.Fatalf("NetworkConfig = %#v", roundTrip.NodeClassSpec.NetworkConfig)
+	}
+	if len(roundTrip.NodeClassSpec.Disks) != 1 || roundTrip.NodeClassSpec.Disks[0].SizePolicy == nil ||
+		roundTrip.NodeClassSpec.Disks[0].SizePolicy.PerVCPUGiB != 10 || roundTrip.NodeClassSpec.Disks[0].SizePolicy.MaxSizeGiB != 512 {
+		t.Fatalf("Disks = %#v", roundTrip.NodeClassSpec.Disks)
 	}
 }
 

@@ -296,15 +296,15 @@ func blockDeviceMappingModelsFromAWS(ctx context.Context, in []*awsproviderv1.Bl
 			model.DeviceName = types.StringValue("")
 		}
 		if m.EBS != nil {
-			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(m.EBS))
+			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(ctx, m.EBS))
 		}
 		out = append(out, model)
 	}
 	return out
 }
 
-func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
-	model := &BlockDeviceModel{}
+func blockDeviceModelFromAWS(ctx context.Context, in *awsproviderv1.BlockDevice) *BlockDeviceModel {
+	model := &BlockDeviceModel{VolumeSizePolicy: customfield.NullObject[VolumeSizePolicyModel](ctx)}
 	if in.Encrypted != nil {
 		model.Encrypted = types.BoolValue(*in.Encrypted)
 	}
@@ -313,6 +313,12 @@ func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
 	}
 	if in.VolumeType != nil {
 		model.VolumeType = types.StringValue(*in.VolumeType)
+	}
+	if in.VolumeSizePolicy != nil {
+		model.VolumeSizePolicy = customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+			PerVCPUGiB: types.Int64Value(int64(in.VolumeSizePolicy.PerVCPUGiB)),
+			MaxSizeGiB: types.Int64Value(int64(in.VolumeSizePolicy.MaxSizeGiB)),
+		})
 	}
 	return model
 }

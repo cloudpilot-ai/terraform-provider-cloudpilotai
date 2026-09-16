@@ -180,6 +180,10 @@ func TestEC2NodeClassModelAppliesFrontendFields(t *testing.T) {
 			RootVolume: types.BoolValue(true),
 			EBS: customfield.NewObjectMust(ctx, &BlockDeviceModel{
 				VolumeSize: types.StringValue("80Gi"),
+				VolumeSizePolicy: customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+					PerVCPUGiB: types.Int64Value(10),
+					MaxSizeGiB: types.Int64Value(512),
+				}),
 				VolumeType: types.StringValue("gp3"),
 				Encrypted:  types.BoolValue(true),
 			}),
@@ -209,6 +213,9 @@ func TestEC2NodeClassModelAppliesFrontendFields(t *testing.T) {
 	if ebs.Encrypted == nil || !*ebs.Encrypted {
 		t.Fatalf("EBS encrypted = %#v", ebs)
 	}
+	if ebs.VolumeSizePolicy == nil || ebs.VolumeSizePolicy.PerVCPUGiB != 10 || ebs.VolumeSizePolicy.MaxSizeGiB != 512 {
+		t.Fatalf("EBS volume size policy = %#v", ebs.VolumeSizePolicy)
+	}
 }
 
 func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
@@ -229,6 +236,10 @@ func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
 					Encrypted:  aws.Bool(true),
 					VolumeSize: &volumeSize,
 					VolumeType: &volumeType,
+					VolumeSizePolicy: &awsproviderv1.VolumeSizePolicy{
+						PerVCPUGiB: 8,
+						MaxSizeGiB: 256,
+					},
 				},
 			}},
 		},
@@ -257,6 +268,10 @@ func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
 	}
 	if ebs == nil || !ebs.Encrypted.ValueBool() {
 		t.Fatalf("BlockDeviceMappings EBS encrypted = %#v", ebs)
+	}
+	policy, policyDiags := ebs.VolumeSizePolicy.Value(ctx)
+	if policyDiags.HasError() || policy == nil || policy.PerVCPUGiB.ValueInt64() != 8 || policy.MaxSizeGiB.ValueInt64() != 256 {
+		t.Fatalf("BlockDeviceMappings EBS volume size policy = %#v, diagnostics = %v", policy, policyDiags)
 	}
 }
 

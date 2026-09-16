@@ -217,6 +217,23 @@ func gkeNodeClassSchema(ctx context.Context) map[string]schema.Attribute {
 						Optional:    true,
 						Validators:  commonvalidators.Int64AtLeast(10),
 					},
+					"size_policy": schema.SingleNestedAttribute{
+						Description: "Dynamic size policy for the boot disk. Policy presence automatically includes Pod ephemeral-storage demand unless Local SSD backs ephemeral storage.",
+						Optional:    true,
+						CustomType:  customfield.NewNestedObjectType[api.VolumeSizePolicyModel](ctx),
+						Attributes: map[string]schema.Attribute{
+							"per_vcpu_gib": schema.Int64Attribute{
+								Description: "GiB added to the base boot disk for every vCPU.",
+								Optional:    true,
+								Validators:  commonvalidators.Int64AtLeast(0),
+							},
+							"max_size_gib": schema.Int64Attribute{
+								Description: "Maximum raw boot disk size in GiB and the capacity bound used for scheduling.",
+								Required:    true,
+								Validators:  commonvalidators.Int64AtLeast(10),
+							},
+						},
+					},
 					"category": schema.StringAttribute{
 						Description: "GCE disk category. Allowed values: `hyperdisk-balanced`, `hyperdisk-balanced-high-availability`, `hyperdisk-extreme`, `hyperdisk-ml`, `hyperdisk-throughput`, `local-ssd`, `pd-balanced`, `pd-extreme`, `pd-ssd`, `pd-standard`.",
 						Optional:    true,
