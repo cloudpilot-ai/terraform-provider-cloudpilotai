@@ -29,6 +29,7 @@ import (
 // GCENodeClassSpec is the top level specification for the GCP Karpenter Provider.
 // This will contain the configuration necessary to launch instances in GCP.
 // +kubebuilder:validation:XValidation:message="ephemeralStorageLocalSSD cannot be combined with disks using category local-ssd",rule="!has(self.ephemeralStorageLocalSSD) || !has(self.disks) || self.disks.all(d, !has(d.category) || d.category != 'local-ssd')"
+// +kubebuilder:validation:XValidation:message="at most one disk may define sizePolicy",rule="!has(self.disks) || self.disks.filter(d, has(d.sizePolicy)).size() <= 1"
 type GCENodeClassSpec struct {
 	// ServiceAccount is the GCP IAM service account email to assign to the instance
 	// +kubebuilder:validation:Pattern=`^[^@]+@(developer\.gserviceaccount\.com|[^@]+\.iam\.gserviceaccount\.com)$`
@@ -41,8 +42,9 @@ type GCENodeClassSpec struct {
 	// EphemeralStorageLocalSSD enables GKE-style Local SSD backed node ephemeral storage.
 	// Local SSDs are combined and mounted by the GKE node image before kubelet starts,
 	// so emptyDir volumes, writable container layers, images, and pod logs use them.
-	// For machine types with bundled Local SSDs, Count is ignored and the fixed bundled
-	// capacity is used. For other supported machine types, Count is required.
+	// For machine types with bundled Local SSDs, Count and AutoCount are ignored and the
+	// fixed bundled capacity is used. Other supported machine types use either a fixed
+	// Count or AutoCount to select capacity from pod ephemeral-storage requests.
 	// +optional
 	EphemeralStorageLocalSSD *EphemeralStorageLocalSSDConfig `json:"ephemeralStorageLocalSSD,omitempty"`
 	// ImageSelectorTerms is a list of or image selector terms. The terms are ORed.
@@ -122,6 +124,7 @@ type GCENodeClassSpec struct {
 
 // EphemeralStorageLocalSSDConfig configures Local SSDs as the node's ephemeral storage.
 // The presence of this object enables the feature.
+// +kubebuilder:validation:XValidation:message="count and autoCount cannot both be configured",rule="!has(self.count) || !has(self.autoCount) || !self.autoCount"
 type EphemeralStorageLocalSSDConfig struct {
 	// Count is the number of NVMe Local SSDs to attach to machine types that do not
 	// already bundle Local SSDs. It is ignored for machine types with bundled Local SSDs.
@@ -129,6 +132,10 @@ type EphemeralStorageLocalSSDConfig struct {
 	// +kubebuilder:validation:Maximum=32
 	// +optional
 	Count *int32 `json:"count,omitempty"`
+	// AutoCount automatically selects the Local SSD count from the pod ephemeral-storage request.
+	// It is ignored for machine types with bundled Local SSDs.
+	// +optional
+	AutoCount bool `json:"autoCount,omitempty"`
 }
 
 // NetworkConfig holds network settings for provisioned nodes.
@@ -310,11 +317,19 @@ type KubeletConfiguration struct {
 // +kubebuilder:validation:XValidation:message="provisionedIOPS is only applicable for pd-extreme, hyperdisk-balanced, hyperdisk-balanced-high-availability, and hyperdisk-extreme",rule="!has(self.provisionedIOPS) || self.category in ['pd-extreme', 'hyperdisk-balanced', 'hyperdisk-balanced-high-availability', 'hyperdisk-extreme']"
 // +kubebuilder:validation:XValidation:message="provisionedThroughput is only applicable for hyperdisk-balanced, hyperdisk-balanced-high-availability, hyperdisk-throughput, and hyperdisk-ml",rule="!has(self.provisionedThroughput) || self.category in ['hyperdisk-balanced', 'hyperdisk-balanced-high-availability', 'hyperdisk-throughput', 'hyperdisk-ml']"
 // +kubebuilder:validation:XValidation:message="provisionedIOPS and provisionedThroughput must both be set or both be unset for hyperdisk-balanced and hyperdisk-balanced-high-availability",rule="!(self.category in ['hyperdisk-balanced', 'hyperdisk-balanced-high-availability']) || (has(self.provisionedIOPS) == has(self.provisionedThroughput))"
+// +kubebuilder:validation:XValidation:message="sizePolicy is only allowed on a boot disk",rule="!has(self.sizePolicy) || self.boot"
+// +kubebuilder:validation:XValidation:message="sizeGiB is required when sizePolicy is configured",rule="!has(self.sizePolicy) || has(self.sizeGiB)"
+// +kubebuilder:validation:XValidation:message="sizePolicy.maxSizeGiB must be at least sizeGiB",rule="!has(self.sizePolicy) || self.sizePolicy.maxSizeGiB >= self.sizeGiB"
+// +kubebuilder:validation:XValidation:message="hyperdisk-throughput sizePolicy.maxSizeGiB cannot exceed 32768",rule="!has(self.sizePolicy) || !has(self.category) || self.category != 'hyperdisk-throughput' || self.sizePolicy.maxSizeGiB <= 32768"
 type Disk struct {
 	// SizeGiB is the size of the disk. Unit: GiB
 	// +kubebuilder:validation:XValidation:message="size invalid",rule="self >= 10"
 	// +optional
 	SizeGiB int32 `json:"sizeGiB"`
+	// SizePolicy dynamically resolves this boot disk's size for each newly
+	// provisioned node. SizeGiB remains the base size.
+	// +optional
+	SizePolicy *VolumeSizePolicy `json:"sizePolicy,omitempty" hash:"ignore"`
 	// The category of the disk (e.g., pd-standard, pd-balanced, pd-ssd, pd-extreme).
 	// +optional
 	Category DiskCategory `json:"category,omitempty"`
@@ -348,6 +363,20 @@ type Disk struct {
 	// hyperdisk-throughput (up to 2,400 MiB/s), and hyperdisk-ml (up to 1,200,000 MiB/s).
 	// +optional
 	ProvisionedThroughput *int64 `json:"provisionedThroughput,omitempty"`
+}
+
+// VolumeSizePolicy controls dynamic volume sizing in GiB.
+type VolumeSizePolicy struct {
+	// PerVCPUGiB is added to the configured base size for every vCPU.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=65536
+	// +optional
+	PerVCPUGiB int32 `json:"perVCPUGiB,omitempty"`
+	// MaxSizeGiB bounds the raw volume size and the storage capacity advertised
+	// during scheduling.
+	// +kubebuilder:validation:Minimum=10
+	// +kubebuilder:validation:Maximum=65536
+	MaxSizeGiB int32 `json:"maxSizeGiB"`
 }
 
 // DiskCategory represents a disk category type

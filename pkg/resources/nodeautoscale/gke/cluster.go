@@ -1189,6 +1189,10 @@ func preserveGCEEphemeralStorageLocalSSDStateRepresentation(ctx context.Context,
 		return state
 	}
 	remoteValue.Count = preserveManagedInt32(stateValue.Count, remoteValue.Count)
+	if !stateValue.AutoCount.IsNull() && !stateValue.AutoCount.IsUnknown() && remoteValue.AutoCount.IsNull() &&
+		(preserveMissing || !stateValue.AutoCount.ValueBool()) {
+		remoteValue.AutoCount = stateValue.AutoCount
+	}
 	return customfield.NewObjectMust(ctx, remoteValue)
 }
 

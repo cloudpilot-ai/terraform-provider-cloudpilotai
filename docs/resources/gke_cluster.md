@@ -159,6 +159,7 @@ Optional:
 
 Optional:
 
+- `auto_count` (Boolean) Automatically attach the smallest supported Local SSD count that satisfies aggregate Pod ephemeral-storage requests. Cannot be true when count is set.
 - `count` (Number) Number of NVMe Local SSDs to attach. Allowed range: 1 to 32. Omit for machine types with bundled Local SSDs, where the fixed bundled count is used.
 
 

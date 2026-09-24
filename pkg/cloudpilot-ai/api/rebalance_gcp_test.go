@@ -97,6 +97,52 @@ func TestGCENodeClassModelRoundTripsLocalSSDEphemeralStorage(t *testing.T) {
 	}
 }
 
+func TestGCENodeClassModelRoundTripsAutomaticLocalSSDCount(t *testing.T) {
+	ctx := context.Background()
+	enabled := true
+	remote := GCENodeClass{
+		Name:                           "cloudpilot",
+		EnableLocalSSDEphemeralStorage: &enabled,
+		NodeClassSpec: &GCENodeClassSpec{
+			ImageSelectorTerms:       []GCEImageSelectorTerm{{Family: "ContainerOptimizedOS", Channel: "cluster"}},
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{AutoCount: true},
+		},
+	}
+	model, err := remote.ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	localSSD, diags := model.EphemeralStorageLocalSSD.Value(ctx)
+	if diags.HasError() || localSSD == nil || !localSSD.AutoCount.ValueBool() {
+		t.Fatalf("EphemeralStorageLocalSSD = %#v, diagnostics = %v", localSSD, diags)
+	}
+	roundTrip, err := model.ToGCENodeClass(ctx, GCENodeClass{Name: "cloudpilot"})
+	if err != nil {
+		t.Fatalf("ToGCENodeClass() error = %v", err)
+	}
+	if roundTrip.NodeClassSpec.EphemeralStorageLocalSSD == nil || !roundTrip.NodeClassSpec.EphemeralStorageLocalSSD.AutoCount {
+		t.Fatalf("round-trip local SSD configuration = %#v", roundTrip.NodeClassSpec.EphemeralStorageLocalSSD)
+	}
+}
+
+func TestGCENodeClassModelRejectsAutomaticAndFixedLocalSSDCount(t *testing.T) {
+	ctx := context.Background()
+	count := int32(2)
+	model, err := (&GCENodeClass{
+		Name: "cloudpilot",
+		NodeClassSpec: &GCENodeClassSpec{
+			ImageSelectorTerms:       []GCEImageSelectorTerm{{Family: "ContainerOptimizedOS", Channel: "cluster"}},
+			EphemeralStorageLocalSSD: &GCEEphemeralStorageLocalSSD{Count: &count, AutoCount: true},
+		},
+	}).ToGCENodeClassModel(ctx)
+	if err != nil {
+		t.Fatalf("ToGCENodeClassModel() error = %v", err)
+	}
+	if _, err := model.ToGCENodeClass(ctx, GCENodeClass{Name: "cloudpilot"}); err == nil || !strings.Contains(err.Error(), "auto_count") {
+		t.Fatalf("ToGCENodeClass() error = %v, want auto_count conflict", err)
+	}
+}
+
 func TestGCENodeClassModelNormalizesOmittedLocalSSDSwitch(t *testing.T) {
 	ctx := context.Background()
 
@@ -125,6 +171,10 @@ func TestGCENodeClassModelNormalizesOmittedLocalSSDSwitch(t *testing.T) {
 		}
 		if model.EnableLocalSSDEphemeralStorage != types.BoolValue(true) {
 			t.Fatalf("EnableLocalSSDEphemeralStorage = %#v, want true", model.EnableLocalSSDEphemeralStorage)
+		}
+		localSSD, diags := model.EphemeralStorageLocalSSD.Value(ctx)
+		if diags.HasError() || localSSD == nil || !localSSD.AutoCount.IsNull() {
+			t.Fatalf("legacy AutoCount = %#v, diagnostics = %v; want null", localSSD, diags)
 		}
 	})
 }
