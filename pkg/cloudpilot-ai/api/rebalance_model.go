@@ -592,7 +592,19 @@ func (e *EC2NodePoolModel) ToEC2NodePool(ctx context.Context, nodepool EC2NodePo
 	if nodepoolPtr, err = applyEC2NodePoolTemplateModel(ctx, nodepoolPtr, ec2NodePoolTemplate); err != nil {
 		return nil, err
 	}
-	return applyEC2NodePoolTemplateModel(ctx, nodepoolPtr, e.ToEC2NodePoolTemplateModel())
+	if nodepoolPtr, err = applyEC2NodePoolTemplateModel(ctx, nodepoolPtr, e.ToEC2NodePoolTemplateModel()); err != nil {
+		return nil, err
+	}
+	// Validate the effective NRI policy after both configuration layers are applied.
+	if ec2NodePoolTemplate != nil {
+		nodepoolPtr.NRISwapPolicy, err = nriSwapFromModel(ctx, ec2NodePoolTemplate.NRISwapPolicy, nodepoolPtr.NRISwapPolicy, e.NRISwapPolicy)
+	} else {
+		nodepoolPtr.NRISwapPolicy, err = nriSwapFromModel(ctx, e.NRISwapPolicy, nodepoolPtr.NRISwapPolicy)
+	}
+	if err != nil {
+		return nil, err
+	}
+	return nodepoolPtr, nil
 }
 
 func applyEC2NodePoolTemplateModel(ctx context.Context, nodepool *EC2NodePool, ec2NodePoolTemplate *EC2NodePoolTemplateModel) (*EC2NodePool, error) {

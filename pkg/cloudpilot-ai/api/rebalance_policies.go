@@ -119,39 +119,47 @@ func nriSwapModelFromAPI(ctx context.Context, in *NRISwapPolicy) customfield.Nes
 	return customfield.NewObjectMust(ctx, &NRISwapPolicyModel{Enabled: types.BoolValue(in.Enabled), MemoryLimitMultiplier: types.Float64Value(in.MemoryLimitMultiplier)})
 }
 
-func nriSwapFromModel(ctx context.Context, model customfield.NestedObject[NRISwapPolicyModel], current *NRISwapPolicy) (*NRISwapPolicy, error) {
-	if model.IsNull() || model.IsUnknown() {
+func nriSwapFromModel(ctx context.Context, model customfield.NestedObject[NRISwapPolicyModel], current *NRISwapPolicy, overrides ...customfield.NestedObject[NRISwapPolicyModel]) (*NRISwapPolicy, error) {
+	out := current
+	managed := false
+	for _, layer := range append([]customfield.NestedObject[NRISwapPolicyModel]{model}, overrides...) {
+		if layer.IsNull() || layer.IsUnknown() {
+			continue
+		}
+		if IsKnownEmptyObject(layer) {
+			out = &NRISwapPolicy{Enabled: false}
+			managed = true
+			continue
+		}
+		value, diags := layer.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("nri_swap_policy: %v", diags)
+		}
+		if value == nil || ((value.Enabled.IsNull() || value.Enabled.IsUnknown()) &&
+			(value.MemoryLimitMultiplier.IsNull() || value.MemoryLimitMultiplier.IsUnknown())) {
+			continue
+		}
+		next := NRISwapPolicy{}
+		if out != nil {
+			next = *out
+		}
+		if !value.Enabled.IsNull() && !value.Enabled.IsUnknown() {
+			next.Enabled = value.Enabled.ValueBool()
+		}
+		if !value.MemoryLimitMultiplier.IsNull() && !value.MemoryLimitMultiplier.IsUnknown() {
+			next.MemoryLimitMultiplier = value.MemoryLimitMultiplier.ValueFloat64()
+		}
+		out = &next
+		managed = true
+	}
+	if !managed {
 		return current, nil
-	}
-	if IsKnownEmptyObject(model) {
-		return &NRISwapPolicy{Enabled: false}, nil
-	}
-	value, diags := model.Value(ctx)
-	if diags.HasError() {
-		return nil, fmt.Errorf("nri_swap_policy: %v", diags)
-	}
-	if value == nil {
-		return current, nil
-	}
-	if (value.Enabled.IsNull() || value.Enabled.IsUnknown()) &&
-		(value.MemoryLimitMultiplier.IsNull() || value.MemoryLimitMultiplier.IsUnknown()) {
-		return current, nil
-	}
-	out := NRISwapPolicy{}
-	if current != nil {
-		out = *current
-	}
-	if !value.Enabled.IsNull() && !value.Enabled.IsUnknown() {
-		out.Enabled = value.Enabled.ValueBool()
-	}
-	if !value.MemoryLimitMultiplier.IsNull() && !value.MemoryLimitMultiplier.IsUnknown() {
-		out.MemoryLimitMultiplier = value.MemoryLimitMultiplier.ValueFloat64()
 	}
 	ratio := out.MemoryLimitMultiplier
 	if out.Enabled && (math.IsNaN(ratio) || math.IsInf(ratio, 0) || ratio <= 1 || ratio > 10 || ratio != math.Round(ratio*1000)/1000) {
 		return nil, fmt.Errorf("nri_swap_policy.memory_limit_multiplier must be greater than 1 and at most 10, with at most 3 decimal places")
 	}
-	return &out, nil
+	return out, nil
 }
 
 func applyEC2NodePoolPolicies(ctx context.Context, pool *EC2NodePool, model *EC2NodePoolTemplateModel) error {
@@ -164,8 +172,7 @@ func applyEC2NodePoolPolicies(ctx context.Context, pool *EC2NodePool, model *EC2
 	if err != nil {
 		return err
 	}
-	pool.NRISwapPolicy, err = nriSwapFromModel(ctx, model.NRISwapPolicy, pool.NRISwapPolicy)
-	return err
+	return nil
 }
 
 func applyGCENodePoolPolicies(ctx context.Context, pool *GCENodePool, model *GCENodePoolModel) error {
