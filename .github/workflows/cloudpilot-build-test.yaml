@@ -1,32 +1,33 @@
 name: CloudPilot build test
-
-on:
+'on':
   pull_request:
-    branches: [ "main", "release-*"]
+    branches:
+    - main
+    - release-*
+    - ci-cache-trial/go-cache-20261106
   push:
-    branches: [ "main" ]
-
+    branches:
+    - main
+    - ci-cache-trial/go-cache-20261106
 jobs:
   build-test:
     name: CloudPilot build test
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          submodules: true
+    - uses: actions/checkout@v4
+      with:
+        submodules: true
+    - name: Restore Go CI cache
+      id: setup-go
+      uses: cloudx-io/setup-go@0bbd76c0381c065220668df9b6694845b937aaa0
+      with:
+        go-version: 1.25.1
+        cache-key-prefix: ${{ github.job }}
+        cache-dependency-path: '**/go.*'
+        save: ${{ github.event_name == 'push' && (github.ref == 'refs/heads/main' || github.ref == 'refs/heads/ci-cache-trial/go-cache-20261106') }}
+    - name: build test
+      env:
+        GOTOOLCHAIN: auto
+      run: 'go build ./...
 
-      - name: Restore Go CI cache
-        id: setup-go
-        uses: cloudx-io/setup-go@0bbd76c0381c065220668df9b6694845b937aaa0 # main: restore-only support
-        with:
-          go-version: "1.25.1"
-          cache-key-prefix: ${{ github.job }}
-          cache-dependency-path: '**/go.*'
-          save: ${{ github.event_name == 'push' && github.ref == 'refs/heads/main' }}
-
-      - name: build test
-        env:
-          # setup-go v7 disables automatic toolchain selection by default.
-          GOTOOLCHAIN: auto
-        run: |
-          go build ./...
+        '
