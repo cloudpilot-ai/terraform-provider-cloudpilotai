@@ -183,7 +183,9 @@ Optional:
 
 Optional:
 
+- `aws_spot_allocation_strategy` (String) AWS Spot allocation strategy.
 - `discount` (Number) Cluster-level discount ratio used by cost calculations.
+- `disruption_cooldown` (String) Minimum delay between voluntary disruption batches. Omit to preserve the existing pool override; set 0s to disable the extra delay.
 - `enable_disk_monitor` (Boolean) Enable disk monitor for this cluster.
 - `enable_node_pool_decommission` (Boolean) Enable node pool decommissioning. When omitted, Terraform does not manage this setting.
 - `enable_node_repair` (Boolean) Enable CloudPilot AI node repair for this cluster.
@@ -205,14 +207,15 @@ Optional:
 - `block_device_mappings` (Attributes List) EC2 block device mappings. Use an empty list to clear inherited mappings; a non-empty list supports at most 50 mappings and at most one mapping with `root_volume = true`. Do not combine with `system_disk_size_gib` on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings))
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `enable_local_ssd_ephemeral_storage` (Boolean) Use EC2 instance-store NVMe disks as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.
-- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
-- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
+- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value. While Memory Extension is enabled, omit this field or set it to 100 because the server manages kubeReserved CPU.
+- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value. While Memory Extension is enabled, omit this field or set it to 256 because the server manages kubeReserved memory.
 - `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
+- `memory_extension` (Attributes) Cold memory and compressed cached memory policy for AL2023 EKS nodes. Omit to preserve the existing policy; set an empty object or enabled=false to disable it. (see [below for nested schema](#nestedatt--nodeclass_templates--memory_extension))
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclass_templates--subnet_selector_terms))
 - `system_disk_size_gib` (Number) System disk size in GiB. Must be at least 1. Do not combine with `block_device_mappings` on the same NodeClass.
-- `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData.
+- `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData. Memory Extension may wrap this content with managed bootstrap MIME parts; Terraform preserves the configured content when the user-owned parts are unchanged.
 
 <a id="nestedatt--nodeclass_templates--block_device_mappings"></a>
 ### Nested Schema for `nodeclass_templates.block_device_mappings`
@@ -220,7 +223,7 @@ Optional:
 Optional:
 
 - `device_name` (String) Device name, for example /dev/xvda.
-- `ebs` (Attributes) EBS settings for this block device. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings--ebs))
+- `ebs` (Attributes) EBS settings for this block device. Omit or set null to preserve them; set an empty object to clear exposed EBS settings while retaining unexposed server fields. Clearing the size requires an existing unexposed snapshot_id; otherwise clear the whole block_device_mappings list. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings--ebs))
 - `root_volume` (Boolean) Whether this mapping is the kubelet root volume.
 
 <a id="nestedatt--nodeclass_templates--block_device_mappings--ebs"></a>
@@ -228,9 +231,50 @@ Optional:
 
 Optional:
 
-- `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
-- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
-- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
+- `encrypted` (Boolean) Whether the EBS volume is encrypted. Omit to preserve an existing value; on creation, the EC2NodeClass or AWS default applies.
+- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Omit or set null to preserve the existing size; set an empty string to clear it only when an existing unexposed snapshot_id supplies the volume contents. New mappings require a size because this provider does not expose `snapshot_id`; a dynamic size policy also requires a positive base size.
+- `volume_size_policy` (Attributes) Dynamic size policy for the kubelet root volume. Omit or set null to preserve it; set an empty object to remove it. Policy presence automatically includes Pod ephemeral-storage demand unless instance-store RAID0 backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclass_templates--block_device_mappings--ebs--volume_size_policy))
+- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`. Omit or set null to preserve the current type; set an empty string to clear it.
+
+<a id="nestedatt--nodeclass_templates--block_device_mappings--ebs--volume_size_policy"></a>
+### Nested Schema for `nodeclass_templates.block_device_mappings.ebs.volume_size_policy`
+
+Optional:
+
+- `max_size_gib` (Number) Maximum raw EBS volume size in GiB and the capacity bound used for scheduling. Required for a new policy; omit or set null to preserve an existing value.
+- `per_vcpu_gib` (Number) GiB added to the base volume size for every vCPU.
+
+
+
+
+<a id="nestedatt--nodeclass_templates--memory_extension"></a>
+### Nested Schema for `nodeclass_templates.memory_extension`
+
+Optional:
+
+- `cached_memory` (Attributes) Compressed cached memory settings. Set an empty object to restore server defaults. (see [below for nested schema](#nestedatt--nodeclass_templates--memory_extension--cached_memory))
+- `cold_memory` (Attributes) Disk-backed cold memory settings. Null children preserve existing values. Set an empty object to restore server defaults. (see [below for nested schema](#nestedatt--nodeclass_templates--memory_extension--cold_memory))
+- `enabled` (Boolean) Enable Memory Extension on newly provisioned nodes. Omit or set null to preserve the existing value.
+- `reclaim_policy` (String) Memory reclaim policy. Currently Conservative is supported. Set an empty string to restore the server default.
+
+<a id="nestedatt--nodeclass_templates--memory_extension--cached_memory"></a>
+### Nested Schema for `nodeclass_templates.memory_extension.cached_memory`
+
+Optional:
+
+- `max_memory_percent` (Number) Maximum compressed cache as a percentage of memory, from 1 to 40.
+
+
+<a id="nestedatt--nodeclass_templates--memory_extension--cold_memory"></a>
+### Nested Schema for `nodeclass_templates.memory_extension.cold_memory`
+
+Optional:
+
+- `max_disk_percent` (Number) Maximum disk percentage for cold memory, from 1 to 50.
+- `max_gib` (Number) Maximum cold memory in GiB, from 1 to 64 and at least min_gib.
+- `memory_ratio_percent` (Number) Cold memory as a percentage of node memory, from 1 to 100.
+- `min_gib` (Number) Minimum cold memory in GiB, from 1 to 64.
+- `sizing_mode` (String) Cold memory sizing mode. Currently Auto is supported. Set an empty string to restore the server default.
 
 
 
@@ -267,16 +311,17 @@ Optional:
 - `block_device_mappings` (Attributes List) EC2 block device mappings. Use an empty list to clear inherited mappings; a non-empty list supports at most 50 mappings and at most one mapping with `root_volume = true`. Do not combine with `system_disk_size_gib` on the same NodeClass. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings))
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) for this nodeclass.
 - `enable_local_ssd_ephemeral_storage` (Boolean) Use EC2 instance-store NVMe disks as kubelet ephemeral storage. When omitted, Terraform preserves the server setting.
-- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
-- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value.
+- `extra_cpu_allocation_mcore` (Number) Additional allocatable CPU in millicores reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value. While Memory Extension is enabled, omit this field or set it to 100 because the server manages kubeReserved CPU.
+- `extra_memory_allocation_mib` (Number) Additional allocatable memory in MiB reserved for burstable pods. Must be non-negative. When omitted, Terraform preserves the server value. While Memory Extension is enabled, omit this field or set it to 256 because the server manages kubeReserved memory.
 - `instance_tags` (Map of String) Each provisioned EC2 instance will have the configured tags as key-value pairs. If omitted, CloudPilot keeps its default managed instance tag configuration.
+- `memory_extension` (Attributes) Cold memory and compressed cached memory policy for AL2023 EKS nodes. Omit to preserve the existing policy; set an empty object or enabled=false to disable it. (see [below for nested schema](#nestedatt--nodeclasses--memory_extension))
 - `origin_nodeclass_json` (String) Raw EC2NodeClass JSON. When configured, it replaces the generated NodeClass and all other typed fields on this object are ignored. The JSON must contain a valid EC2NodeClass object.
 - `role` (String) IAM role name for the EC2 instances launched by this NodeClass. Defaults to `CloudPilotNodeRole-{cluster_name}` if not set.
 - `security_group_selector_terms` (Attributes List) Security group selector terms (ORed). Each block sets exactly one of non-empty `tags`, `id`, or `name`. If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--security_group_selector_terms))
 - `subnet_selector_terms` (Attributes List) Subnet selector terms (ORed). Each block uses non-empty `tags` or `id` (mutually exclusive). If omitted, defaults to one tag selector `{"cluster.cloudpilot.ai/{cluster_name}": "true"}`. (see [below for nested schema](#nestedatt--nodeclasses--subnet_selector_terms))
 - `system_disk_size_gib` (Number) System disk size in GiB. Must be at least 1. Do not combine with `block_device_mappings` on the same NodeClass.
 - `template_name` (String, Deprecated) Deprecated provider-side NodeClass template name to merge before applying this NodeClass.
-- `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData.
+- `user_data` (String) NodeClass userData passed to Karpenter EC2NodeClass spec.userData. Memory Extension may wrap this content with managed bootstrap MIME parts; Terraform preserves the configured content when the user-owned parts are unchanged.
 
 <a id="nestedatt--nodeclasses--block_device_mappings"></a>
 ### Nested Schema for `nodeclasses.block_device_mappings`
@@ -284,7 +329,7 @@ Optional:
 Optional:
 
 - `device_name` (String) Device name, for example /dev/xvda.
-- `ebs` (Attributes) EBS settings for this block device. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings--ebs))
+- `ebs` (Attributes) EBS settings for this block device. Omit or set null to preserve them; set an empty object to clear exposed EBS settings while retaining unexposed server fields. Clearing the size requires an existing unexposed snapshot_id; otherwise clear the whole block_device_mappings list. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings--ebs))
 - `root_volume` (Boolean) Whether this mapping is the kubelet root volume.
 
 <a id="nestedatt--nodeclasses--block_device_mappings--ebs"></a>
@@ -292,9 +337,50 @@ Optional:
 
 Optional:
 
-- `encrypted` (Boolean) Whether the EBS volume is encrypted. When omitted, the EC2NodeClass or AWS default applies.
-- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Required by the generated mapping because this provider does not expose `snapshot_id`.
-- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`.
+- `encrypted` (Boolean) Whether the EBS volume is encrypted. Omit to preserve an existing value; on creation, the EC2NodeClass or AWS default applies.
+- `volume_size` (String) EBS volume size as a Kubernetes quantity using `Gi`, `G`, `Ti`, or `T`, for example `80Gi`. Omit or set null to preserve the existing size; set an empty string to clear it only when an existing unexposed snapshot_id supplies the volume contents. New mappings require a size because this provider does not expose `snapshot_id`; a dynamic size policy also requires a positive base size.
+- `volume_size_policy` (Attributes) Dynamic size policy for the kubelet root volume. Omit or set null to preserve it; set an empty object to remove it. Policy presence automatically includes Pod ephemeral-storage demand unless instance-store RAID0 backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclasses--block_device_mappings--ebs--volume_size_policy))
+- `volume_type` (String) EBS volume type. Allowed values: `standard`, `io1`, `io2`, `gp2`, `sc1`, `st1`, `gp3`. Omit or set null to preserve the current type; set an empty string to clear it.
+
+<a id="nestedatt--nodeclasses--block_device_mappings--ebs--volume_size_policy"></a>
+### Nested Schema for `nodeclasses.block_device_mappings.ebs.volume_size_policy`
+
+Optional:
+
+- `max_size_gib` (Number) Maximum raw EBS volume size in GiB and the capacity bound used for scheduling. Required for a new policy; omit or set null to preserve an existing value.
+- `per_vcpu_gib` (Number) GiB added to the base volume size for every vCPU.
+
+
+
+
+<a id="nestedatt--nodeclasses--memory_extension"></a>
+### Nested Schema for `nodeclasses.memory_extension`
+
+Optional:
+
+- `cached_memory` (Attributes) Compressed cached memory settings. Set an empty object to restore server defaults. (see [below for nested schema](#nestedatt--nodeclasses--memory_extension--cached_memory))
+- `cold_memory` (Attributes) Disk-backed cold memory settings. Null children preserve existing values. Set an empty object to restore server defaults. (see [below for nested schema](#nestedatt--nodeclasses--memory_extension--cold_memory))
+- `enabled` (Boolean) Enable Memory Extension on newly provisioned nodes. Omit or set null to preserve the existing value.
+- `reclaim_policy` (String) Memory reclaim policy. Currently Conservative is supported. Set an empty string to restore the server default.
+
+<a id="nestedatt--nodeclasses--memory_extension--cached_memory"></a>
+### Nested Schema for `nodeclasses.memory_extension.cached_memory`
+
+Optional:
+
+- `max_memory_percent` (Number) Maximum compressed cache as a percentage of memory, from 1 to 40.
+
+
+<a id="nestedatt--nodeclasses--memory_extension--cold_memory"></a>
+### Nested Schema for `nodeclasses.memory_extension.cold_memory`
+
+Optional:
+
+- `max_disk_percent` (Number) Maximum disk percentage for cold memory, from 1 to 50.
+- `max_gib` (Number) Maximum cold memory in GiB, from 1 to 64 and at least min_gib.
+- `memory_ratio_percent` (Number) Cold memory as a percentage of node memory, from 1 to 100.
+- `min_gib` (Number) Minimum cold memory in GiB, from 1 to 64.
+- `sizing_mode` (String) Cold memory sizing mode. Currently Auto is supported. Set an empty string to restore the server default.
 
 
 
@@ -328,6 +414,7 @@ Required:
 Optional:
 
 - `capacity_type` (List of String) Allowed capacity types. Allowed values: `on-demand`, `spot`.
+- `disruption_cooldown` (String) Minimum delay between voluntary disruption batches. Omit or set null to preserve the existing override; set an empty string to inherit the cluster setting, or 0s to disable the extra delay.
 - `enable` (Boolean) Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.
 - `enable_gpu` (Boolean) Enable GPU instances in this nodepool.
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) in this nodepool.
@@ -337,14 +424,25 @@ Optional:
 - `instance_family` (List of String) Allowed EC2 instance families, for example `["t3", "m5"]`. When configured, this filter takes precedence over `instance_arch`.
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
+- `job_nodepool_optimization` (Attributes) Job workload packing and provisioning settings. Omit or set null to preserve the existing policy; set an empty object to clear it. In a nonempty object, null children preserve their current values. (see [below for nested schema](#nestedatt--nodepool_templates--job_nodepool_optimization))
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
 - `node_disruption_budgets` (Attributes List) Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value. (see [below for nested schema](#nestedatt--nodepool_templates--node_disruption_budgets))
 - `node_disruption_delay` (String) How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.
 - `node_disruption_limit` (String, Deprecated) This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.
 - `nodeclass` (String) Select the nodeclass to use for this nodepool.
+- `nri_swap_policy` (Attributes) Automatic NRI swap policy for EKS 1.34 or later. Requires an enabled Memory Extension policy on the referenced NodeClass. Omit to preserve the current policy; set an empty object or enabled=false to disable it. (see [below for nested schema](#nestedatt--nodepool_templates--nri_swap_policy))
 - `provision_priority` (Number) Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepool_templates--taints))
 - `zone` (List of String) AWS availability zones where nodes may be provisioned, for example `["us-west-2a", "us-west-2b"]`.
+
+<a id="nestedatt--nodepool_templates--job_nodepool_optimization"></a>
+### Nested Schema for `nodepool_templates.job_nodepool_optimization`
+
+Optional:
+
+- `min_active_nodes` (Number) Minimum preferred active nodes; must be positive.
+- `provisioning_delay` (String) Positive duration to delay provisioning while current nodes become available, for example 30s. Set an empty string to clear the delay.
+
 
 <a id="nestedatt--nodepool_templates--node_disruption_budgets"></a>
 ### Nested Schema for `nodepool_templates.node_disruption_budgets`
@@ -358,6 +456,15 @@ Optional:
 - `duration` (String) How long the scheduled budget remains active. Must be configured together with schedule.
 - `reasons` (List of String) Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.
 - `schedule` (String) Optional cron schedule. Must be configured together with duration.
+
+
+<a id="nestedatt--nodepool_templates--nri_swap_policy"></a>
+### Nested Schema for `nodepool_templates.nri_swap_policy`
+
+Optional:
+
+- `enabled` (Boolean) Enable automatic container swap allowances. Omit or set null to preserve the existing value.
+- `memory_limit_multiplier` (Number) Memory limit multiplier, greater than 1 and at most 10, with at most three decimal places. Required when enabling a new policy.
 
 
 <a id="nestedatt--nodepool_templates--taints"></a>
@@ -384,6 +491,7 @@ Required:
 Optional:
 
 - `capacity_type` (List of String) Allowed capacity types. Allowed values: `on-demand`, `spot`.
+- `disruption_cooldown` (String) Minimum delay between voluntary disruption batches. Omit or set null to preserve the existing override; set an empty string to inherit the cluster setting, or 0s to disable the extra delay.
 - `enable` (Boolean) Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.
 - `enable_gpu` (Boolean) Enable GPU instances in this nodepool.
 - `enable_image_accelerator` (Boolean) Enable image accelerator (for example Spegel) in this nodepool.
@@ -393,16 +501,27 @@ Optional:
 - `instance_family` (List of String) Allowed EC2 instance families, for example `["t3", "m5"]`. When configured, this filter takes precedence over `instance_arch`.
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Used to filter instance types during node provisioning. Set to 0 for unlimited.
+- `job_nodepool_optimization` (Attributes) Job workload packing and provisioning settings. Omit or set null to preserve the existing policy; set an empty object to clear it. In a nonempty object, null children preserve their current values. (see [below for nested schema](#nestedatt--nodepools--job_nodepool_optimization))
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
 - `node_disruption_budgets` (Attributes List) Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value. (see [below for nested schema](#nestedatt--nodepools--node_disruption_budgets))
 - `node_disruption_delay` (String) How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.
 - `node_disruption_limit` (String, Deprecated) This specifies the maximum number of nodes that can be terminated at once, either as a fixed number (e.g., 2) or a percentage (e.g., 10%). Use node_disruption_budgets instead.
 - `nodeclass` (String) Select the nodeclass to use for this nodepool.
+- `nri_swap_policy` (Attributes) Automatic NRI swap policy for EKS 1.34 or later. Requires an enabled Memory Extension policy on the referenced NodeClass. Omit to preserve the current policy; set an empty object or enabled=false to disable it. (see [below for nested schema](#nestedatt--nodepools--nri_swap_policy))
 - `origin_nodepool_json` (String) Raw Karpenter NodePool JSON. When configured, it replaces the generated NodePool and all other typed fields on this object are ignored. The JSON must contain a valid NodePool object.
 - `provision_priority` (Number) Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepools--taints))
 - `template_name` (String, Deprecated) Deprecated provider-side NodePool template name to merge before applying this NodePool.
 - `zone` (List of String) AWS availability zones where nodes may be provisioned, for example `["us-west-2a", "us-west-2b"]`.
+
+<a id="nestedatt--nodepools--job_nodepool_optimization"></a>
+### Nested Schema for `nodepools.job_nodepool_optimization`
+
+Optional:
+
+- `min_active_nodes` (Number) Minimum preferred active nodes; must be positive.
+- `provisioning_delay` (String) Positive duration to delay provisioning while current nodes become available, for example 30s. Set an empty string to clear the delay.
+
 
 <a id="nestedatt--nodepools--node_disruption_budgets"></a>
 ### Nested Schema for `nodepools.node_disruption_budgets`
@@ -416,6 +535,15 @@ Optional:
 - `duration` (String) How long the scheduled budget remains active. Must be configured together with schedule.
 - `reasons` (List of String) Optional non-empty disruption reasons: Empty, Underutilized, or Drifted. Omit to apply the budget to all reasons.
 - `schedule` (String) Optional cron schedule. Must be configured together with duration.
+
+
+<a id="nestedatt--nodepools--nri_swap_policy"></a>
+### Nested Schema for `nodepools.nri_swap_policy`
+
+Optional:
+
+- `enabled` (Boolean) Enable automatic container swap allowances. Omit or set null to preserve the existing value.
+- `memory_limit_multiplier` (Number) Memory limit multiplier, greater than 1 and at most 10, with at most three decimal places. Required when enabling a new policy.
 
 
 <a id="nestedatt--nodepools--taints"></a>

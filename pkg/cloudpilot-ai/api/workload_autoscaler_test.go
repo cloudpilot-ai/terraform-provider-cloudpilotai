@@ -4,9 +4,8 @@ import (
 	"context"
 	"testing"
 
-	"github.com/hashicorp/terraform-plugin-framework/types"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 func TestRecommendationPolicyModelJVMRoundTrip(t *testing.T) {
@@ -227,7 +226,7 @@ func TestAutoscalingPolicyModelToResourceFromBaseReplacesManagedSlices(t *testin
 	}
 }
 
-func TestAutoscalingPolicyModelToResourceFromBasePreservesExplicitFalseValues(t *testing.T) {
+func TestAutoscalingPolicyModelToResourceFromBaseDisablesExplicitFalseActions(t *testing.T) {
 	ctx := context.Background()
 	model := AutoscalingPolicyModel{
 		Name:                     types.StringValue("default-ap"),
@@ -254,14 +253,14 @@ func TestAutoscalingPolicyModelToResourceFromBasePreservesExplicitFalseValues(t 
 	}
 
 	policy := resource.Spec.LimitPolicies["cpu"]
-	if policy.RemoveLimit == nil || *policy.RemoveLimit {
-		t.Fatalf("RemoveLimit = %#v, want explicit false", policy.RemoveLimit)
+	if policy.RemoveLimit != nil {
+		t.Fatalf("RemoveLimit = %#v, want omitted disabled action", policy.RemoveLimit)
 	}
-	if policy.KeepLimit == nil || *policy.KeepLimit {
-		t.Fatalf("KeepLimit = %#v, want explicit false", policy.KeepLimit)
+	if policy.KeepLimit != nil {
+		t.Fatalf("KeepLimit = %#v, want omitted disabled action", policy.KeepLimit)
 	}
-	if resource.Spec.ResourceStartupBoost != nil {
-		t.Fatalf("ResourceStartupBoost = %#v, want nil", resource.Spec.ResourceStartupBoost)
+	if resource.Spec.ResourceStartupBoost == nil || resource.Spec.ResourceStartupBoost.Enabled {
+		t.Fatalf("ResourceStartupBoost = %#v, want disabled", resource.Spec.ResourceStartupBoost)
 	}
 }
 

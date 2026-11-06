@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
 	"time"
 )
@@ -55,8 +56,9 @@ type WAConfiguration struct {
 
 // RecommendationPolicyResource represents a RecommendationPolicy stored in the backend.
 type RecommendationPolicyResource struct {
-	Name string                   `json:"name"`
-	Spec RecommendationPolicySpec `json:"spec"`
+	originalJSON json.RawMessage
+	Name         string                   `json:"name"`
+	Spec         RecommendationPolicySpec `json:"spec"`
 }
 
 type RecommendationPolicySpec struct {
@@ -87,6 +89,9 @@ type RecommendationLimits struct {
 type JVMRecommendationConfiguration struct {
 	RecentNonHeapWindow     *string `json:"recentNonHeapWindow,omitempty"`
 	MinHeapXms              *string `json:"minHeapXms,omitempty"`
+	MaxHeapXms              *string `json:"maxHeapXms,omitempty"`
+	MinHeapXmx              *string `json:"minHeapXmx,omitempty"`
+	MaxHeapXmx              *string `json:"maxHeapXmx,omitempty"`
 	MinHeapXmsRatioOfMemory *string `json:"minHeapXmsRatioOfMemory,omitempty"`
 	HeapBuffer              *string `json:"heapBuffer,omitempty"`
 	HeapUsedPercentile      *int32  `json:"heapUsedPercentile,omitempty"`
@@ -94,9 +99,10 @@ type JVMRecommendationConfiguration struct {
 
 // AutoscalingPolicyResource represents an AutoscalingPolicy stored in the backend.
 type AutoscalingPolicyResource struct {
-	Name   string                `json:"name"`
-	Spec   AutoscalingPolicySpec `json:"spec"`
-	Enable bool                  `json:"enable"`
+	originalJSON json.RawMessage
+	Name         string                `json:"name"`
+	Spec         AutoscalingPolicySpec `json:"spec"`
+	Enable       bool                  `json:"enable"`
 }
 
 type AutoscalingPolicySpec struct {
@@ -147,10 +153,12 @@ type ResourceLimitPolicy struct {
 }
 
 type WorkloadStartupResourceBoost struct {
-	Enabled             bool              `json:"enabled,omitempty"`
-	MinBoostDuration    string            `json:"minBoostDuration,omitempty"`
-	MinReadyDuration    string            `json:"minReadyDuration,omitempty"`
-	ResourceMultipliers map[string]string `json:"resourceMultipliers,omitempty"`
+	RecommendationPolicyName string            `json:"recommendationPolicyName,omitempty"`
+	UpdateResources          []string          `json:"updateResources,omitempty"`
+	Enabled                  bool              `json:"enabled,omitempty"`
+	MinBoostDuration         string            `json:"minBoostDuration,omitempty"`
+	MinReadyDuration         string            `json:"minReadyDuration,omitempty"`
+	ResourceMultipliers      map[string]string `json:"resourceMultipliers,omitempty"`
 }
 
 type InPlaceFallback struct {
@@ -171,6 +179,7 @@ type WAWorkloadListFilter struct {
 	RecommendationPolicyNames []string `json:"recommendationPolicyNames,omitempty"`
 	RuntimeLanguages          []string `json:"runtimeLanguages,omitempty"`
 	Optimized                 *bool    `json:"optimized,omitempty"`
+	StartupBoostEnabled       *bool    `json:"startupBoostEnabled,omitempty"`
 }
 
 // WAProactiveUpdateRequest is the request body for the proactive update API.

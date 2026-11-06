@@ -97,6 +97,7 @@ resource "cloudpilotai_gke_cluster" "managed" {
 - `restore_node_number` (Number) Total number of regular GKE node-pool nodes to restore during cluster destroy. For regional or multi-zone GKE node pools, this is the desired total across all locations. Set to 0 to skip restore unless restore_desired_sizes is set.
 - `scheduled_rebalances` (Attributes List) Scheduled rebalance policies managed by Terraform. Omit this attribute to leave all server policies unmanaged; set it to an empty list to remove only policies previously managed by this resource. Policies are matched by name, which must be unique within this list. (see [below for nested schema](#nestedatt--scheduled_rebalances))
 - `skip_restore` (Boolean) When set to true, skip restoring the original regular GKE node pools during cluster destroy. This matches the EKS-style destroy switch and leaves the current optimized nodes untouched while uninstalling CloudPilot.
+- `workloads` (Attributes List) Workload optimization settings managed by Terraform. Omit to leave workloads unmanaged. An empty list stops managing all workloads but does not reset settings previously applied to the server. (see [below for nested schema](#nestedatt--workloads))
 
 ### Read-Only
 
@@ -110,6 +111,7 @@ resource "cloudpilotai_gke_cluster" "managed" {
 Optional:
 
 - `discount` (Number) Cluster-level discount ratio used by cost calculations.
+- `disruption_cooldown` (String) Minimum delay between voluntary disruption batches. Omit to preserve the existing pool override; set 0s to disable the extra delay.
 - `enable_disk_monitor` (Boolean) Enable disk monitor for this cluster.
 - `enable_node_pool_decommission` (Boolean) Enable node pool decommissioning. When omitted, Terraform does not manage this setting.
 - `enable_node_repair` (Boolean) Enable CloudPilot AI node repair for this cluster.
@@ -152,6 +154,16 @@ Optional:
 - `boot` (Boolean) Whether this is the boot disk.
 - `category` (String) GCE disk category. Allowed values: `hyperdisk-balanced`, `hyperdisk-balanced-high-availability`, `hyperdisk-extreme`, `hyperdisk-ml`, `hyperdisk-throughput`, `local-ssd`, `pd-balanced`, `pd-extreme`, `pd-ssd`, `pd-standard`.
 - `size_gib` (Number) Disk size in GiB. Must be at least 10 when configured.
+- `size_policy` (Attributes) Dynamic size policy for the boot disk. Policy presence automatically includes Pod ephemeral-storage demand unless Local SSD backs ephemeral storage. (see [below for nested schema](#nestedatt--nodeclasses--disks--size_policy))
+
+<a id="nestedatt--nodeclasses--disks--size_policy"></a>
+### Nested Schema for `nodeclasses.disks.size_policy`
+
+Optional:
+
+- `max_size_gib` (Number) Maximum raw boot disk size in GiB and the capacity bound used for scheduling. Required for a new policy; omit or set null to preserve an existing value.
+- `per_vcpu_gib` (Number) GiB added to the base boot disk for every vCPU.
+
 
 
 <a id="nestedatt--nodeclasses--ephemeral_storage_local_ssd"></a>
@@ -159,6 +171,7 @@ Optional:
 
 Optional:
 
+- `auto_count` (Boolean) Select the smallest supported Local SSD count from Pod ephemeral-storage requests. Mutually exclusive with count. Omit to preserve the existing mode.
 - `count` (Number) Number of NVMe Local SSDs to attach. Allowed range: 1 to 32. Omit for machine types with bundled Local SSDs, where the fixed bundled count is used.
 
 
@@ -214,6 +227,7 @@ Required:
 Optional:
 
 - `capacity_type` (List of String) Allowed capacity types. Allowed values: `on-demand`, `spot`.
+- `disruption_cooldown` (String) Minimum delay between voluntary disruption batches. Omit or set null to preserve the existing override; set an empty string to inherit the cluster setting, or 0s to disable the extra delay.
 - `enable` (Boolean) Whether this NodePool is enabled for provisioning. When omitted, Terraform preserves the server value.
 - `enable_gpu` (Boolean) Enable GPU instances in this nodepool.
 - `enable_image_accelerator` (Boolean) Enable Image Accelerator scheduling markers for this nodepool.
@@ -223,6 +237,7 @@ Optional:
 - `instance_family` (List of String) Target GCE instance families for this nodepool.
 - `instance_memory_max` (Number) Maximum memory in MiB per node. Set to 0 for unlimited.
 - `instance_memory_min` (Number) Minimum memory in MiB per node. Set to 0 for unlimited.
+- `job_nodepool_optimization` (Attributes) Job workload packing and provisioning settings. Omit or set null to preserve the existing policy; set an empty object to clear it. In a nonempty object, null children preserve their current values. (see [below for nested schema](#nestedatt--nodepools--job_nodepool_optimization))
 - `labels` (Map of String) Labels applied to provisioned nodes through spec.template.metadata.labels.
 - `node_disruption_budgets` (Attributes List) Complete disruption budget list containing 1 to 50 budgets. When null, Terraform does not manage the list and `node_disruption_limit` keeps its legacy first-budget behavior. If `node_disruption_limit` is also set, it must match the first budget's `nodes` value. (see [below for nested schema](#nestedatt--nodepools--node_disruption_budgets))
 - `node_disruption_delay` (String) How long Karpenter waits before consolidating an underutilized node. Use one or more integer duration components with `s`, `m`, or `h`, for example `30s`, `10m`, or `1h30m`; use `Never` to disable consolidation.
@@ -232,6 +247,15 @@ Optional:
 - `provision_priority` (Number) Karpenter NodePool weight from 1 to 100. A larger number gives this NodePool higher provisioning priority. Omit to use Karpenter's unweighted behavior.
 - `taints` (Attributes List) Taints applied to provisioned nodes through spec.template.spec.taints. (see [below for nested schema](#nestedatt--nodepools--taints))
 - `zone` (List of String) Zones where nodes may be provisioned.
+
+<a id="nestedatt--nodepools--job_nodepool_optimization"></a>
+### Nested Schema for `nodepools.job_nodepool_optimization`
+
+Optional:
+
+- `min_active_nodes` (Number) Minimum preferred active nodes; must be positive.
+- `provisioning_delay` (String) Positive duration to delay provisioning while current nodes become available, for example 30s. Set an empty string to clear the delay.
+
 
 <a id="nestedatt--nodepools--node_disruption_budgets"></a>
 ### Nested Schema for `nodepools.node_disruption_budgets`
@@ -339,6 +363,26 @@ Required:
 Optional:
 
 - `values` (List of String) Values used by `In` and `NotIn`. Must be non-empty for those operators and omitted or empty for `Exists` and `DoesNotExist`.
+
+
+
+
+
+<a id="nestedatt--workloads"></a>
+### Nested Schema for `workloads`
+
+Required:
+
+- `name` (String) Kubernetes workload name.
+- `namespace` (String) Kubernetes namespace containing the workload.
+- `type` (String) Kubernetes workload type as recognized by CloudPilot, for example `deployment` or `statefulset`.
+
+Optional:
+
+- `min_non_spot_replicas` (Number) Minimum replicas to keep on non-Spot capacity. Must be non-negative. When omitted, Terraform preserves the server value.
+- `rebalance_able` (Boolean) Whether CloudPilot may move this workload during node rebalancing. When omitted, Terraform preserves the server value.
+- `spot_friendly` (Boolean) Whether CloudPilot may place this workload on Spot instances. When omitted, Terraform preserves the server value.
+- `template_name` (String, Deprecated) Deprecated provider-side workload template name to merge before applying this workload.
 
 ## Upgrading from Generated Kubeconfig State
 

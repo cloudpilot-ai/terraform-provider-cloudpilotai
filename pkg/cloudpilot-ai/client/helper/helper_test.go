@@ -751,3 +751,11 @@ func TestDeleteOptimizedNodesSHDrainsManagedNodesBeforeDeletingNodeClaims(t *tes
 		t.Fatalf("drain command must run before deleting nodeclaims: %q", DeleteOptimizedNodesSH)
 	}
 }
+
+func (f *fakeEC2NodePoolConfigurationClient) ListNodePoolsContext(_ context.Context, clusterID string) (api.RebalanceNodePoolList, error) {
+	return f.ListNodePools(clusterID)
+}
+
+func (f *fakeEC2NodePoolConfigurationClient) DeleteNodePoolContext(_ context.Context, clusterID, name string) error {
+	return f.DeleteNodePool(clusterID, name)
+}

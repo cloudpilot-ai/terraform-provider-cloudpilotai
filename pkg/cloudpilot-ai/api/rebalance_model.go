@@ -10,13 +10,12 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 type WorkloadTemplateModel struct {
@@ -99,9 +98,15 @@ type SecurityGroupSelectorTermModel struct {
 }
 
 type BlockDeviceModel struct {
-	Encrypted  types.Bool   `tfsdk:"encrypted"`
-	VolumeSize types.String `tfsdk:"volume_size"`
-	VolumeType types.String `tfsdk:"volume_type"`
+	Encrypted        types.Bool                                      `tfsdk:"encrypted"`
+	VolumeSize       types.String                                    `tfsdk:"volume_size"`
+	VolumeSizePolicy customfield.NestedObject[VolumeSizePolicyModel] `tfsdk:"volume_size_policy"`
+	VolumeType       types.String                                    `tfsdk:"volume_type"`
+}
+
+type VolumeSizePolicyModel struct {
+	PerVCPUGiB types.Int64 `tfsdk:"per_vcpu_gib"`
+	MaxSizeGiB types.Int64 `tfsdk:"max_size_gib"`
 }
 
 type BlockDeviceMappingModel struct {
@@ -111,7 +116,8 @@ type BlockDeviceMappingModel struct {
 }
 
 type EC2NodeClassTemplateModel struct {
-	TemplateName types.String `tfsdk:"template_name"`
+	MemoryExtension customfield.NestedObject[MemoryExtensionModel] `tfsdk:"memory_extension"`
+	TemplateName    types.String                                   `tfsdk:"template_name"`
 
 	Role                           types.String `tfsdk:"role"`
 	EnableImageAccelerator         types.Bool   `tfsdk:"enable_image_accelerator"`
@@ -130,7 +136,8 @@ type EC2NodeClassTemplateModel struct {
 }
 
 type EC2NodeClassModel struct {
-	Name types.String `tfsdk:"name"`
+	MemoryExtension customfield.NestedObject[MemoryExtensionModel] `tfsdk:"memory_extension"`
+	Name            types.String                                   `tfsdk:"name"`
 
 	TemplateName types.String `tfsdk:"template_name"`
 
@@ -155,7 +162,8 @@ type EC2NodeClassModel struct {
 
 func (e *EC2NodeClassModel) ToEC2NodeClassTemplateModel() *EC2NodeClassTemplateModel {
 	return &EC2NodeClassTemplateModel{
-		TemplateName: e.TemplateName,
+		TemplateName:    e.TemplateName,
+		MemoryExtension: e.MemoryExtension,
 
 		Role:                           e.Role,
 		EnableImageAccelerator:         e.EnableImageAccelerator,
@@ -180,9 +188,27 @@ func (e *EC2NodeClassModel) ToEC2NodeClass(ctx context.Context, clusterName stri
 			return nil, err
 		}
 
+		ec2NodeClass.originJSON = true
 		return &ec2NodeClass, nil
 	}
 
+	if err := ValidateMemoryExtensionReservations(ctx, &nodeclass, ec2NodeClassTemplate, e.ToEC2NodeClassTemplateModel()); err != nil {
+		return nil, err
+	}
+	if nodeclass.NodeClassSpec != nil && nodeclass.NodeClassSpec.InstanceProfile != nil {
+		role := e.Role
+		if (role.IsNull() || role.IsUnknown() || role.ValueString() == "") && ec2NodeClassTemplate != nil {
+			role = ec2NodeClassTemplate.Role
+		}
+		if !role.IsNull() && !role.IsUnknown() && role.ValueString() != "" {
+			return nil, fmt.Errorf("nodeclass %q cannot switch from instanceProfile to role in place; the server requires deleting and recreating the NodeClass", nodeclass.Name)
+		}
+	}
+
+	nodeclass.originJSON = false
+	if nodeclass.NodeClassSpec != nil {
+		nodeclass.NodeClassSpec = nodeclass.NodeClassSpec.DeepCopy()
+	}
 	newNodeClass, err := applyEC2NodeClassTemplateModel(ctx, clusterName, &nodeclass, ec2NodeClassTemplate)
 	if err != nil {
 		return nil, err
@@ -218,44 +244,9 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 		}
 	}
 
-	if !ec2NodeClassTemplate.SubnetSelectorTerms.IsNull() && !ec2NodeClassTemplate.SubnetSelectorTerms.IsUnknown() {
-		slice, diagnostics := ec2NodeClassTemplate.SubnetSelectorTerms.AsStructSliceT(ctx)
-		if diagnostics.HasError() {
-			return nil, fmt.Errorf("subnet_selector_terms: %v", diagnostics)
-		}
-		if len(slice) == 0 {
-			return nil, fmt.Errorf("subnet_selector_terms cannot be empty; omit the attribute to use defaults")
-		}
-		terms := make([]awsproviderv1.SubnetSelectorTerm, 0, len(slice))
-		for i, m := range slice {
-			t, err := subnetSelectorTermModelToAWS(ctx, m, i)
-			if err != nil {
-				return nil, err
-			}
-			terms = append(terms, t)
-		}
-		nodeclass.NodeClassSpec.SubnetSelectorTerms = terms
+	if err := applyEC2ClassSelectors(ctx, nodeclass, ec2NodeClassTemplate); err != nil {
+		return nil, err
 	}
-
-	if !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsNull() && !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsUnknown() {
-		slice, diagnostics := ec2NodeClassTemplate.SecurityGroupSelectorTerms.AsStructSliceT(ctx)
-		if diagnostics.HasError() {
-			return nil, fmt.Errorf("security_group_selector_terms: %v", diagnostics)
-		}
-		if len(slice) == 0 {
-			return nil, fmt.Errorf("security_group_selector_terms cannot be empty; omit the attribute to use defaults")
-		}
-		terms := make([]awsproviderv1.SecurityGroupSelectorTerm, 0, len(slice))
-		for i, m := range slice {
-			t, err := securityGroupSelectorTermModelToAWS(ctx, m, i)
-			if err != nil {
-				return nil, err
-			}
-			terms = append(terms, t)
-		}
-		nodeclass.NodeClassSpec.SecurityGroupSelectorTerms = terms
-	}
-
 	if !ec2NodeClassTemplate.InstanceTags.IsNull() && !ec2NodeClassTemplate.InstanceTags.IsUnknown() {
 		nodeclass.NodeClassSpec.Tags = make(map[string]string)
 		instanceTags, diagnostics := ec2NodeClassTemplate.InstanceTags.Value(ctx)
@@ -285,30 +276,19 @@ func applyEC2NodeClassTemplateModel(ctx context.Context, clusterName string, nod
 		nodeclass.NodeClassSpec.BlockDeviceMappings[0].EBS.VolumeSize = &blockSize
 	}
 
-	if !ec2NodeClassTemplate.ExtraCPUAllocationMCore.IsNull() && !ec2NodeClassTemplate.ExtraCPUAllocationMCore.IsUnknown() {
-		if nodeclass.NodeClassSpec.Kubelet == nil {
-			nodeclass.NodeClassSpec.Kubelet = &awsproviderv1.KubeletConfiguration{
-				KubeReserved: make(map[string]string),
+	applyEC2KubeletReservations(nodeclass, ec2NodeClassTemplate)
+	if !ec2NodeClassTemplate.MemoryExtension.IsNull() && !ec2NodeClassTemplate.MemoryExtension.IsUnknown() {
+		memoryExtension, diags := ec2NodeClassTemplate.MemoryExtension.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("memory_extension: %v", diags)
+		}
+		if memoryExtension != nil {
+			policy, err := memoryExtension.ToAPI(ctx, nodeclass.MemoryExtension)
+			if err != nil {
+				return nil, err
 			}
+			nodeclass.MemoryExtension = policy
 		}
-
-		if nodeclass.NodeClassSpec.Kubelet.KubeReserved == nil {
-			nodeclass.NodeClassSpec.Kubelet.KubeReserved = make(map[string]string)
-		}
-		nodeclass.NodeClassSpec.Kubelet.KubeReserved["cpu"] = fmt.Sprintf("%dm", ec2NodeClassTemplate.ExtraCPUAllocationMCore.ValueInt64())
-	}
-
-	if !ec2NodeClassTemplate.ExtraMemoryAllocationMib.IsNull() && !ec2NodeClassTemplate.ExtraMemoryAllocationMib.IsUnknown() {
-		if nodeclass.NodeClassSpec.Kubelet == nil {
-			nodeclass.NodeClassSpec.Kubelet = &awsproviderv1.KubeletConfiguration{
-				KubeReserved: make(map[string]string),
-			}
-		}
-
-		if nodeclass.NodeClassSpec.Kubelet.KubeReserved == nil {
-			nodeclass.NodeClassSpec.Kubelet.KubeReserved = make(map[string]string)
-		}
-		nodeclass.NodeClassSpec.Kubelet.KubeReserved["memory"] = fmt.Sprintf("%dMi", ec2NodeClassTemplate.ExtraMemoryAllocationMib.ValueInt64())
 	}
 
 	applyAmiAlias(nodeclass, ec2NodeClassTemplate.AmiAlias)
@@ -325,14 +305,26 @@ func applyAmiAlias(nodeclass *EC2NodeClass, alias types.String) {
 		return
 	}
 	value := strings.TrimSpace(alias.ValueString())
+	if value != "" {
+		nodeclass.NodeClassSpec.AMISelectorTerms = []awsproviderv1.AMISelectorTerm{{Alias: value}}
+		if family := nodeclass.NodeClassSpec.AMIFamily; family != nil && *family != awsproviderv1.AMIFamilyCustom {
+			prefix, _, _ := strings.Cut(value, "@")
+			expected := map[string]string{
+				"al2": awsproviderv1.AMIFamilyAL2, "al2023": awsproviderv1.AMIFamilyAL2023,
+				"bottlerocket": awsproviderv1.AMIFamilyBottlerocket,
+				"windows2019":  awsproviderv1.AMIFamilyWindows2019, "windows2022": awsproviderv1.AMIFamilyWindows2022,
+			}[prefix]
+			if expected != "" && *family != expected {
+				nodeclass.NodeClassSpec.AMIFamily = nil
+			}
+		}
+		return
+	}
 	terms := nodeclass.NodeClassSpec.AMISelectorTerms[:0]
 	for _, term := range nodeclass.NodeClassSpec.AMISelectorTerms {
 		if term.Alias == "" {
 			terms = append(terms, term)
 		}
-	}
-	if value != "" {
-		terms = append(terms, awsproviderv1.AMISelectorTerm{Alias: value})
 	}
 	nodeclass.NodeClassSpec.AMISelectorTerms = terms
 }
@@ -373,7 +365,7 @@ func applyBlockDeviceMappings(ctx context.Context, nodeclass *EC2NodeClass, mapp
 				return fmt.Errorf("block_device_mappings.ebs: %v", ebsDiags)
 			}
 			if ebsModel != nil {
-				ebs, err := blockDeviceModelToAWS(mapping.EBS, *ebsModel)
+				ebs, err := blockDeviceModelToAWS(ctx, mapping.EBS, *ebsModel)
 				if err != nil {
 					return err
 				}
@@ -382,41 +374,59 @@ func applyBlockDeviceMappings(ctx context.Context, nodeclass *EC2NodeClass, mapp
 		}
 		out = append(out, mapping)
 	}
+	if err := validateEC2VolumeSizePolicies(out); err != nil {
+		return err
+	}
 	nodeclass.NodeClassSpec.BlockDeviceMappings = out
 	return nil
 }
 
-func blockDeviceModelToAWS(base *awsproviderv1.BlockDevice, m BlockDeviceModel) (*awsproviderv1.BlockDevice, error) {
-	out := cloneHiddenBlockDeviceFields(base)
+func blockDeviceModelToAWS(ctx context.Context, base *awsproviderv1.BlockDevice, m BlockDeviceModel) (*awsproviderv1.BlockDevice, error) {
+	out := cloneBlockDevice(base)
+	if IsKnownEmptyObject(customfield.NewObjectMust(ctx, &m)) {
+		out.Encrypted, out.VolumeSize, out.VolumeType, out.VolumeSizePolicy = nil, nil, nil, nil
+		return out, validateEBSResetSource(out)
+	}
 	if !m.Encrypted.IsNull() && !m.Encrypted.IsUnknown() {
 		v := m.Encrypted.ValueBool()
 		out.Encrypted = &v
 	}
-	if !m.VolumeSize.IsNull() && !m.VolumeSize.IsUnknown() && m.VolumeSize.ValueString() != "" {
-		q, err := resource.ParseQuantity(m.VolumeSize.ValueString())
-		if err != nil {
-			return nil, fmt.Errorf("block_device_mappings.ebs.volume_size: %w", err)
+	if !m.VolumeSize.IsNull() && !m.VolumeSize.IsUnknown() {
+		out.VolumeSize = nil
+		if m.VolumeSize.ValueString() != "" {
+			q, err := resource.ParseQuantity(m.VolumeSize.ValueString())
+			if err != nil {
+				return nil, fmt.Errorf("block_device_mappings.ebs.volume_size: %w", err)
+			}
+			out.VolumeSize = &q
 		}
-		out.VolumeSize = &q
 	}
-	if !m.VolumeType.IsNull() && !m.VolumeType.IsUnknown() && m.VolumeType.ValueString() != "" {
-		v := m.VolumeType.ValueString()
-		out.VolumeType = &v
+	if !m.VolumeType.IsNull() && !m.VolumeType.IsUnknown() {
+		out.VolumeType = nil
+		if v := m.VolumeType.ValueString(); v != "" {
+			out.VolumeType = &v
+		}
+	}
+	var current *awsproviderv1.VolumeSizePolicy
+	if base != nil {
+		current = base.VolumeSizePolicy
+	}
+	policy, err := awsVolumePolicyFromModel(ctx, m.VolumeSizePolicy, current)
+	if err != nil {
+		return nil, err
+	}
+	out.VolumeSizePolicy = policy
+	if !m.VolumeSize.IsNull() && !m.VolumeSize.IsUnknown() && m.VolumeSize.ValueString() == "" {
+		return out, validateEBSResetSource(out)
 	}
 	return out, nil
 }
 
-func cloneHiddenBlockDeviceFields(in *awsproviderv1.BlockDevice) *awsproviderv1.BlockDevice {
-	if in == nil {
-		return &awsproviderv1.BlockDevice{}
+func validateEBSResetSource(ebs *awsproviderv1.BlockDevice) error {
+	if ebs.VolumeSize == nil && ebs.SnapshotID == nil {
+		return fmt.Errorf("clearing block_device_mappings.ebs.volume_size requires an existing snapshot_id because the server requires snapshotID or volumeSize; retain volume_size or clear the whole block_device_mappings list instead")
 	}
-	return &awsproviderv1.BlockDevice{
-		DeleteOnTermination: in.DeleteOnTermination,
-		IOPS:                in.IOPS,
-		KMSKeyID:            in.KMSKeyID,
-		SnapshotID:          in.SnapshotID,
-		Throughput:          in.Throughput,
-	}
+	return nil
 }
 
 func selectExistingBlockDeviceMapping(existing []*awsproviderv1.BlockDeviceMapping, index int, deviceName types.String) *awsproviderv1.BlockDeviceMapping {
@@ -451,7 +461,10 @@ func cloneBlockDevice(in *awsproviderv1.BlockDevice) *awsproviderv1.BlockDevice 
 }
 
 type EC2NodePoolTemplateModel struct {
-	TemplateName types.String `tfsdk:"template_name"`
+	DisruptionCooldown      types.String                                           `tfsdk:"disruption_cooldown"`
+	JobNodePoolOptimization customfield.NestedObject[JobNodePoolOptimizationModel] `tfsdk:"job_nodepool_optimization"`
+	NRISwapPolicy           customfield.NestedObject[NRISwapPolicyModel]           `tfsdk:"nri_swap_policy"`
+	TemplateName            types.String                                           `tfsdk:"template_name"`
 
 	Enable                 types.Bool   `tfsdk:"enable"`
 	NodeClass              types.String `tfsdk:"nodeclass"`
@@ -482,7 +495,10 @@ type TaintModel struct {
 }
 
 type EC2NodePoolModel struct {
-	Name types.String `tfsdk:"name"`
+	DisruptionCooldown      types.String                                           `tfsdk:"disruption_cooldown"`
+	JobNodePoolOptimization customfield.NestedObject[JobNodePoolOptimizationModel] `tfsdk:"job_nodepool_optimization"`
+	NRISwapPolicy           customfield.NestedObject[NRISwapPolicyModel]           `tfsdk:"nri_swap_policy"`
+	Name                    types.String                                           `tfsdk:"name"`
 
 	TemplateName types.String `tfsdk:"template_name"`
 
@@ -513,7 +529,10 @@ type EC2NodePoolModel struct {
 
 func (e *EC2NodePoolModel) ToEC2NodePoolTemplateModel() *EC2NodePoolTemplateModel {
 	return &EC2NodePoolTemplateModel{
-		TemplateName: e.TemplateName,
+		TemplateName:            e.TemplateName,
+		DisruptionCooldown:      e.DisruptionCooldown,
+		JobNodePoolOptimization: e.JobNodePoolOptimization,
+		NRISwapPolicy:           e.NRISwapPolicy,
 
 		Enable:                 e.Enable,
 		NodeClass:              e.NodeClass,
@@ -545,9 +564,14 @@ func (e *EC2NodePoolModel) ToEC2NodePool(ctx context.Context, nodepool EC2NodePo
 			return nil, err
 		}
 
+		ec2NodePool.originJSON = true
 		return &ec2NodePool, nil
 	}
 
+	nodepool.originJSON = false
+	if nodepool.NodePoolSpec != nil {
+		nodepool.NodePoolSpec = nodepool.NodePoolSpec.DeepCopy()
+	}
 	if nodepool.NodePoolSpec == nil {
 		enableGPU := false
 		if ec2NodePoolTemplate != nil {
@@ -580,6 +604,10 @@ func applyEC2NodePoolTemplateModel(ctx context.Context, nodepool *EC2NodePool, e
 		nodepool.NodePoolSpec = EnableGPUEC2NodePoolSpec(nil, ec2NodePoolTemplate.EnableGPU.ValueBool())
 	}
 
+	if err := applyEC2NodePoolPolicies(ctx, nodepool, ec2NodePoolTemplate); err != nil {
+		return nil, err
+	}
+
 	if !ec2NodePoolTemplate.Enable.IsNull() && !ec2NodePoolTemplate.Enable.IsUnknown() {
 		nodepool.Enable = ec2NodePoolTemplate.Enable.ValueBool()
 	}
@@ -588,49 +616,11 @@ func applyEC2NodePoolTemplateModel(ctx context.Context, nodepool *EC2NodePool, e
 		nodepool.EnableImageAccelerator = ec2NodePoolTemplate.EnableImageAccelerator.ValueBool()
 	}
 
-	nodepool.NodePoolSpec.Template.Spec.NodeClassRef.Name = ec2NodePoolTemplate.NodeClass.ValueString()
-
-	if !ec2NodePoolTemplate.ProvisionPriority.IsNull() && !ec2NodePoolTemplate.ProvisionPriority.IsUnknown() {
-		provisionPriority := ec2NodePoolTemplate.ProvisionPriority.ValueInt32()
-		nodepool.NodePoolSpec.Weight = &provisionPriority
+	if !ec2NodePoolTemplate.NodeClass.IsNull() && !ec2NodePoolTemplate.NodeClass.IsUnknown() {
+		nodepool.NodePoolSpec.Template.Spec.NodeClassRef.Name = ec2NodePoolTemplate.NodeClass.ValueString()
 	}
 
-	if ec2NodePoolTemplate.InstanceFamily != nil {
-		values := lo.Map(*ec2NodePoolTemplate.InstanceFamily, func(item types.String, _ int) string { return item.ValueString() })
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceFamily, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if ec2NodePoolTemplate.InstanceArch != nil {
-		values := lo.Map(*ec2NodePoolTemplate.InstanceArch, func(item types.String, _ int) string { return item.ValueString() })
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(corev1.LabelArchStable, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if ec2NodePoolTemplate.CapacityType != nil {
-		values := lo.Map(*ec2NodePoolTemplate.CapacityType, func(item types.String, _ int) string { return item.ValueString() })
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awscorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if ec2NodePoolTemplate.Zone != nil {
-		values := lo.Map(*ec2NodePoolTemplate.Zone, func(item types.String, _ int) string { return item.ValueString() })
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if !ec2NodePoolTemplate.InstanceCPUMAX.IsNull() && !ec2NodePoolTemplate.InstanceCPUMAX.IsUnknown() {
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpLt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceCPUMAX.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if !ec2NodePoolTemplate.InstanceCPUMIN.IsNull() && !ec2NodePoolTemplate.InstanceCPUMIN.IsUnknown() {
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceCPUMIN.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if !ec2NodePoolTemplate.InstanceMemoryMAX.IsNull() && !ec2NodePoolTemplate.InstanceMemoryMAX.IsUnknown() {
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpLt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceMemoryMAX.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
-	if !ec2NodePoolTemplate.InstanceMemoryMIN.IsNull() && !ec2NodePoolTemplate.InstanceMemoryMIN.IsUnknown() {
-		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceMemoryMIN.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
-	}
-
+	applyEC2PoolRequirements(nodepool, ec2NodePoolTemplate)
 	if !ec2NodePoolTemplate.NodeDisruptionBudgets.IsNullOrUnknown() {
 		budgets, diags := ec2NodePoolTemplate.NodeDisruptionBudgets.AsStructSliceT(ctx)
 		if diags.HasError() {
@@ -723,7 +713,7 @@ func updateRequirements(key string, operator corev1.NodeSelectorOperator, values
 
 	if found {
 		if len(values) == 0 {
-			requirements = lo.Drop(requirements, index)
+			requirements = append(requirements[:index], requirements[index+1:]...)
 			return requirements
 		}
 
@@ -811,4 +801,119 @@ func securityGroupSelectorTermModelToAWS(ctx context.Context, m SecurityGroupSel
 		term.Tags = lo.MapValues(tagMap, func(v types.String, _ string) string { return v.ValueString() })
 	}
 	return term, nil
+}
+
+func applyEC2ClassSelectors(ctx context.Context, nodeclass *EC2NodeClass, ec2NodeClassTemplate *EC2NodeClassTemplateModel) error {
+	if !ec2NodeClassTemplate.SubnetSelectorTerms.IsNull() && !ec2NodeClassTemplate.SubnetSelectorTerms.IsUnknown() {
+		slice, diagnostics := ec2NodeClassTemplate.SubnetSelectorTerms.AsStructSliceT(ctx)
+		if diagnostics.HasError() {
+			return fmt.Errorf("subnet_selector_terms: %v", diagnostics)
+		}
+		if len(slice) == 0 {
+			return fmt.Errorf("subnet_selector_terms cannot be empty; omit the attribute to use defaults")
+		}
+		terms := make([]awsproviderv1.SubnetSelectorTerm, 0, len(slice))
+		for i, m := range slice {
+			t, err := subnetSelectorTermModelToAWS(ctx, m, i)
+			if err != nil {
+				return err
+			}
+			terms = append(terms, t)
+		}
+		nodeclass.NodeClassSpec.SubnetSelectorTerms = terms
+	}
+
+	if !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsNull() && !ec2NodeClassTemplate.SecurityGroupSelectorTerms.IsUnknown() {
+		slice, diagnostics := ec2NodeClassTemplate.SecurityGroupSelectorTerms.AsStructSliceT(ctx)
+		if diagnostics.HasError() {
+			return fmt.Errorf("security_group_selector_terms: %v", diagnostics)
+		}
+		if len(slice) == 0 {
+			return fmt.Errorf("security_group_selector_terms cannot be empty; omit the attribute to use defaults")
+		}
+		terms := make([]awsproviderv1.SecurityGroupSelectorTerm, 0, len(slice))
+		for i, m := range slice {
+			t, err := securityGroupSelectorTermModelToAWS(ctx, m, i)
+			if err != nil {
+				return err
+			}
+			terms = append(terms, t)
+		}
+		nodeclass.NodeClassSpec.SecurityGroupSelectorTerms = terms
+	}
+
+	return nil
+}
+
+func applyEC2KubeletReservations(nodeclass *EC2NodeClass, ec2NodeClassTemplate *EC2NodeClassTemplateModel) {
+	if !ec2NodeClassTemplate.ExtraCPUAllocationMCore.IsNull() && !ec2NodeClassTemplate.ExtraCPUAllocationMCore.IsUnknown() {
+		if nodeclass.NodeClassSpec.Kubelet == nil {
+			nodeclass.NodeClassSpec.Kubelet = &awsproviderv1.KubeletConfiguration{
+				KubeReserved: make(map[string]string),
+			}
+		}
+
+		if nodeclass.NodeClassSpec.Kubelet.KubeReserved == nil {
+			nodeclass.NodeClassSpec.Kubelet.KubeReserved = make(map[string]string)
+		}
+		nodeclass.NodeClassSpec.Kubelet.KubeReserved["cpu"] = fmt.Sprintf("%dm", ec2NodeClassTemplate.ExtraCPUAllocationMCore.ValueInt64())
+	}
+
+	if !ec2NodeClassTemplate.ExtraMemoryAllocationMib.IsNull() && !ec2NodeClassTemplate.ExtraMemoryAllocationMib.IsUnknown() {
+		if nodeclass.NodeClassSpec.Kubelet == nil {
+			nodeclass.NodeClassSpec.Kubelet = &awsproviderv1.KubeletConfiguration{
+				KubeReserved: make(map[string]string),
+			}
+		}
+
+		if nodeclass.NodeClassSpec.Kubelet.KubeReserved == nil {
+			nodeclass.NodeClassSpec.Kubelet.KubeReserved = make(map[string]string)
+		}
+		nodeclass.NodeClassSpec.Kubelet.KubeReserved["memory"] = fmt.Sprintf("%dMi", ec2NodeClassTemplate.ExtraMemoryAllocationMib.ValueInt64())
+	}
+
+}
+
+func applyEC2PoolRequirements(nodepool *EC2NodePool, ec2NodePoolTemplate *EC2NodePoolTemplateModel) {
+	if !ec2NodePoolTemplate.ProvisionPriority.IsNull() && !ec2NodePoolTemplate.ProvisionPriority.IsUnknown() {
+		provisionPriority := ec2NodePoolTemplate.ProvisionPriority.ValueInt32()
+		nodepool.NodePoolSpec.Weight = &provisionPriority
+	}
+
+	if ec2NodePoolTemplate.InstanceFamily != nil {
+		values := lo.Map(*ec2NodePoolTemplate.InstanceFamily, func(item types.String, _ int) string { return item.ValueString() })
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceFamily, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if ec2NodePoolTemplate.InstanceArch != nil {
+		values := lo.Map(*ec2NodePoolTemplate.InstanceArch, func(item types.String, _ int) string { return item.ValueString() })
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(corev1.LabelArchStable, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if ec2NodePoolTemplate.CapacityType != nil {
+		values := lo.Map(*ec2NodePoolTemplate.CapacityType, func(item types.String, _ int) string { return item.ValueString() })
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awscorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if ec2NodePoolTemplate.Zone != nil {
+		values := lo.Map(*ec2NodePoolTemplate.Zone, func(item types.String, _ int) string { return item.ValueString() })
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, values, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if !ec2NodePoolTemplate.InstanceCPUMAX.IsNull() && !ec2NodePoolTemplate.InstanceCPUMAX.IsUnknown() {
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpLt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceCPUMAX.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if !ec2NodePoolTemplate.InstanceCPUMIN.IsNull() && !ec2NodePoolTemplate.InstanceCPUMIN.IsUnknown() {
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceCPUMIN.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if !ec2NodePoolTemplate.InstanceMemoryMAX.IsNull() && !ec2NodePoolTemplate.InstanceMemoryMAX.IsUnknown() {
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpLt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceMemoryMAX.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
+	if !ec2NodePoolTemplate.InstanceMemoryMIN.IsNull() && !ec2NodePoolTemplate.InstanceMemoryMIN.IsUnknown() {
+		nodepool.NodePoolSpec.Template.Spec.Requirements = updateRequirements(awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(ec2NodePoolTemplate.InstanceMemoryMIN.ValueInt64(), 10)}, nodepool.NodePoolSpec.Template.Spec.Requirements)
+	}
+
 }
