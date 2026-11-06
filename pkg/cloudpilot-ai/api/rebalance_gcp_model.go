@@ -5,16 +5,13 @@ import (
 	"encoding/json"
 	"fmt"
 	"regexp"
-	"strconv"
 	"strings"
 
 	gcpproviderv1alpha1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis/v1alpha1"
-	gcpcorev1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api/jsonmerge"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
-	corev1 "k8s.io/api/core/v1"
-
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 const (
@@ -66,9 +63,10 @@ var (
 )
 
 type GCEDiskModel struct {
-	SizeGiB  types.Int64  `tfsdk:"size_gib"`
-	Category types.String `tfsdk:"category"`
-	Boot     types.Bool   `tfsdk:"boot"`
+	SizeGiB    types.Int64                                     `tfsdk:"size_gib"`
+	SizePolicy customfield.NestedObject[VolumeSizePolicyModel] `tfsdk:"size_policy"`
+	Category   types.String                                    `tfsdk:"category"`
+	Boot       types.Bool                                      `tfsdk:"boot"`
 }
 
 type GCEAdditionalNetworkInterfaceModel struct {
@@ -90,7 +88,8 @@ type GCEKubeletConfigurationModel struct {
 }
 
 type GCEEphemeralStorageLocalSSDModel struct {
-	Count types.Int32 `tfsdk:"count"`
+	AutoCount types.Bool  `tfsdk:"auto_count"`
+	Count     types.Int32 `tfsdk:"count"`
 }
 
 type GCENodeClassModel struct {
@@ -114,64 +113,28 @@ type GCENodeClassModel struct {
 }
 
 type GCENodePoolModel struct {
-	Name                   types.String                                        `tfsdk:"name"`
-	Enable                 types.Bool                                          `tfsdk:"enable"`
-	EnableImageAccelerator types.Bool                                          `tfsdk:"enable_image_accelerator"`
-	NodeClass              types.String                                        `tfsdk:"nodeclass"`
-	EnableGPU              types.Bool                                          `tfsdk:"enable_gpu"`
-	ProvisionPriority      types.Int32                                         `tfsdk:"provision_priority"`
-	InstanceFamily         *[]types.String                                     `tfsdk:"instance_family"`
-	InstanceArch           *[]types.String                                     `tfsdk:"instance_arch"`
-	CapacityType           *[]types.String                                     `tfsdk:"capacity_type"`
-	Zone                   *[]types.String                                     `tfsdk:"zone"`
-	InstanceCPUMAX         types.Int64                                         `tfsdk:"instance_cpu_max"`
-	InstanceCPUMIN         types.Int64                                         `tfsdk:"instance_cpu_min"`
-	InstanceMemoryMAX      types.Int64                                         `tfsdk:"instance_memory_max"`
-	InstanceMemoryMIN      types.Int64                                         `tfsdk:"instance_memory_min"`
-	Labels                 customfield.Map[types.String]                       `tfsdk:"labels"`
-	Taints                 customfield.NestedObjectList[TaintModel]            `tfsdk:"taints"`
-	NodeDisruptionLimit    types.String                                        `tfsdk:"node_disruption_limit"`
-	NodeDisruptionBudgets  customfield.NestedObjectList[DisruptionBudgetModel] `tfsdk:"node_disruption_budgets"`
-	NodeDisruptionDelay    types.String                                        `tfsdk:"node_disruption_delay"`
-	OriginNodePoolJSON     types.String                                        `tfsdk:"origin_nodepool_json"`
-}
-
-func (g *GCENodeClass) UnmarshalJSON(data []byte) error {
-	type alias GCENodeClass
-	var decoded alias
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	*g = GCENodeClass(decoded)
-	g.rawJSON = append([]byte(nil), data...)
-	return nil
-}
-
-func (g GCENodeClass) MarshalJSON() ([]byte, error) {
-	if len(g.rawJSON) > 0 {
-		return append([]byte(nil), g.rawJSON...), nil
-	}
-	type alias GCENodeClass
-	return json.Marshal(alias(g))
-}
-
-func (g *GCENodePool) UnmarshalJSON(data []byte) error {
-	type alias GCENodePool
-	var decoded alias
-	if err := json.Unmarshal(data, &decoded); err != nil {
-		return err
-	}
-	*g = GCENodePool(decoded)
-	g.rawJSON = append([]byte(nil), data...)
-	return nil
-}
-
-func (g GCENodePool) MarshalJSON() ([]byte, error) {
-	if len(g.rawJSON) > 0 {
-		return append([]byte(nil), g.rawJSON...), nil
-	}
-	type alias GCENodePool
-	return json.Marshal(alias(g))
+	DisruptionCooldown      types.String                                           `tfsdk:"disruption_cooldown"`
+	JobNodePoolOptimization customfield.NestedObject[JobNodePoolOptimizationModel] `tfsdk:"job_nodepool_optimization"`
+	Name                    types.String                                           `tfsdk:"name"`
+	Enable                  types.Bool                                             `tfsdk:"enable"`
+	EnableImageAccelerator  types.Bool                                             `tfsdk:"enable_image_accelerator"`
+	NodeClass               types.String                                           `tfsdk:"nodeclass"`
+	EnableGPU               types.Bool                                             `tfsdk:"enable_gpu"`
+	ProvisionPriority       types.Int32                                            `tfsdk:"provision_priority"`
+	InstanceFamily          *[]types.String                                        `tfsdk:"instance_family"`
+	InstanceArch            *[]types.String                                        `tfsdk:"instance_arch"`
+	CapacityType            *[]types.String                                        `tfsdk:"capacity_type"`
+	Zone                    *[]types.String                                        `tfsdk:"zone"`
+	InstanceCPUMAX          types.Int64                                            `tfsdk:"instance_cpu_max"`
+	InstanceCPUMIN          types.Int64                                            `tfsdk:"instance_cpu_min"`
+	InstanceMemoryMAX       types.Int64                                            `tfsdk:"instance_memory_max"`
+	InstanceMemoryMIN       types.Int64                                            `tfsdk:"instance_memory_min"`
+	Labels                  customfield.Map[types.String]                          `tfsdk:"labels"`
+	Taints                  customfield.NestedObjectList[TaintModel]               `tfsdk:"taints"`
+	NodeDisruptionLimit     types.String                                           `tfsdk:"node_disruption_limit"`
+	NodeDisruptionBudgets   customfield.NestedObjectList[DisruptionBudgetModel]    `tfsdk:"node_disruption_budgets"`
+	NodeDisruptionDelay     types.String                                           `tfsdk:"node_disruption_delay"`
+	OriginNodePoolJSON      types.String                                           `tfsdk:"origin_nodepool_json"`
 }
 
 func (g *GCENodeClass) localSSDEphemeralStorageEnabled() bool {
@@ -206,7 +169,7 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 		return model, nil
 	}
 	if g.NodeClassSpec.EphemeralStorageLocalSSD != nil {
-		localSSD := GCEEphemeralStorageLocalSSDModel{Count: types.Int32Null()}
+		localSSD := GCEEphemeralStorageLocalSSDModel{Count: types.Int32Null(), AutoCount: types.BoolValue(g.NodeClassSpec.EphemeralStorageLocalSSD.AutoCount)}
 		if g.NodeClassSpec.EphemeralStorageLocalSSD.Count != nil {
 			localSSD.Count = types.Int32Value(*g.NodeClassSpec.EphemeralStorageLocalSSD.Count)
 		}
@@ -218,11 +181,19 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 	}
 	if len(g.NodeClassSpec.Disks) > 0 {
 		model.Disks = customfield.NewObjectListMust(ctx, lo.Map(g.NodeClassSpec.Disks, func(d GCEDisk, _ int) GCEDiskModel {
-			return GCEDiskModel{
-				SizeGiB:  types.Int64Value(int64(d.SizeGiB)),
-				Category: stringValueOrNull(string(d.Category)),
-				Boot:     types.BoolValue(d.Boot),
+			model := GCEDiskModel{
+				SizeGiB:    types.Int64Value(int64(d.SizeGiB)),
+				SizePolicy: customfield.NullObject[VolumeSizePolicyModel](ctx),
+				Category:   stringValueOrNull(string(d.Category)),
+				Boot:       types.BoolValue(d.Boot),
 			}
+			if d.SizePolicy != nil {
+				model.SizePolicy = customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+					PerVCPUGiB: types.Int64Value(int64(d.SizePolicy.PerVCPUGiB)),
+					MaxSizeGiB: types.Int64Value(int64(d.SizePolicy.MaxSizeGiB)),
+				})
+			}
+			return model
 		}))
 	}
 	if len(g.NodeClassSpec.ImageSelectorTerms) > 0 {
@@ -246,6 +217,203 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 	if g.NodeClassSpec.SubnetRangeName != nil {
 		model.SubnetRangeName = types.StringValue(*g.NodeClassSpec.SubnetRangeName)
 	}
+	g.readGCERuntimeModel(ctx, model)
+
+	return model, nil
+}
+
+func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeClass) (*GCENodeClass, error) {
+	if !m.OriginNodeClassJSON.IsNull() && !m.OriginNodeClassJSON.IsUnknown() && m.OriginNodeClassJSON.ValueString() != "" {
+		var raw GCENodeClass
+		if err := json.Unmarshal([]byte(m.OriginNodeClassJSON.ValueString()), &raw); err != nil {
+			return nil, err
+		}
+		raw.originJSON = true
+		return &raw, nil
+	}
+	var localSSD *GCEEphemeralStorageLocalSSDModel
+	if !m.EphemeralStorageLocalSSD.IsNull() && !m.EphemeralStorageLocalSSD.IsUnknown() {
+		value, diags := m.EphemeralStorageLocalSSD.Value(ctx)
+		if diags.HasError() {
+			return nil, fmt.Errorf("ephemeral_storage_local_ssd: %v", diags)
+		}
+		localSSD = value
+		if localSSD != nil && (localSSD.hasManagedValues() || IsKnownEmptyObject(m.EphemeralStorageLocalSSD)) {
+			if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+				if !m.EnableLocalSSDEphemeralStorage.ValueBool() {
+					return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured when enable_local_ssd_ephemeral_storage is false")
+				}
+			} else if !current.localSSDEphemeralStorageEnabled() {
+				return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured while the existing enable_local_ssd_ephemeral_storage value is false; set enable_local_ssd_ephemeral_storage to true explicitly")
+			}
+		}
+	}
+
+	out := current
+	out.originJSON = false
+	if current.NodeClassSpec != nil {
+		out.NodeClassSpec = current.NodeClassSpec.DeepCopy()
+	}
+	out.Name = m.Name.ValueString()
+	if !m.EnableImageAccelerator.IsNull() && !m.EnableImageAccelerator.IsUnknown() {
+		out.EnableImageAccelerator = m.EnableImageAccelerator.ValueBool()
+	}
+	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		enabled := m.EnableLocalSSDEphemeralStorage.ValueBool()
+		out.EnableLocalSSDEphemeralStorage = &enabled
+	}
+	if out.NodeClassSpec == nil {
+		out.NodeClassSpec = &GCENodeClassSpec{}
+	}
+	if localSSD != nil {
+		applyGCELocalSSDModel(out.NodeClassSpec, *localSSD)
+	}
+	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
+		if m.EnableLocalSSDEphemeralStorage.ValueBool() {
+			if out.NodeClassSpec.EphemeralStorageLocalSSD == nil {
+				out.NodeClassSpec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
+			}
+		} else {
+			out.NodeClassSpec.EphemeralStorageLocalSSD = nil
+		}
+	}
+	if !m.ServiceAccount.IsNull() && !m.ServiceAccount.IsUnknown() {
+		out.NodeClassSpec.ServiceAccount = m.ServiceAccount.ValueString()
+	}
+	if err := m.applyGCEDisks(ctx, &out); err != nil {
+		return nil, err
+	}
+	if err := m.applyGCEImageSelectors(ctx, current, &out); err != nil {
+		return nil, err
+	}
+	if err := m.applyGCERuntime(ctx, &out); err != nil {
+		return nil, err
+	}
+	if !m.AutoGPUTaint.IsNull() && !m.AutoGPUTaint.IsUnknown() {
+		out.NodeClassSpec.AutoGPUTaint = m.AutoGPUTaint.ValueBool()
+	}
+	if !m.GPUDriverVersion.IsNull() && !m.GPUDriverVersion.IsUnknown() {
+		out.NodeClassSpec.GPUDriverVersion = m.GPUDriverVersion.ValueString()
+	}
+	if err := validateGCENodeClassLocalSSD(out.NodeClassSpec); err != nil {
+		return nil, err
+	}
+	if err := validateGCENodeClassDiskSizePolicy(out.NodeClassSpec); err != nil {
+		return nil, err
+	}
+
+	return &out, nil
+}
+
+func validateGCENodeClassLocalSSD(spec *GCENodeClassSpec) error {
+	if spec != nil && spec.EphemeralStorageLocalSSD != nil && spec.EphemeralStorageLocalSSD.Count != nil && spec.EphemeralStorageLocalSSD.AutoCount {
+		return fmt.Errorf("ephemeral_storage_local_ssd.count and auto_count cannot both be configured")
+	}
+	if spec == nil || spec.EphemeralStorageLocalSSD == nil {
+		return nil
+	}
+	if count := spec.EphemeralStorageLocalSSD.Count; count != nil && (*count < 1 || *count > 32) {
+		return fmt.Errorf("ephemeral_storage_local_ssd.count must be between 1 and 32")
+	}
+	for index, disk := range spec.Disks {
+		if disk.Category == gcpproviderv1alpha1.DiskCategory("local-ssd") {
+			return fmt.Errorf("ephemeral_storage_local_ssd cannot be combined with disks[%d].category = local-ssd", index)
+		}
+	}
+	return nil
+}
+
+func validateGCENodeClassDiskSizePolicy(spec *GCENodeClassSpec) error {
+	if spec == nil {
+		return nil
+	}
+	policyCount := 0
+	for index, disk := range spec.Disks {
+		if disk.SizePolicy == nil {
+			continue
+		}
+		policyCount++
+		if disk.SizeGiB < 10 {
+			return fmt.Errorf("disks[%d].size_gib is required with size_policy", index)
+		}
+		if disk.SizePolicy.PerVCPUGiB < 0 || disk.SizePolicy.PerVCPUGiB > 65536 || disk.SizePolicy.MaxSizeGiB < 10 || disk.SizePolicy.MaxSizeGiB > 65536 {
+			return fmt.Errorf("disks[%d].size_policy exceeds supported size limits", index)
+		}
+		if !disk.Boot {
+			return fmt.Errorf("disks[%d].size_policy requires boot = true", index)
+		}
+		if disk.SizePolicy.MaxSizeGiB < disk.SizeGiB {
+			return fmt.Errorf("disks[%d].size_policy.max_size_gib must be at least size_gib", index)
+		}
+		if disk.Category == gcpproviderv1alpha1.DiskCategory("hyperdisk-throughput") && disk.SizePolicy.MaxSizeGiB > 32768 {
+			return fmt.Errorf("disks[%d].size_policy.max_size_gib cannot exceed 32768 for hyperdisk-throughput", index)
+		}
+	}
+	if policyCount > 1 {
+		return fmt.Errorf("disks supports at most one size_policy")
+	}
+	return nil
+}
+
+func terraformMapToStringMap(ctx context.Context, in customfield.Map[types.String]) map[string]string {
+	if in.IsNull() || in.IsUnknown() {
+		return nil
+	}
+	values, diags := in.Value(ctx)
+	if diags.HasError() {
+		return nil
+	}
+	if len(values) == 0 {
+		return map[string]string{}
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value.ValueString()
+	}
+	return out
+}
+
+func GCEPhysicalDiskFromCurrent(disks []GCEDisk, index int) GCEDisk {
+	if index < len(disks) {
+		return disks[index]
+	}
+	return GCEDisk{}
+}
+
+func (m GCEEphemeralStorageLocalSSDModel) hasManagedValues() bool {
+	return (!m.Count.IsNull() && !m.Count.IsUnknown()) || (!m.AutoCount.IsNull() && !m.AutoCount.IsUnknown())
+}
+
+func applyGCELocalSSDModel(spec *GCENodeClassSpec, model GCEEphemeralStorageLocalSSDModel) {
+	if model.Count.IsNull() && model.AutoCount.IsNull() {
+		spec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
+		return
+	}
+	countKnown := !model.Count.IsNull() && !model.Count.IsUnknown()
+	autoKnown := !model.AutoCount.IsNull() && !model.AutoCount.IsUnknown()
+	if !countKnown && !autoKnown {
+		return
+	}
+	if spec.EphemeralStorageLocalSSD == nil {
+		spec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
+	}
+	out := spec.EphemeralStorageLocalSSD
+	if countKnown {
+		v := model.Count.ValueInt32()
+		out.Count = &v
+		if !autoKnown {
+			out.AutoCount = false
+		}
+	}
+	if autoKnown {
+		out.AutoCount = model.AutoCount.ValueBool()
+		if out.AutoCount && !countKnown {
+			out.Count = nil
+		}
+	}
+}
+
+func (g *GCENodeClass) readGCERuntimeModel(ctx context.Context, model *GCENodeClassModel) {
 	if g.NodeClassSpec.KubeletConfiguration != nil {
 		model.KubeletConfiguration = customfield.NewObjectMust(ctx, &GCEKubeletConfigurationModel{
 			KubeReserved:   kubeletQuantityMapToTerraformMap(ctx, g.NodeClassSpec.KubeletConfiguration.KubeReserved),
@@ -289,84 +457,24 @@ func (g *GCENodeClass) ToGCENodeClassModel(ctx context.Context) (*GCENodeClassMo
 		model.GPUDriverVersion = types.StringValue(g.NodeClassSpec.GPUDriverVersion)
 	}
 
-	return model, nil
 }
 
-func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeClass) (*GCENodeClass, error) {
-	if !m.OriginNodeClassJSON.IsNull() && !m.OriginNodeClassJSON.IsUnknown() && m.OriginNodeClassJSON.ValueString() != "" {
-		var raw GCENodeClass
-		if err := json.Unmarshal([]byte(m.OriginNodeClassJSON.ValueString()), &raw); err != nil {
-			return nil, err
-		}
-		return &raw, nil
-	}
-	if !m.EphemeralStorageLocalSSD.IsNull() && !m.EphemeralStorageLocalSSD.IsUnknown() {
-		if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
-			if !m.EnableLocalSSDEphemeralStorage.ValueBool() {
-				return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured when enable_local_ssd_ephemeral_storage is false")
-			}
-		} else if !current.localSSDEphemeralStorageEnabled() {
-			return nil, fmt.Errorf("ephemeral_storage_local_ssd cannot be configured while the existing enable_local_ssd_ephemeral_storage value is false; set enable_local_ssd_ephemeral_storage to true explicitly")
-		}
-	}
-
-	currentHasLegacyAliasImageSelector := current.NodeClassSpec != nil && hasLegacyAliasImageSelectorTerm(current.NodeClassSpec.ImageSelectorTerms)
-
-	out := current
-	out.Name = m.Name.ValueString()
-	if !m.EnableImageAccelerator.IsNull() && !m.EnableImageAccelerator.IsUnknown() {
-		out.EnableImageAccelerator = m.EnableImageAccelerator.ValueBool()
-	}
-	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
-		enabled := m.EnableLocalSSDEphemeralStorage.ValueBool()
-		out.EnableLocalSSDEphemeralStorage = &enabled
-	}
-	if out.NodeClassSpec == nil {
-		out.NodeClassSpec = &GCENodeClassSpec{}
-	}
-	if !m.EphemeralStorageLocalSSD.IsNull() && !m.EphemeralStorageLocalSSD.IsUnknown() {
-		localSSD, diags := m.EphemeralStorageLocalSSD.Value(ctx)
-		if diags.HasError() {
-			return nil, fmt.Errorf("ephemeral_storage_local_ssd: %v", diags)
-		}
-		if localSSD != nil {
-			if out.NodeClassSpec.EphemeralStorageLocalSSD == nil {
-				out.NodeClassSpec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
-			}
-			if !localSSD.Count.IsNull() && !localSSD.Count.IsUnknown() {
-				count := localSSD.Count.ValueInt32()
-				if count < 1 || count > 32 {
-					return nil, fmt.Errorf("ephemeral_storage_local_ssd.count must be between 1 and 32")
-				}
-				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = &count
-			} else if localSSD.Count.IsNull() {
-				out.NodeClassSpec.EphemeralStorageLocalSSD.Count = nil
-			}
-		}
-	}
-	if !m.EnableLocalSSDEphemeralStorage.IsNull() && !m.EnableLocalSSDEphemeralStorage.IsUnknown() {
-		if m.EnableLocalSSDEphemeralStorage.ValueBool() {
-			if out.NodeClassSpec.EphemeralStorageLocalSSD == nil {
-				out.NodeClassSpec.EphemeralStorageLocalSSD = &GCEEphemeralStorageLocalSSD{}
-			}
-		} else {
-			out.NodeClassSpec.EphemeralStorageLocalSSD = nil
-		}
-	}
-	if !m.ServiceAccount.IsNull() && !m.ServiceAccount.IsUnknown() {
-		out.NodeClassSpec.ServiceAccount = m.ServiceAccount.ValueString()
-	}
+func (m *GCENodeClassModel) applyGCEDisks(ctx context.Context, out *GCENodeClass) error {
 	if !m.Disks.IsNull() && !m.Disks.IsUnknown() {
 		disks, diags := m.Disks.AsStructSliceT(ctx)
 		if diags.HasError() {
-			return nil, fmt.Errorf("disks: %v", diags)
+			return fmt.Errorf("disks: %v", diags)
 		}
 		currentDisks := out.NodeClassSpec.Disks
 		out.NodeClassSpec.Disks = make([]GCEDisk, 0, len(disks))
 		for index, diskModel := range disks {
 			disk := GCEPhysicalDiskFromCurrent(currentDisks, index)
 			if !diskModel.SizeGiB.IsNull() && !diskModel.SizeGiB.IsUnknown() {
-				disk.SizeGiB = int32(diskModel.SizeGiB.ValueInt64())
+				size := diskModel.SizeGiB.ValueInt64()
+				if size < 10 || size > 65536 {
+					return fmt.Errorf("disks[%d].size_gib must be between 10 and 65536", index)
+				}
+				disk.SizeGiB = int32(size)
 			}
 			if !diskModel.Category.IsNull() && !diskModel.Category.IsUnknown() {
 				disk.Category = gcpproviderv1alpha1.DiskCategory(diskModel.Category.ValueString())
@@ -374,37 +482,20 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 			if !diskModel.Boot.IsNull() && !diskModel.Boot.IsUnknown() {
 				disk.Boot = diskModel.Boot.ValueBool()
 			}
+			policy, err := gceVolumePolicyFromModel(ctx, diskModel.SizePolicy, disk.SizePolicy)
+			if err != nil {
+				return fmt.Errorf("disks[%d].size_policy: %w", index, err)
+			}
+			disk.SizePolicy = policy
+
 			out.NodeClassSpec.Disks = append(out.NodeClassSpec.Disks, disk)
 		}
 	}
-	if !m.ImageSelectorTerms.IsNull() && !m.ImageSelectorTerms.IsUnknown() {
-		terms, diags := m.ImageSelectorTerms.AsStructSliceT(ctx)
-		if diags.HasError() {
-			return nil, fmt.Errorf("image_selector_terms: %v", diags)
-		}
-		if len(terms) == 0 {
-			return nil, fmt.Errorf("image_selector_terms cannot be empty")
-		}
-		if currentHasLegacyAliasImageSelector && gcpDesiredImageSelectorTermsMatchCurrentNormalized(terms, current.NodeClassSpec.ImageSelectorTerms) {
-			out.NodeClassSpec.ImageSelectorTerms = current.NodeClassSpec.ImageSelectorTerms
-		} else {
-			out.NodeClassSpec.ImageSelectorTerms = make([]GCEImageSelectorTerm, 0, len(terms))
-			for index, term := range terms {
-				specTerm, err := gcpImageSelectorTermModelToSpec(term, index)
-				if err != nil {
-					return nil, err
-				}
-				out.NodeClassSpec.ImageSelectorTerms = append(out.NodeClassSpec.ImageSelectorTerms, specTerm)
-			}
-			if err := validateGCPImageSelectorTermList(out.NodeClassSpec.ImageSelectorTerms); err != nil {
-				return nil, err
-			}
-			out.NodeClassSpec.ImageFamily = nil
-		}
-	}
-	if len(current.rawJSON) == 0 && current.NodeClassSpec == nil && len(out.NodeClassSpec.ImageSelectorTerms) == 0 {
-		return nil, fmt.Errorf("image_selector_terms must be set for a new gce nodeclass")
-	}
+
+	return nil
+}
+
+func (m *GCENodeClassModel) applyGCERuntime(ctx context.Context, out *GCENodeClass) error {
 	if !m.SubnetRangeName.IsNull() && !m.SubnetRangeName.IsUnknown() {
 		value := m.SubnetRangeName.ValueString()
 		out.NodeClassSpec.SubnetRangeName = &value
@@ -412,7 +503,7 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	if !m.KubeletConfiguration.IsNull() && !m.KubeletConfiguration.IsUnknown() {
 		kubeletConfig, diags := m.KubeletConfiguration.Value(ctx)
 		if diags.HasError() {
-			return nil, fmt.Errorf("kubelet_configuration: %v", diags)
+			return fmt.Errorf("kubelet_configuration: %v", diags)
 		}
 		if kubeletConfig != nil {
 			if out.NodeClassSpec.KubeletConfiguration == nil {
@@ -442,7 +533,7 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 	if !m.NetworkConfig.IsNull() && !m.NetworkConfig.IsUnknown() {
 		networkConfig, diags := m.NetworkConfig.Value(ctx)
 		if diags.HasError() {
-			return nil, fmt.Errorf("network_config: %v", diags)
+			return fmt.Errorf("network_config: %v", diags)
 		}
 		if networkConfig != nil {
 			if out.NodeClassSpec.NetworkConfig == nil {
@@ -451,13 +542,13 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 			if !networkConfig.AdditionalNetworkInterfaces.IsNull() && !networkConfig.AdditionalNetworkInterfaces.IsUnknown() {
 				nics, nicDiags := networkConfig.AdditionalNetworkInterfaces.AsStructSliceT(ctx)
 				if nicDiags.HasError() {
-					return nil, fmt.Errorf("network_config.additional_network_interfaces: %v", nicDiags)
+					return fmt.Errorf("network_config.additional_network_interfaces: %v", nicDiags)
 				}
 				out.NodeClassSpec.NetworkConfig.AdditionalNetworkInterfaces = make([]GCEAdditionalNetworkInterface, 0, len(nics))
 				for index, nic := range nics {
 					subnetwork := strings.TrimSpace(stringFromTerraform(nic.Subnetwork))
 					if subnetwork == "" {
-						return nil, fmt.Errorf("network_config.additional_network_interfaces[%d].subnetwork is required", index)
+						return fmt.Errorf("network_config.additional_network_interfaces[%d].subnetwork is required", index)
 					}
 					out.NodeClassSpec.NetworkConfig.AdditionalNetworkInterfaces = append(out.NodeClassSpec.NetworkConfig.AdditionalNetworkInterfaces, GCEAdditionalNetworkInterface{
 						Network:    stringFromTerraform(nic.Network),
@@ -474,544 +565,9 @@ func (m *GCENodeClassModel) ToGCENodeClass(ctx context.Context, current GCENodeC
 			}
 		}
 	}
-	if !m.AutoGPUTaint.IsNull() && !m.AutoGPUTaint.IsUnknown() {
-		out.NodeClassSpec.AutoGPUTaint = m.AutoGPUTaint.ValueBool()
-	}
-	if !m.GPUDriverVersion.IsNull() && !m.GPUDriverVersion.IsUnknown() {
-		out.NodeClassSpec.GPUDriverVersion = m.GPUDriverVersion.ValueString()
-	}
-	if err := validateGCENodeClassLocalSSD(out.NodeClassSpec); err != nil {
-		return nil, err
-	}
 
-	if len(current.rawJSON) > 0 {
-		mergedRawJSON, err := mergeGCENodeClassModelIntoRawJSON(m, &out)
-		if err != nil {
-			return nil, err
-		}
-		out.rawJSON = mergedRawJSON
-	}
-
-	return &out, nil
-}
-
-func validateGCENodeClassLocalSSD(spec *GCENodeClassSpec) error {
-	if spec == nil || spec.EphemeralStorageLocalSSD == nil {
-		return nil
-	}
-	for index, disk := range spec.Disks {
-		if disk.Category == gcpproviderv1alpha1.DiskCategory("local-ssd") {
-			return fmt.Errorf("ephemeral_storage_local_ssd cannot be combined with disks[%d].category = local-ssd", index)
-		}
-	}
 	return nil
 }
-
-func (g *GCENodePool) ToGCENodePoolModel(ctx context.Context) (*GCENodePoolModel, error) {
-	if g == nil {
-		return nil, nil
-	}
-
-	model := &GCENodePoolModel{
-		Name:                   types.StringValue(g.Name),
-		Enable:                 types.BoolValue(g.Enable),
-		EnableImageAccelerator: types.BoolValue(g.EnableImageAccelerator),
-		Labels:                 customfield.NullMap[types.String](ctx),
-		Taints:                 customfield.NullObjectList[TaintModel](ctx),
-		OriginNodePoolJSON:     types.StringNull(),
-	}
-	if g.NodePoolSpec == nil {
-		return model, nil
-	}
-
-	if g.NodePoolSpec.Template.Spec.NodeClassRef != nil && g.NodePoolSpec.Template.Spec.NodeClassRef.Name != "" {
-		model.NodeClass = types.StringValue(g.NodePoolSpec.Template.Spec.NodeClassRef.Name)
-	}
-	model.EnableGPU = gcpEnableGPUToBoolByKey(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceGPUCount)
-	if g.NodePoolSpec.Weight != nil {
-		model.ProvisionPriority = types.Int32Value(*g.NodePoolSpec.Weight)
-	} else {
-		model.ProvisionPriority = types.Int32Null()
-	}
-	model.InstanceFamily = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceFamily, corev1.NodeSelectorOpIn)
-	model.InstanceArch = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, corev1.LabelArchStable, corev1.NodeSelectorOpIn)
-	model.CapacityType = gcpRequirementsToStrings(g.NodePoolSpec.Template.Spec.Requirements, gcpcorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn)
-	model.Zone = gcpRequirementsToStringsByKeys(g.NodePoolSpec.Template.Spec.Requirements, corev1.NodeSelectorOpIn, corev1.LabelTopologyZone, gceLegacyLabelTopologyZoneID)
-
-	var err error
-	model.InstanceCPUMAX, err = gcpRequirementsToInt64(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceCPU, corev1.NodeSelectorOpLt)
-	if err != nil {
-		return nil, err
-	}
-	model.InstanceCPUMIN, err = gcpRequirementsToOptionalInt64(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceCPU, corev1.NodeSelectorOpGt)
-	if err != nil {
-		return nil, err
-	}
-	model.InstanceMemoryMAX, err = gcpRequirementsToInt64(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceMemory, corev1.NodeSelectorOpLt)
-	if err != nil {
-		return nil, err
-	}
-	model.InstanceMemoryMIN, err = gcpRequirementsToOptionalInt64(g.NodePoolSpec.Template.Spec.Requirements, gceLabelInstanceMemory, corev1.NodeSelectorOpGt)
-	if err != nil {
-		return nil, err
-	}
-	if len(g.NodePoolSpec.Template.ObjectMeta.Labels) > 0 {
-		model.Labels = stringMapToTerraformMap(ctx, g.NodePoolSpec.Template.ObjectMeta.Labels)
-	}
-	if len(g.NodePoolSpec.Template.Spec.Taints) > 0 {
-		model.Taints = customfield.NewObjectListMust(ctx, lo.Map(g.NodePoolSpec.Template.Spec.Taints, func(taint corev1.Taint, _ int) TaintModel {
-			return TaintModel{
-				Key:    types.StringValue(taint.Key),
-				Value:  types.StringValue(taint.Value),
-				Effect: types.StringValue(string(taint.Effect)),
-			}
-		}))
-	}
-	if len(g.NodePoolSpec.Disruption.Budgets) > 0 {
-		model.NodeDisruptionLimit = types.StringValue(g.NodePoolSpec.Disruption.Budgets[0].Nodes)
-	}
-	if len(g.NodePoolSpec.Disruption.Budgets) > 0 {
-		budgetModels := make([]DisruptionBudgetModel, 0, len(g.NodePoolSpec.Disruption.Budgets))
-		for _, budget := range g.NodePoolSpec.Disruption.Budgets {
-			budgetModels = append(budgetModels, newDisruptionBudgetModel(
-				budget.Nodes,
-				lo.Map(budget.Reasons, func(reason gcpcorev1.DisruptionReason, _ int) string { return string(reason) }),
-				budget.Schedule,
-				budget.Duration,
-			))
-		}
-		model.NodeDisruptionBudgets = customfield.NewObjectListMust(ctx, budgetModels)
-	} else {
-		model.NodeDisruptionBudgets = customfield.NullObjectList[DisruptionBudgetModel](ctx)
-	}
-	if consolidateAfter, ok := gcpNillableDurationToString(g.NodePoolSpec.Disruption.ConsolidateAfter); ok {
-		model.NodeDisruptionDelay = types.StringValue(consolidateAfter)
-	}
-
-	return model, nil
-}
-
-func (m *GCENodePoolModel) ToGCENodePool(ctx context.Context, current GCENodePool) (*GCENodePool, error) {
-	if !m.OriginNodePoolJSON.IsNull() && !m.OriginNodePoolJSON.IsUnknown() && m.OriginNodePoolJSON.ValueString() != "" {
-		var raw GCENodePool
-		if err := json.Unmarshal([]byte(m.OriginNodePoolJSON.ValueString()), &raw); err != nil {
-			return nil, err
-		}
-		return &raw, nil
-	}
-
-	out := current
-	out.rawJSON = nil
-	out.Name = m.Name.ValueString()
-	if out.NodePoolSpec == nil {
-		enableGPU := false
-		if !m.EnableGPU.IsNull() && !m.EnableGPU.IsUnknown() {
-			enableGPU = m.EnableGPU.ValueBool()
-		}
-		out.NodePoolSpec = enableGPUGCPNodePoolSpec(nil, enableGPU)
-	}
-
-	if !m.Enable.IsNull() && !m.Enable.IsUnknown() {
-		out.Enable = m.Enable.ValueBool()
-	}
-	if !m.EnableImageAccelerator.IsNull() && !m.EnableImageAccelerator.IsUnknown() {
-		out.EnableImageAccelerator = m.EnableImageAccelerator.ValueBool()
-	}
-
-	if !m.EnableGPU.IsNull() && !m.EnableGPU.IsUnknown() {
-		out.NodePoolSpec = enableGPUGCPNodePoolSpec(out.NodePoolSpec, m.EnableGPU.ValueBool())
-	}
-
-	if out.NodePoolSpec.Template.Spec.NodeClassRef == nil {
-		out.NodePoolSpec.Template.Spec.NodeClassRef = &gcpcorev1.NodeClassReference{
-			Group: gceNodeClassRefGroup,
-			Kind:  gceNodeClassRefKind,
-		}
-	}
-	out.NodePoolSpec.Template.Spec.NodeClassRef.Group = gceNodeClassRefGroup
-	out.NodePoolSpec.Template.Spec.NodeClassRef.Kind = gceNodeClassRefKind
-
-	if !m.NodeClass.IsNull() && !m.NodeClass.IsUnknown() {
-		nodeClassName := strings.TrimSpace(m.NodeClass.ValueString())
-		if nodeClassName == "" {
-			return nil, fmt.Errorf("nodepool %s must reference a valid nodeclass", out.Name)
-		}
-		out.NodePoolSpec.Template.Spec.NodeClassRef.Name = nodeClassName
-	}
-	if strings.TrimSpace(out.NodePoolSpec.Template.Spec.NodeClassRef.Name) == "" {
-		return nil, fmt.Errorf("nodepool %s must reference a valid nodeclass", out.Name)
-	}
-
-	if !m.ProvisionPriority.IsNull() && !m.ProvisionPriority.IsUnknown() {
-		weight := m.ProvisionPriority.ValueInt32()
-		out.NodePoolSpec.Weight = &weight
-	}
-	if m.InstanceFamily != nil {
-		values := lo.Map(*m.InstanceFamily, func(item types.String, _ int) string { return item.ValueString() })
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceFamily, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if m.InstanceArch != nil {
-		values := lo.Map(*m.InstanceArch, func(item types.String, _ int) string { return item.ValueString() })
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(corev1.LabelArchStable, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if m.CapacityType != nil {
-		values := lo.Map(*m.CapacityType, func(item types.String, _ int) string { return item.ValueString() })
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gcpcorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if m.Zone != nil {
-		values := lo.Map(*m.Zone, func(item types.String, _ int) string { return item.ValueString() })
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(corev1.LabelTopologyZone, corev1.NodeSelectorOpIn, values, out.NodePoolSpec.Template.Spec.Requirements)
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLegacyLabelTopologyZoneID, corev1.NodeSelectorOpIn, nil, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if !m.InstanceCPUMAX.IsNull() && !m.InstanceCPUMAX.IsUnknown() {
-		values := []string{strconv.FormatInt(m.InstanceCPUMAX.ValueInt64(), 10)}
-		if m.InstanceCPUMAX.ValueInt64() == 0 {
-			values = nil
-		}
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceCPU, corev1.NodeSelectorOpLt, values, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if !m.InstanceCPUMIN.IsNull() && !m.InstanceCPUMIN.IsUnknown() {
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceCPU, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(m.InstanceCPUMIN.ValueInt64(), 10)}, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if !m.InstanceMemoryMAX.IsNull() && !m.InstanceMemoryMAX.IsUnknown() {
-		values := []string{strconv.FormatInt(m.InstanceMemoryMAX.ValueInt64(), 10)}
-		if m.InstanceMemoryMAX.ValueInt64() == 0 {
-			values = nil
-		}
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceMemory, corev1.NodeSelectorOpLt, values, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if !m.InstanceMemoryMIN.IsNull() && !m.InstanceMemoryMIN.IsUnknown() {
-		out.NodePoolSpec.Template.Spec.Requirements = gcpUpdateRequirements(gceLabelInstanceMemory, corev1.NodeSelectorOpGt, []string{strconv.FormatInt(m.InstanceMemoryMIN.ValueInt64(), 10)}, out.NodePoolSpec.Template.Spec.Requirements)
-	}
-	if !m.NodeDisruptionBudgets.IsNullOrUnknown() {
-		budgets, diags := m.NodeDisruptionBudgets.AsStructSliceT(ctx)
-		if diags.HasError() {
-			return nil, fmt.Errorf("node_disruption_budgets: %v", diags)
-		}
-		if err := validateDisruptionBudgetCount(len(budgets)); err != nil {
-			return nil, err
-		}
-		if !m.NodeDisruptionLimit.IsNull() && !m.NodeDisruptionLimit.IsUnknown() &&
-			m.NodeDisruptionLimit.ValueString() != budgets[0].Nodes.ValueString() {
-			return nil, fmt.Errorf("node_disruption_limit must match node_disruption_budgets[0].nodes when both are configured")
-		}
-		out.NodePoolSpec.Disruption.Budgets = make([]gcpcorev1.Budget, 0, len(budgets))
-		for i, budget := range budgets {
-			values, err := budget.values(ctx)
-			if err != nil {
-				return nil, fmt.Errorf("node_disruption_budgets[%d]: %w", i, err)
-			}
-			if len(values.reasons) > maxGCPDisruptionBudgetReasons {
-				return nil, fmt.Errorf("node_disruption_budgets[%d]: reasons must contain at most %d values", i, maxGCPDisruptionBudgetReasons)
-			}
-			out.NodePoolSpec.Disruption.Budgets = append(out.NodePoolSpec.Disruption.Budgets, gcpcorev1.Budget{
-				Nodes:    values.nodes,
-				Reasons:  lo.Map(values.reasons, func(reason string, _ int) gcpcorev1.DisruptionReason { return gcpcorev1.DisruptionReason(reason) }),
-				Schedule: values.schedule,
-				Duration: values.duration,
-			})
-		}
-	} else if !m.NodeDisruptionLimit.IsNull() && !m.NodeDisruptionLimit.IsUnknown() {
-		ensureFirstGCPBudget(out.NodePoolSpec).Nodes = m.NodeDisruptionLimit.ValueString()
-	}
-	if !m.NodeDisruptionDelay.IsNull() && !m.NodeDisruptionDelay.IsUnknown() {
-		out.NodePoolSpec.Disruption.ConsolidateAfter = gcpcorev1.MustParseNillableDuration(m.NodeDisruptionDelay.ValueString())
-	}
-	if err := applyGCPNodePoolLabels(ctx, out.NodePoolSpec, m.Labels); err != nil {
-		return nil, err
-	}
-	if err := applyGCPNodePoolTaints(ctx, out.NodePoolSpec, m.Taints); err != nil {
-		return nil, err
-	}
-
-	return &out, nil
-}
-
-func gcpRequirementsToStringsByKeys(requirements []gcpcorev1.NodeSelectorRequirementWithMinValues, operator corev1.NodeSelectorOperator, keys ...string) *[]types.String {
-	for _, key := range keys {
-		if values := gcpRequirementsToStrings(requirements, key, operator); values != nil {
-			return values
-		}
-	}
-	return nil
-}
-
-func gcpEnableGPUToBoolByKey(requirements []gcpcorev1.NodeSelectorRequirementWithMinValues, key string) types.Bool {
-	_, found := lo.Find(requirements, func(r gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return r.Key == key && r.Operator == corev1.NodeSelectorOpExists
-	})
-	return lo.Ternary(found, types.BoolValue(true), types.BoolValue(false))
-}
-
-func defaultGCPNodePoolSpec() *gcpcorev1.NodePoolSpec {
-	return &gcpcorev1.NodePoolSpec{
-		Template: gcpcorev1.NodeClaimTemplate{
-			ObjectMeta: gcpcorev1.ObjectMeta{
-				Labels: map[string]string{
-					CloudPilotManagedNodeLabelKey: "true",
-				},
-			},
-			Spec: gcpcorev1.NodeClaimTemplateSpec{
-				Requirements: []gcpcorev1.NodeSelectorRequirementWithMinValues{
-					{
-						Key:      corev1.LabelArchStable,
-						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{"amd64"},
-					},
-					{
-						Key:      corev1.LabelOSStable,
-						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{"linux"},
-					},
-					{
-						Key:      gcpcorev1.CapacityTypeLabelKey,
-						Operator: corev1.NodeSelectorOpIn,
-						Values:   []string{"spot", "on-demand"},
-					},
-				},
-				NodeClassRef: &gcpcorev1.NodeClassReference{
-					Group: gceNodeClassRefGroup,
-					Kind:  gceNodeClassRefKind,
-					Name:  DefaultNodeClassName,
-				},
-				ExpireAfter: gcpcorev1.MustParseNillableDuration("Never"),
-			},
-		},
-		Disruption: gcpcorev1.Disruption{
-			ConsolidationPolicy: gcpcorev1.ConsolidationPolicyWhenEmptyOrUnderutilized,
-			ConsolidateAfter:    gcpcorev1.MustParseNillableDuration("0s"),
-			Budgets: []gcpcorev1.Budget{{
-				Nodes: "10%",
-			}},
-		},
-	}
-}
-
-func enableGPUGCPNodePoolSpec(nodePoolSpec *gcpcorev1.NodePoolSpec, enableGPU bool) *gcpcorev1.NodePoolSpec {
-	if nodePoolSpec == nil {
-		nodePoolSpec = defaultGCPNodePoolSpec()
-	}
-
-	_, index, found := lo.FindIndexOf(nodePoolSpec.Template.Spec.Requirements, func(req gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return req.Key == gceLabelInstanceGPUCount
-	})
-
-	operator := corev1.NodeSelectorOpDoesNotExist
-	if enableGPU {
-		operator = corev1.NodeSelectorOpExists
-	}
-
-	if found {
-		nodePoolSpec.Template.Spec.Requirements[index].Operator = operator
-		nodePoolSpec.Template.Spec.Requirements[index].Values = nil
-		return nodePoolSpec
-	}
-
-	nodePoolSpec.Template.Spec.Requirements = append(nodePoolSpec.Template.Spec.Requirements, gcpcorev1.NodeSelectorRequirementWithMinValues{
-		Key:      gceLabelInstanceGPUCount,
-		Operator: operator,
-	})
-	return nodePoolSpec
-}
-
-func ensureFirstGCPBudget(nodePoolSpec *gcpcorev1.NodePoolSpec) *gcpcorev1.Budget {
-	if len(nodePoolSpec.Disruption.Budgets) == 0 {
-		nodePoolSpec.Disruption.Budgets = []gcpcorev1.Budget{{}}
-	}
-	return &nodePoolSpec.Disruption.Budgets[0]
-}
-
-func applyGCPNodePoolLabels(ctx context.Context, nodePoolSpec *gcpcorev1.NodePoolSpec, labels customfield.Map[types.String]) error {
-	if labels.IsNull() || labels.IsUnknown() {
-		return nil
-	}
-	values, diags := labels.Value(ctx)
-	if diags.HasError() {
-		return fmt.Errorf("labels: %v", diags)
-	}
-	nodePoolSpec.Template.ObjectMeta.Labels = map[string]string{}
-	for key, value := range values {
-		nodePoolSpec.Template.ObjectMeta.Labels[key] = value.ValueString()
-	}
-	if _, ok := nodePoolSpec.Template.ObjectMeta.Labels[CloudPilotManagedNodeLabelKey]; !ok {
-		nodePoolSpec.Template.ObjectMeta.Labels[CloudPilotManagedNodeLabelKey] = "true"
-	}
-	return nil
-}
-
-func applyGCPNodePoolTaints(ctx context.Context, nodePoolSpec *gcpcorev1.NodePoolSpec, taints customfield.NestedObjectList[TaintModel]) error {
-	if taints.IsNullOrUnknown() {
-		return nil
-	}
-	values, diags := taints.AsStructSliceT(ctx)
-	if diags.HasError() {
-		return fmt.Errorf("taints: %v", diags)
-	}
-	nodePoolSpec.Template.Spec.Taints = lo.Map(values, func(taint TaintModel, _ int) corev1.Taint {
-		return corev1.Taint{
-			Key:    taint.Key.ValueString(),
-			Value:  taint.Value.ValueString(),
-			Effect: corev1.TaintEffect(taint.Effect.ValueString()),
-		}
-	})
-	return nil
-}
-
-func gcpRequirementsToStrings(requirements []gcpcorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) *[]types.String {
-	v, found := lo.Find(requirements, func(r gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return r.Key == key && r.Operator == operator
-	})
-	if !found {
-		return nil
-	}
-
-	values := make([]types.String, len(v.Values))
-	for i, value := range v.Values {
-		values[i] = types.StringValue(value)
-	}
-	return &values
-}
-
-func gcpRequirementsToInt64(requirements []gcpcorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) (types.Int64, error) {
-	v, found := lo.Find(requirements, func(r gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return r.Key == key && r.Operator == operator
-	})
-	if !found || len(v.Values) == 0 {
-		return types.Int64Value(0), nil
-	}
-
-	intValue, err := strconv.ParseInt(v.Values[0], 10, 64)
-	if err != nil {
-		return types.Int64Value(0), err
-	}
-	return types.Int64Value(intValue), nil
-}
-
-func gcpRequirementsToOptionalInt64(requirements []gcpcorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) (types.Int64, error) {
-	v, found := lo.Find(requirements, func(r gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return r.Key == key && r.Operator == operator
-	})
-	if !found || len(v.Values) == 0 {
-		return types.Int64Null(), nil
-	}
-
-	intValue, err := strconv.ParseInt(v.Values[0], 10, 64)
-	if err != nil {
-		return types.Int64Null(), err
-	}
-	return types.Int64Value(intValue), nil
-}
-
-func gcpUpdateRequirements(key string, operator corev1.NodeSelectorOperator, values []string, requirements []gcpcorev1.NodeSelectorRequirementWithMinValues) []gcpcorev1.NodeSelectorRequirementWithMinValues {
-	_, index, found := lo.FindIndexOf(requirements, func(item gcpcorev1.NodeSelectorRequirementWithMinValues) bool {
-		return item.Key == key && item.Operator == operator
-	})
-
-	if found {
-		if len(values) == 0 {
-			requirements = append(requirements[:index], requirements[index+1:]...)
-			return requirements
-		}
-
-		requirements[index].Values = values
-		return requirements
-	}
-
-	if len(values) == 0 {
-		return requirements
-	}
-
-	requirements = append(requirements, gcpcorev1.NodeSelectorRequirementWithMinValues{
-		Key:      key,
-		Operator: operator,
-		Values:   values,
-	})
-	return requirements
-}
-
-func stringMapToTerraformMap(ctx context.Context, in map[string]string) customfield.Map[types.String] {
-	if len(in) == 0 {
-		return customfield.NullMap[types.String](ctx)
-	}
-	values := make(map[string]types.String, len(in))
-	for key, value := range in {
-		values[key] = types.StringValue(value)
-	}
-	return customfield.NewMapMust[types.String](ctx, values)
-}
-
-func terraformMapToStringMap(ctx context.Context, in customfield.Map[types.String]) map[string]string {
-	if in.IsNull() || in.IsUnknown() {
-		return nil
-	}
-	values, diags := in.Value(ctx)
-	if diags.HasError() {
-		return nil
-	}
-	if len(values) == 0 {
-		return map[string]string{}
-	}
-	out := make(map[string]string, len(values))
-	for key, value := range values {
-		out[key] = value.ValueString()
-	}
-	return out
-}
-
-func kubeletQuantityMapToTerraformMap(ctx context.Context, in map[string]gcpproviderv1alpha1.KubeletQuantity) customfield.Map[types.String] {
-	if len(in) == 0 {
-		return customfield.NullMap[types.String](ctx)
-	}
-	values := make(map[string]types.String, len(in))
-	for key, value := range in {
-		values[key] = types.StringValue(string(value))
-	}
-	return customfield.NewMapMust[types.String](ctx, values)
-}
-
-func terraformMapToKubeletQuantityMap(ctx context.Context, in customfield.Map[types.String]) map[string]gcpproviderv1alpha1.KubeletQuantity {
-	if in.IsNull() || in.IsUnknown() {
-		return nil
-	}
-	values, diags := in.Value(ctx)
-	if diags.HasError() {
-		return nil
-	}
-	if len(values) == 0 {
-		return map[string]gcpproviderv1alpha1.KubeletQuantity{}
-	}
-	out := make(map[string]gcpproviderv1alpha1.KubeletQuantity, len(values))
-	for key, value := range values {
-		out[key] = gcpproviderv1alpha1.KubeletQuantity(value.ValueString())
-	}
-	return out
-}
-
-func stringValueOrNull(value string) types.String {
-	if value == "" {
-		return types.StringNull()
-	}
-	return types.StringValue(value)
-}
-
-func stringFromTerraform(value types.String) string {
-	if value.IsNull() || value.IsUnknown() {
-		return ""
-	}
-	return value.ValueString()
-}
-
-func boolFromTerraform(value types.Bool) bool {
-	return !value.IsNull() && !value.IsUnknown() && value.ValueBool()
-}
-
-func GCEPhysicalDiskFromCurrent(disks []GCEDisk, index int) GCEDisk {
-	if index < len(disks) {
-		return disks[index]
-	}
-	return GCEDisk{}
-}
-
 func gcpImageSelectorAliasCompatibility(alias string) (gceAliasCompatibility, bool) {
 	trimmed := strings.TrimSpace(alias)
 	if trimmed == "" {
@@ -1151,164 +707,130 @@ func gcpDesiredImageSelectorTermsMatchCurrentNormalized(desired []GCEImageSelect
 	return true
 }
 
-func gcpNillableDurationToString(value gcpcorev1.NillableDuration) (string, bool) {
-	if len(value.Raw) > 0 {
-		var raw string
-		if err := json.Unmarshal(value.Raw, &raw); err == nil && raw != "" {
-			if raw == gcpcorev1.Never {
-				return gcpcorev1.Never, true
+func (m *GCENodeClassModel) applyGCEImageSelectors(ctx context.Context, current GCENodeClass, out *GCENodeClass) error {
+	currentHasLegacyAliasImageSelector := current.NodeClassSpec != nil && hasLegacyAliasImageSelectorTerm(current.NodeClassSpec.ImageSelectorTerms)
+	if !m.ImageSelectorTerms.IsNull() && !m.ImageSelectorTerms.IsUnknown() {
+		terms, diags := m.ImageSelectorTerms.AsStructSliceT(ctx)
+		if diags.HasError() {
+			return fmt.Errorf("image_selector_terms: %v", diags)
+		}
+		if len(terms) == 0 {
+			return fmt.Errorf("image_selector_terms cannot be empty")
+		}
+		if currentHasLegacyAliasImageSelector && gcpDesiredImageSelectorTermsMatchCurrentNormalized(terms, current.NodeClassSpec.ImageSelectorTerms) {
+			out.NodeClassSpec.ImageSelectorTerms = current.NodeClassSpec.ImageSelectorTerms
+		} else {
+			out.NodeClassSpec.ImageSelectorTerms = make([]GCEImageSelectorTerm, 0, len(terms))
+			for index, term := range terms {
+				specTerm, err := gcpImageSelectorTermModelToSpec(term, index)
+				if err != nil {
+					return err
+				}
+				out.NodeClassSpec.ImageSelectorTerms = append(out.NodeClassSpec.ImageSelectorTerms, specTerm)
 			}
-			return NormalizeDuration(raw), true
+			if err := validateGCPImageSelectorTermList(out.NodeClassSpec.ImageSelectorTerms); err != nil {
+				return err
+			}
+			out.NodeClassSpec.ImageFamily = nil
 		}
 	}
-	if value.Duration != nil {
-		return NormalizeDuration(value.Duration.String()), true
-	}
-	return gcpcorev1.Never, true
-}
-
-func mergeGCENodeClassModelIntoRawJSON(model *GCENodeClassModel, nodeClass *GCENodeClass) ([]byte, error) {
-	payload := map[string]json.RawMessage{}
-	if err := json.Unmarshal(nodeClass.rawJSON, &payload); err != nil {
-		return nil, fmt.Errorf("merge existing gce nodeclass payload: %w", err)
+	if len(current.rawJSON) == 0 && current.NodeClassSpec == nil && len(out.NodeClassSpec.ImageSelectorTerms) == 0 {
+		return fmt.Errorf("image_selector_terms must be set for a new gce nodeclass")
 	}
 
-	nameJSON, err := json.Marshal(nodeClass.Name)
-	if err != nil {
-		return nil, fmt.Errorf("marshal gce nodeclass name: %w", err)
-	}
-	payload["name"] = nameJSON
-	if !model.EnableImageAccelerator.IsNull() && !model.EnableImageAccelerator.IsUnknown() {
-		enableImageAcceleratorJSON, err := json.Marshal(nodeClass.EnableImageAccelerator)
-		if err != nil {
-			return nil, fmt.Errorf("marshal gce nodeclass enableImageAccelerator: %w", err)
-		}
-		payload["enableImageAccelerator"] = enableImageAcceleratorJSON
-	}
-	if !model.EnableLocalSSDEphemeralStorage.IsNull() && !model.EnableLocalSSDEphemeralStorage.IsUnknown() {
-		localSSDEnabledJSON, err := json.Marshal(nodeClass.EnableLocalSSDEphemeralStorage)
-		if err != nil {
-			return nil, fmt.Errorf("marshal gce nodeclass enableLocalSSDEphemeralStorage: %w", err)
-		}
-		payload["enableLocalSSDEphemeralStorage"] = localSSDEnabledJSON
-	}
-
-	specPayload := map[string]json.RawMessage{}
-	if rawSpec, ok := payload["nodeClassSpec"]; ok && len(rawSpec) > 0 && string(rawSpec) != "null" {
-		if err := json.Unmarshal(rawSpec, &specPayload); err != nil {
-			return nil, fmt.Errorf("merge existing gce nodeclass spec payload: %w", err)
-		}
-	}
-
-	if err := mergeGCENodeClassSpecField(specPayload, "serviceAccount",
-		!model.ServiceAccount.IsNull() && !model.ServiceAccount.IsUnknown(),
-		nodeClass.NodeClassSpec.ServiceAccount != "",
-		nodeClass.NodeClassSpec.ServiceAccount); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "disks",
-		!model.Disks.IsNull() && !model.Disks.IsUnknown(),
-		len(nodeClass.NodeClassSpec.Disks) > 0,
-		nodeClass.NodeClassSpec.Disks); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "ephemeralStorageLocalSSD",
-		!model.EphemeralStorageLocalSSD.IsNull() && !model.EphemeralStorageLocalSSD.IsUnknown() ||
-			(!model.EnableLocalSSDEphemeralStorage.IsNull() && !model.EnableLocalSSDEphemeralStorage.IsUnknown()),
-		nodeClass.NodeClassSpec.EphemeralStorageLocalSSD != nil,
-		nodeClass.NodeClassSpec.EphemeralStorageLocalSSD); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "imageSelectorTerms",
-		!model.ImageSelectorTerms.IsNull() && !model.ImageSelectorTerms.IsUnknown(),
-		len(nodeClass.NodeClassSpec.ImageSelectorTerms) > 0,
-		nodeClass.NodeClassSpec.ImageSelectorTerms); err != nil {
-		return nil, err
-	}
-	if !model.ImageSelectorTerms.IsNull() && !model.ImageSelectorTerms.IsUnknown() {
-		delete(specPayload, "imageFamily")
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "subnetRangeName",
-		!model.SubnetRangeName.IsNull() && !model.SubnetRangeName.IsUnknown(),
-		nodeClass.NodeClassSpec.SubnetRangeName != nil,
-		nodeClass.NodeClassSpec.SubnetRangeName); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "kubeletConfiguration",
-		!model.KubeletConfiguration.IsNull() && !model.KubeletConfiguration.IsUnknown(),
-		nodeClass.NodeClassSpec.KubeletConfiguration != nil,
-		nodeClass.NodeClassSpec.KubeletConfiguration); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "labels",
-		!model.Labels.IsNull() && !model.Labels.IsUnknown(),
-		len(nodeClass.NodeClassSpec.Labels) > 0,
-		nodeClass.NodeClassSpec.Labels); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "metadata",
-		!model.Metadata.IsNull() && !model.Metadata.IsUnknown(),
-		len(nodeClass.NodeClassSpec.Metadata) > 0,
-		nodeClass.NodeClassSpec.Metadata); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "networkTags",
-		model.NetworkTags != nil,
-		len(nodeClass.NodeClassSpec.NetworkTags) > 0,
-		nodeClass.NodeClassSpec.NetworkTags); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "confidentialInstanceType",
-		!model.ConfidentialInstanceType.IsNull() && !model.ConfidentialInstanceType.IsUnknown(),
-		nodeClass.NodeClassSpec.ConfidentialInstanceType != nil,
-		nodeClass.NodeClassSpec.ConfidentialInstanceType); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "networkConfig",
-		!model.NetworkConfig.IsNull() && !model.NetworkConfig.IsUnknown(),
-		nodeClass.NodeClassSpec.NetworkConfig != nil,
-		nodeClass.NodeClassSpec.NetworkConfig); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "autoGPUTaint",
-		!model.AutoGPUTaint.IsNull() && !model.AutoGPUTaint.IsUnknown(),
-		nodeClass.NodeClassSpec.AutoGPUTaint,
-		nodeClass.NodeClassSpec.AutoGPUTaint); err != nil {
-		return nil, err
-	}
-	if err := mergeGCENodeClassSpecField(specPayload, "gpuDriverVersion",
-		!model.GPUDriverVersion.IsNull() && !model.GPUDriverVersion.IsUnknown(),
-		nodeClass.NodeClassSpec.GPUDriverVersion != "",
-		nodeClass.NodeClassSpec.GPUDriverVersion); err != nil {
-		return nil, err
-	}
-
-	specJSON, err := json.Marshal(specPayload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal merged gce nodeclass spec: %w", err)
-	}
-	payload["nodeClassSpec"] = specJSON
-
-	mergedJSON, err := json.Marshal(payload)
-	if err != nil {
-		return nil, fmt.Errorf("marshal merged gce nodeclass payload: %w", err)
-	}
-	return mergedJSON, nil
-}
-
-func mergeGCENodeClassSpecField(specPayload map[string]json.RawMessage, key string, touched, keep bool, value any) error {
-	if !touched {
-		return nil
-	}
-	if !keep {
-		delete(specPayload, key)
-		return nil
-	}
-
-	fieldJSON, err := json.Marshal(value)
-	if err != nil {
-		return fmt.Errorf("marshal gce nodeclass field %s: %w", key, err)
-	}
-	specPayload[key] = fieldJSON
 	return nil
+}
+func (g *GCENodeClass) UnmarshalJSON(data []byte) error {
+	type alias GCENodeClass
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*g = GCENodeClass(decoded)
+	g.rawJSON = append([]byte(nil), data...)
+	return nil
+}
+
+func (g GCENodeClass) MarshalJSON() ([]byte, error) {
+	if g.originJSON {
+		return append([]byte(nil), g.rawJSON...), nil
+	}
+	type alias GCENodeClass
+	return jsonmerge.MarshalPreservingUnknown(g.rawJSON, alias(g), jsonmerge.WithPositionalArrayElements(GCEDisk{}))
+}
+
+func (g *GCENodePool) UnmarshalJSON(data []byte) error {
+	type alias GCENodePool
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*g = GCENodePool(decoded)
+	g.rawJSON = append([]byte(nil), data...)
+	return nil
+}
+
+func (g GCENodePool) MarshalJSON() ([]byte, error) {
+	if g.originJSON {
+		return append([]byte(nil), g.rawJSON...), nil
+	}
+	type alias GCENodePool
+	return jsonmerge.MarshalPreservingUnknown(g.rawJSON, alias(g))
+}
+func stringMapToTerraformMap(ctx context.Context, in map[string]string) customfield.Map[types.String] {
+	if len(in) == 0 {
+		return customfield.NullMap[types.String](ctx)
+	}
+	values := make(map[string]types.String, len(in))
+	for key, value := range in {
+		values[key] = types.StringValue(value)
+	}
+	return customfield.NewMapMust[types.String](ctx, values)
+}
+
+func kubeletQuantityMapToTerraformMap(ctx context.Context, in map[string]gcpproviderv1alpha1.KubeletQuantity) customfield.Map[types.String] {
+	if len(in) == 0 {
+		return customfield.NullMap[types.String](ctx)
+	}
+	values := make(map[string]types.String, len(in))
+	for key, value := range in {
+		values[key] = types.StringValue(string(value))
+	}
+	return customfield.NewMapMust[types.String](ctx, values)
+}
+
+func terraformMapToKubeletQuantityMap(ctx context.Context, in customfield.Map[types.String]) map[string]gcpproviderv1alpha1.KubeletQuantity {
+	if in.IsNull() || in.IsUnknown() {
+		return nil
+	}
+	values, diags := in.Value(ctx)
+	if diags.HasError() {
+		return nil
+	}
+	if len(values) == 0 {
+		return map[string]gcpproviderv1alpha1.KubeletQuantity{}
+	}
+	out := make(map[string]gcpproviderv1alpha1.KubeletQuantity, len(values))
+	for key, value := range values {
+		out[key] = gcpproviderv1alpha1.KubeletQuantity(value.ValueString())
+	}
+	return out
+}
+
+func stringValueOrNull(value string) types.String {
+	if value == "" {
+		return types.StringNull()
+	}
+	return types.StringValue(value)
+}
+
+func stringFromTerraform(value types.String) string {
+	if value.IsNull() || value.IsUnknown() {
+		return ""
+	}
+	return value.ValueString()
+}
+
+func boolFromTerraform(value types.Bool) bool {
+	return !value.IsNull() && !value.IsUnknown() && value.ValueBool()
 }

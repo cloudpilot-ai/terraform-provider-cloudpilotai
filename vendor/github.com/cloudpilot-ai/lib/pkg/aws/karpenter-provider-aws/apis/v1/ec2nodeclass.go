@@ -27,6 +27,7 @@ import (
 
 // EC2NodeClassSpec is the top level specification for the AWS Karpenter Provider.
 // This will contain configuration necessary to launch instances in AWS.
+// +kubebuilder:validation:XValidation:message="tags must contain at most 43 entries when volumeSizePolicy is configured",rule="!has(self.tags) || !has(self.blockDeviceMappings) || !self.blockDeviceMappings.exists(x, has(x.ebs) && has(x.ebs.volumeSizePolicy)) || self.tags.size() <= 43"
 type EC2NodeClassSpec struct {
 	// SubnetSelectorTerms is a list of or subnet selector terms. The terms are ORed.
 	// +kubebuilder:validation:XValidation:message="subnetSelectorTerms cannot be empty",rule="self.size() != 0"
@@ -92,6 +93,7 @@ type EC2NodeClassSpec struct {
 	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.sh/nodepool",rule="self.all(k, k != 'karpenter.sh/nodepool')"
 	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.sh/nodeclaim",rule="self.all(k, k !='karpenter.sh/nodeclaim')"
 	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching karpenter.k8s.aws/ec2nodeclass",rule="self.all(k, k !='karpenter.k8s.aws/ec2nodeclass')"
+	// +kubebuilder:validation:XValidation:message="tag contains a restricted tag matching cloudpilot.ai/root-volume-size-gib",rule="self.all(k, k !='cloudpilot.ai/root-volume-size-gib')"
 	// +optional
 	Tags map[string]string `json:"tags,omitempty"`
 	// Kubelet defines args to be used when configuring kubelet on provisioned nodes.
@@ -104,6 +106,8 @@ type EC2NodeClassSpec struct {
 	Kubelet *KubeletConfiguration `json:"kubelet,omitempty" hash:"ignore"`
 	// BlockDeviceMappings to be applied to provisioned nodes.
 	// +kubebuilder:validation:XValidation:message="must have only one blockDeviceMappings with rootVolume",rule="self.filter(x, has(x.rootVolume)?x.rootVolume==true:false).size() <= 1"
+	// +kubebuilder:validation:XValidation:message="volumeSizePolicy requires rootVolume when multiple blockDeviceMappings are configured",rule="self.all(x, !has(x.ebs) || !has(x.ebs.volumeSizePolicy) || (self.size() == 1 && !has(x.rootVolume)) || (has(x.rootVolume) && x.rootVolume))"
+	// +kubebuilder:validation:XValidation:message="must have only one blockDeviceMapping with volumeSizePolicy",rule="self.filter(x, has(x.ebs) && has(x.ebs.volumeSizePolicy)).size() <= 1"
 	// +kubebuilder:validation:MaxItems:=50
 	// +optional
 	BlockDeviceMappings []*BlockDeviceMapping `json:"blockDeviceMappings,omitempty"`
@@ -336,6 +340,12 @@ type BlockDeviceMapping struct {
 	RootVolume bool `json:"rootVolume,omitempty"`
 }
 
+// +kubebuilder:validation:XValidation:message="volumeSize is required when volumeSizePolicy is configured",rule="!has(self.volumeSizePolicy) || has(self.volumeSize)"
+// +kubebuilder:validation:XValidation:message="maxSizeGiB must be at least volumeSize",rule="!has(self.volumeSizePolicy) || !has(self.volumeSize) || (self.volumeSize.endsWith('Gi') ? int(self.volumeSize.split('Gi')[0]) : self.volumeSize.endsWith('Ti') ? int(self.volumeSize.split('Ti')[0]) * 1024 : self.volumeSize.endsWith('G') ? (int(self.volumeSize.split('G')[0]) * 1000000000 + 1073741823) / 1073741824 : (int(self.volumeSize.split('T')[0]) * 1000000000000 + 1073741823) / 1073741824) <= self.volumeSizePolicy.maxSizeGiB"
+// +kubebuilder:validation:XValidation:message="maxSizeGiB cannot exceed 1024 for standard volumes",rule="!has(self.volumeSizePolicy) || !has(self.volumeType) || self.volumeType != 'standard' || self.volumeSizePolicy.maxSizeGiB <= 1024"
+// +kubebuilder:validation:XValidation:message="maxSizeGiB cannot exceed 16384 unless volumeType is gp3 or io2",rule="!has(self.volumeSizePolicy) || (has(self.volumeType) && self.volumeType in ['gp3', 'io2']) || self.volumeSizePolicy.maxSizeGiB <= 16384"
+// +kubebuilder:validation:XValidation:message="volumeSize cannot exceed 1024GiB for standard volumes",rule="!has(self.volumeSize) || !has(self.volumeType) || self.volumeType != 'standard' || (self.volumeSize.endsWith('Gi') ? int(self.volumeSize.split('Gi')[0]) : self.volumeSize.endsWith('Ti') ? int(self.volumeSize.split('Ti')[0]) * 1024 : self.volumeSize.endsWith('G') ? (int(self.volumeSize.split('G')[0]) * 1000000000 + 1073741823) / 1073741824 : (int(self.volumeSize.split('T')[0]) * 1000000000000 + 1073741823) / 1073741824) <= 1024"
+// +kubebuilder:validation:XValidation:message="volumeSize cannot exceed 16384GiB unless volumeType is gp3 or io2",rule="!has(self.volumeSize) || (has(self.volumeType) && self.volumeType in ['gp3', 'io2']) || (self.volumeSize.endsWith('Gi') ? int(self.volumeSize.split('Gi')[0]) : self.volumeSize.endsWith('Ti') ? int(self.volumeSize.split('Ti')[0]) * 1024 : self.volumeSize.endsWith('G') ? (int(self.volumeSize.split('G')[0]) * 1000000000 + 1073741823) / 1073741824 : (int(self.volumeSize.split('T')[0]) * 1000000000000 + 1073741823) / 1073741824) <= 16384"
 type BlockDevice struct {
 	// DeleteOnTermination indicates whether the EBS volume is deleted on instance termination.
 	// +optional
@@ -380,26 +390,50 @@ type BlockDevice struct {
 	// a volume size. The following are the supported volumes sizes for each volume
 	// type:
 	//
-	//    * gp2 and gp3: 1-16,384
+	//    * gp2: 1-16,384
 	//
-	//    * io1 and io2: 4-16,384
+	//    * gp3: 1-65,536
+	//
+	//    * io1: 4-16,384
+	//
+	//    * io2: 4-65,536
 	//
 	//    * st1 and sc1: 125-16,384
 	//
 	//    * standard: 1-1,024
 	// + TODO: Add the CEL resources.quantity type after k8s 1.29
 	// + https://github.com/kubernetes/apiserver/commit/b137c256373aec1c5d5810afbabb8932a19ecd2a#diff-838176caa5882465c9d6061febd456397a3e2b40fb423ed36f0cabb1847ecb4dR190
-	// +kubebuilder:validation:Pattern:="^((?:[1-9][0-9]{0,3}|[1-4][0-9]{4}|[5][0-8][0-9]{3}|59000)Gi|(?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|[6][0-3][0-9]{3}|64000)G|([1-9]||[1-5][0-7]|58)Ti|([1-9]||[1-5][0-9]|6[0-3]|64)T)$"
+	// +kubebuilder:validation:Pattern:="^((?:[1-9][0-9]{0,3}|[1-5][0-9]{4}|6[0-4][0-9]{3}|65[0-4][0-9]{2}|655[0-2][0-9]|6553[0-6])Gi|(?:[1-9][0-9]{0,3}|[1-6][0-9]{4}|70[0-2][0-9]{2}|703[0-5][0-9]|7036[0-8])G|(?:[1-9]|[1-5][0-9]|6[0-4])Ti|(?:[1-9]|[1-6][0-9]|70)T)$"
+	// +kubebuilder:validation:MaxLength=7
 	// +kubebuilder:validation:Schemaless
 	// +kubebuilder:validation:Type:=string
 	// +optional
 	VolumeSize *resource.Quantity `json:"volumeSize,omitempty" hash:"string"`
+	// VolumeSizePolicy dynamically resolves this volume's size for each newly
+	// provisioned node. VolumeSize remains the base size. When instance-store
+	// RAID0 is disabled, NodeClaim ephemeral-storage requests are also included.
+	// +optional
+	VolumeSizePolicy *VolumeSizePolicy `json:"volumeSizePolicy,omitempty" hash:"ignore"`
 	// VolumeType of the block device.
 	// For more information, see Amazon EBS volume types (https://docs.aws.amazon.com/AWSEC2/latest/UserGuide/EBSVolumeTypes.html)
 	// in the Amazon Elastic Compute Cloud User Guide.
 	// +kubebuilder:validation:Enum:={standard,io1,io2,gp2,sc1,st1,gp3}
 	// +optional
 	VolumeType *string `json:"volumeType,omitempty"`
+}
+
+// VolumeSizePolicy controls dynamic volume sizing in GiB.
+type VolumeSizePolicy struct {
+	// PerVCPUGiB is added to the configured base size for every vCPU.
+	// +kubebuilder:validation:Minimum=0
+	// +kubebuilder:validation:Maximum=16384
+	// +optional
+	PerVCPUGiB int64 `json:"perVCPUGiB,omitempty"`
+	// MaxSizeGiB bounds the raw volume size and the storage capacity advertised
+	// during scheduling.
+	// +kubebuilder:validation:Minimum=1
+	// +kubebuilder:validation:Maximum=65536
+	MaxSizeGiB int64 `json:"maxSizeGiB"`
 }
 
 // InstanceStorePolicy enumerates options for configuring instance store disks.

@@ -68,6 +68,14 @@ type Disruption struct {
 	// +kubebuilder:validation:Schemaless
 	// +required
 	ConsolidateAfter NillableDuration `json:"consolidateAfter"`
+	// DisruptionCooldown is the minimum duration to wait after a voluntary disruption batch completes
+	// before starting another batch in this NodePool. Budgets still determine the batch size.
+	// If omitted, no additional delay is applied unless a cluster default is configured.
+	// +kubebuilder:validation:Pattern=`^([0-9]+(s|m|h))+$`
+	// +kubebuilder:validation:Type="string"
+	// +kubebuilder:validation:Schemaless
+	// +optional
+	DisruptionCooldown *metav1.Duration `json:"disruptionCooldown,omitempty"`
 	// ConsolidationPolicy describes which nodes Karpenter can disrupt through its consolidation
 	// algorithm. This policy defaults to "WhenEmptyOrUnderutilized" if not specified
 	// +kubebuilder:default:="WhenEmptyOrUnderutilized"

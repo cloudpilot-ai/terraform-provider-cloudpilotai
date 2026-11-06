@@ -5,10 +5,9 @@ import (
 	"testing"
 
 	gcpcorev1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1"
-	"github.com/hashicorp/terraform-plugin-framework/types"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 type fakeGCPNodeClassConfigurationClient struct {
@@ -48,6 +47,13 @@ func (f *fakeGCPNodePoolConfigurationClient) ApplyNodePool(_ string, rebalanceNo
 
 func (f *fakeGCPNodePoolConfigurationClient) DeleteNodePool(_ string, nodePoolName string) error {
 	f.deleted = append(f.deleted, nodePoolName)
+	remaining := f.listResponse.GCENodePools[:0]
+	for _, pool := range f.listResponse.GCENodePools {
+		if pool.Name != nodePoolName {
+			remaining = append(remaining, pool)
+		}
+	}
+	f.listResponse.GCENodePools = remaining
 	return nil
 }
 
@@ -190,4 +196,12 @@ func TestSyncGCENodePoolConfigurationPrevalidatesAllNodePools(t *testing.T) {
 	if len(client.applied) != 0 {
 		t.Fatalf("invalid nodepool list made writes: %#v", client.applied)
 	}
+}
+
+func (f *fakeGCPNodePoolConfigurationClient) ListNodePoolsContext(_ context.Context, clusterID string) (api.RebalanceNodePoolList, error) {
+	return f.ListNodePools(clusterID)
+}
+
+func (f *fakeGCPNodePoolConfigurationClient) DeleteNodePoolContext(_ context.Context, clusterID, name string) error {
+	return f.DeleteNodePool(clusterID, name)
 }

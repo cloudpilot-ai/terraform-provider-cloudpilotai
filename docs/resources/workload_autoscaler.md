@@ -157,21 +157,23 @@ Required:
 Optional:
 
 - `disable_runtime_optimization` (Boolean) Disable runtime-based optimization for workloads matched by this AutoscalingPolicy.
-- `drift_threshold_cpu` (String) CPU drift threshold as a quantity or percent (e.g. '10%').
-- `drift_threshold_memory` (String) Memory drift threshold as a quantity or percent (e.g. '10%').
+- `drift_threshold_cpu` (String) CPU drift threshold as a quantity or percent (e.g. '10%'). Omit to preserve; an empty string clears the override.
+- `drift_threshold_memory` (String) Memory drift threshold as a quantity or percent (e.g. '10%'). Omit to preserve; an empty string clears the override.
 - `enable` (Boolean) Whether this AutoscalingPolicy is enabled.
 - `in_place_fallback_default_policy` (String) Default action when in-place update cannot continue. Allowed values: `recreate`, `hold`. When omitted, CloudPilot defaults DaemonSet targets to `hold` and other supported targets to `recreate`.
 - `in_place_fallback_reason_policies` (Map of String) Fallback overrides keyed by failure reason. Allowed keys: `PodResizePending`, `QoSChangeForbidden`, `MemoryLimitsAddForbidden`, `ResourceLimitsRemoveForbidden`, `ResourceRequestsRemoveForbidden`, `ResourceMemoryLimitCannotBeDecreased`, `JVMHeapDrift`. Allowed values: `recreate`, `hold`.
-- `limit_policies` (Attributes List) Per-resource limit policies. (see [below for nested schema](#nestedatt--autoscaling_policies--limit_policies))
+- `limit_policies` (Attributes List) Per-resource limit policies. Null action fields preserve the current mode unless another action is explicitly selected. Selecting a new action replaces the previous mode. (see [below for nested schema](#nestedatt--autoscaling_policies--limit_policies))
 - `on_policy_removal` (String) How EVPA restores Pods toward baseline resources when the generated policy configuration is removed. Allowed values: `off`, `recreate`, `inplace`. New policies default to `off`.
 - `priority` (Number) Signed 32-bit priority used when multiple policies match the same workload. Higher values take precedence; ties use the oldest policy. New policies default to 0.
 - `startup_boost_enabled` (Boolean) Enable startup resource boost for newly created pods.
-- `startup_boost_min_boost_duration` (String) Minimum duration for the startup boost (e.g. '5m').
-- `startup_boost_min_ready_duration` (String) Minimum ready duration before removing the boost (e.g. '3m').
-- `startup_boost_multiplier_cpu` (String) CPU startup multiplier as a numeric string from 1.0 to 5.0, for example `2.0`.
-- `startup_boost_multiplier_memory` (String) Memory startup multiplier as a numeric string from 1.0 to 5.0, for example `2.0`.
+- `startup_boost_min_boost_duration` (String) Minimum duration for the startup boost (e.g. '5m'). Omit to preserve; an empty string resets the duration to zero.
+- `startup_boost_min_ready_duration` (String) Minimum ready duration before removing the boost (e.g. '3m'). Omit to preserve; an empty string resets the duration to zero.
+- `startup_boost_multiplier_cpu` (String) CPU startup multiplier as a numeric string from 1.0 to 5.0, for example `2.0`. Omit to preserve; an empty string clears this multiplier.
+- `startup_boost_multiplier_memory` (String) Memory startup multiplier as a numeric string from 1.0 to 5.0, for example `2.0`. Omit to preserve; an empty string clears this multiplier.
+- `startup_boost_recommendation_policy_name` (String) Independent RecommendationPolicy for startup resources. Must differ from recommendation_policy_name. An empty string clears the reference and uses legacy multipliers.
+- `startup_boost_update_resources` (List of String) Resources eligible for startup boost: cpu and/or memory. Must contain at least one resource and overlap update_resources when boost is enabled. Omit to preserve the server value; new policies default to both resources.
 - `target_refs` (Attributes List) Target workload references. (see [below for nested schema](#nestedatt--autoscaling_policies--target_refs))
-- `update_resources` (List of String) Resources to optimize. Allowed values: `cpu`, `memory`. Omit or set an empty list to use the CloudPilot default of both resources.
+- `update_resources` (List of String) Resources to optimize. Allowed values: `cpu`, `memory`. Omit to preserve the server value; new policies default to both resources. An empty list disables resource management.
 - `update_schedules` (Attributes List) Update schedule items controlling when and how updates are applied. (see [below for nested schema](#nestedatt--autoscaling_policies--update_schedules))
 
 <a id="nestedatt--autoscaling_policies--limit_policies"></a>
@@ -183,10 +185,10 @@ Required:
 
 Optional:
 
-- `auto_headroom` (String) Numeric string headroom factor in the range 1.0 to 5.0. Existing limits are only increased, never decreased. At most one limit-policy action may be configured.
-- `keep_limit` (Boolean) Set to true to keep the baseline resource limit unchanged. At most one of `remove_limit`, `keep_limit`, `multiplier`, or `auto_headroom` may be configured.
-- `multiplier` (String) Numeric string multiplier applied to the recommended request to compute the limit. Allowed range: 1.0 to 5.0. At most one limit-policy action may be configured.
-- `remove_limit` (Boolean) Set to true to remove the resource limit. At most one of `remove_limit`, `keep_limit`, `multiplier`, or `auto_headroom` may be configured.
+- `auto_headroom` (String) Numeric string headroom factor in the range 1.0 to 5.0. Existing limits are only increased, never decreased. An empty string disables this action. At most one limit-policy action may be selected.
+- `keep_limit` (Boolean) Set to true to keep the baseline resource limit unchanged, or false to disable this action. At most one limit-policy action may be selected.
+- `multiplier` (String) Numeric string multiplier applied to the recommended request to compute the limit. Allowed range: 1.0 to 5.0. An empty string disables this action. At most one limit-policy action may be selected.
+- `remove_limit` (Boolean) Set to true to remove the resource limit, or false to disable this action. At most one of `remove_limit = true`, `keep_limit = true`, a non-empty `multiplier`, or a non-empty `auto_headroom` may be selected.
 
 
 <a id="nestedatt--autoscaling_policies--target_refs"></a>
@@ -199,7 +201,7 @@ Required:
 
 Optional:
 
-- `label_selector` (Attributes) Kubernetes label selector for matching workloads. (see [below for nested schema](#nestedatt--autoscaling_policies--target_refs--label_selector))
+- `label_selector` (Attributes) Kubernetes label selector for matching workloads. Omit to preserve the server value; an empty object clears the selector. Within a nonempty object, omitted children are preserved. (see [below for nested schema](#nestedatt--autoscaling_policies--target_refs--label_selector))
 - `name` (String) Workload name. Leave empty to match all workloads of this kind.
 - `namespace` (String) Namespace. Leave empty to match all namespaces.
 
@@ -265,6 +267,7 @@ Optional:
 - `optimized` (Boolean) Filter by whether the workload is optimized.
 - `recommendation_policy_names` (List of String) Filter by recommendation policy names.
 - `runtime_languages` (List of String) Filter by container runtime languages.
+- `startup_boost_enabled` (Boolean) Filter workloads by whether startup boost is enabled.
 - `workload_kinds` (List of String) Workload kinds to filter. Allowed values: `Deployment`, `StatefulSet`, `DaemonSet`. Leave empty or omit to match all supported kinds.
 - `workload_name` (String) Filter by workload name (substring match).
 - `workload_state` (String) Filter by workload state.
@@ -282,6 +285,7 @@ Optional:
 - `optimized` (Boolean) Filter by whether the workload is optimized.
 - `recommendation_policy_names` (List of String) Filter by recommendation policy names.
 - `runtime_languages` (List of String) Filter by container runtime languages.
+- `startup_boost_enabled` (Boolean) Filter workloads by whether startup boost is enabled.
 - `workload_kinds` (List of String) Workload kinds to filter. Allowed values: `Deployment`, `StatefulSet`, `DaemonSet`. Leave empty or omit to match all supported kinds.
 - `workload_name` (String) Filter by workload name (substring match).
 - `workload_state` (String) Filter by workload state.
@@ -299,19 +303,22 @@ Required:
 
 Optional:
 
-- `buffer_cpu` (String) CPU buffer as a quantity or percent (e.g. '10%' or '100m').
-- `buffer_memory` (String) Memory buffer as a quantity or percent (e.g. '10%' or '128Mi').
-- `jvm_heap_buffer` (String) JVM heap buffer for HeapXmx, for example '25%' or '300Mi'.
+- `buffer_cpu` (String) CPU buffer as a quantity or percent (e.g. '10%' or '100m'). Omit to preserve; an empty string clears the override.
+- `buffer_memory` (String) Memory buffer as a quantity or percent (e.g. '10%' or '128Mi'). Omit to preserve; an empty string clears the override.
+- `jvm_heap_buffer` (String) JVM heap buffer for HeapXmx, for example '25%' or '300Mi'. Omit to preserve; an empty string restores the controller default.
 - `jvm_heap_used_percentile` (Number) JVM heap-used percentile. Allowed range: 20 to 100. When omitted, the controller defaults to 20.
-- `jvm_min_heap_xms` (String) Minimum JVM heap size (Xms), for example 512Mi. When omitted, Terraform does not manage this setting.
-- `jvm_min_heap_xms_ratio_of_memory` (String) Minimum HeapXms ratio relative to the JVM memory recommendation. Use a numeric string in the range `[0, 1)`, for example `0.25`; `0` disables the ratio floor.
-- `jvm_recent_non_heap_window` (String) Recent non-heap protection window, for example '2h'.
+- `jvm_max_heap_xms` (String) Maximum JVM initial heap (Xms). Supports a Kubernetes quantity or percentage of the original initial heap; an empty string clears the bound.
+- `jvm_max_heap_xmx` (String) Maximum JVM maximum heap (Xmx). Supports a Kubernetes quantity or percentage of the original maximum heap; an empty string clears the bound.
+- `jvm_min_heap_xms` (String) Minimum JVM initial heap (Xms), as a Kubernetes quantity or percentage of the original initial heap. Omit to preserve; an empty string clears the bound.
+- `jvm_min_heap_xms_ratio_of_memory` (String) Minimum HeapXms ratio relative to the JVM memory recommendation. Use a numeric string in the range `[0, 1)`, for example `0.25`; `0` disables the ratio floor. Omit to preserve; an empty string clears the override.
+- `jvm_min_heap_xmx` (String) Minimum JVM maximum heap (Xmx). Supports a Kubernetes quantity or percentage of the original maximum heap; an empty string clears the bound.
+- `jvm_recent_non_heap_window` (String) Recent non-heap protection window, for example '2h'. Omit to preserve; an empty string restores the controller default.
 - `percentile_cpu` (Number) Target CPU usage percentile. Allowed range: 50 to 100. Configure together with `percentile_memory`; new policies default both values to 95 when both are omitted.
 - `percentile_memory` (Number) Target memory usage percentile. Allowed range: 50 to 100. Configure together with `percentile_cpu`; new policies default both values to 95 when both are omitted.
-- `request_max_cpu` (String) Maximum CPU request recommendation (e.g. '8').
-- `request_max_memory` (String) Maximum Memory request recommendation (e.g. '16Gi').
-- `request_min_cpu` (String) Minimum CPU request recommendation (e.g. '10m').
-- `request_min_memory` (String) Minimum Memory request recommendation (e.g. '32Mi').
+- `request_max_cpu` (String) Maximum CPU request recommendation (e.g. '8'). Omit to preserve; an empty string clears the bound.
+- `request_max_memory` (String) Maximum Memory request recommendation (e.g. '16Gi'). Omit to preserve; an empty string clears the bound.
+- `request_min_cpu` (String) Minimum CPU request recommendation (e.g. '10m'). Omit to preserve; an empty string clears the bound.
+- `request_min_memory` (String) Minimum Memory request recommendation (e.g. '32Mi'). Omit to preserve; an empty string clears the bound.
 - `strategy_type` (String) Recommendation strategy. Allowed value: `percentile`. When omitted for a new policy, CloudPilot uses `percentile`.
 
 ## Upgrading from Generated Kubeconfig State

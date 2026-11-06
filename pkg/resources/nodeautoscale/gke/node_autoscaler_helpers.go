@@ -82,6 +82,10 @@ func hydrateAllNodePools(ctx context.Context, client postWriteStateHydratorClien
 			return customfield.NullObjectList[api.GCENodePoolModel](ctx), convErr
 		}
 		if model != nil {
+			// Import the complete budgets without also owning their deprecated alias.
+			if !model.NodeDisruptionBudgets.IsNullOrUnknown() {
+				model.NodeDisruptionLimit = types.StringNull()
+			}
 			models = append(models, normalizeNodePoolComputedUnknowns(*model))
 		}
 	}

@@ -11,11 +11,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/samber/lo"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	cloudpilotaiclient "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/client"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/samber/lo"
 )
 
 func validateProviderAwareScriptInputs(provider, clusterName string, requireClusterName bool) error {
@@ -40,12 +39,13 @@ type workloadConfigurationClient interface {
 }
 
 type ec2NodePoolConfigurationClient interface {
+	nodePoolDeletionClient
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
 	ApplyNodePool(clusterID string, rebalanceNodePool api.RebalanceNodePool) error
-	DeleteNodePool(clusterID, nodePoolName string) error
 }
 
 type EC2NodePoolPlan struct {
+	ctx               context.Context
 	clusterUID        string
 	preparedNodePools []*api.EC2NodePool
 	desiredNames      map[string]struct{}
@@ -398,12 +398,9 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 		return item.Name, item
 	})
 
-	nodeClassNames := make(map[string]struct{}, len(nodeClasses))
 	preparedNodeClasses := make([]*api.EC2NodeClass, 0, len(nodeClasses))
 
 	for nci := range nodeClasses {
-		nodeClassNames[nodeClasses[nci].Name.ValueString()] = struct{}{}
-
 		ec2NodeClass := api.EC2NodeClass{Name: nodeClasses[nci].Name.ValueString()}
 		if v, ok := nodeClassM[nodeClasses[nci].Name.ValueString()]; ok {
 			ec2NodeClass = v
@@ -434,18 +431,7 @@ func SyncEC2NodeClassConfiguration(ctx context.Context, client cloudpilotaiclien
 		}
 	}
 
-	// Only delete nodeclasses that were previously tracked in Terraform state
-	// but are no longer in the desired configuration. Server-side nodeclasses
-	// not managed by Terraform are left untouched.
-	for name := range previousStateNames {
-		if _, stillDesired := nodeClassNames[name]; !stillDesired {
-			if err := client.DeleteNodeClass(clusterUID, name); err != nil {
-				return err
-			}
-		}
-	}
-
-	return nil
+	return DeleteStaleEC2NodeClasses(ctx, client, clusterUID, nodeClassesNestedObjectList, previousStateNames)
 }
 
 func SyncEC2NodePoolConfiguration(ctx context.Context, client ec2NodePoolConfigurationClient, clusterUID string,
@@ -530,6 +516,7 @@ func PrepareEC2NodePoolConfiguration(ctx context.Context, client ec2NodePoolConf
 	}
 
 	return &EC2NodePoolPlan{
+		ctx:               ctx,
 		clusterUID:        clusterUID,
 		preparedNodePools: preparedNodePools,
 		desiredNames:      nodePoolNames,
@@ -555,7 +542,7 @@ func ApplyEC2NodePoolConfiguration(client ec2NodePoolConfigurationClient, plan *
 	// not managed by Terraform are left untouched.
 	for name := range plan.previousNames {
 		if _, stillDesired := plan.desiredNames[name]; !stillDesired {
-			if err := client.DeleteNodePool(plan.clusterUID, name); err != nil {
+			if err := deleteNodePoolAndWait(plan.ctx, client, plan.clusterUID, name); err != nil {
 				return err
 			}
 		}

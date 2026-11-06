@@ -2,16 +2,16 @@ package client
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
 
-	"github.com/hashicorp/go-retryablehttp"
-	"k8s.io/klog/v2"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/utils/leveledlogger"
+	"github.com/hashicorp/go-retryablehttp"
+	"k8s.io/klog/v2"
 )
 
 const terraformProviderClientHeader = "terraform-provider-cloudpilotai"
@@ -25,9 +25,13 @@ func doJSONNoData(c *Client, method, url string, payload any) error {
 
 // Generic JSON std-envelope request returning Data as T.
 func doJSON[T any](c *Client, method, url string, payload any) (T, error) {
+	return doJSONContext[T](context.Background(), c, method, url, payload)
+}
+
+func doJSONContext[T any](ctx context.Context, c *Client, method, url string, payload any) (T, error) {
 	var zero T
 
-	resp, err := c.request(method, url, payload)
+	resp, err := c.requestContext(ctx, method, url, payload)
 	if err != nil {
 		klog.Errorf("HTTP request failed, method(%s) url(%s), err: %v", method, url, err)
 		return zero, err
@@ -77,14 +81,18 @@ func doJSON[T any](c *Client, method, url string, payload any) (T, error) {
 	return out, nil
 }
 
-// request builds and executes an HTTP request.
+// requestContext builds and executes an HTTP request with cancellation.
 // If reqBody is []byte or json.RawMessage, it is sent as-is (no re-marshal).
 // Otherwise, reqBody is JSON-marshaled.
-func (c *Client) request(method string, url string, reqBody any) (*http.Response, error) {
-	return c.requestWithHeaders(method, url, reqBody, nil)
+func (c *Client) requestContext(ctx context.Context, method string, url string, reqBody any) (*http.Response, error) {
+	return c.requestWithHeadersContext(ctx, method, url, reqBody, nil)
 }
 
 func (c *Client) requestWithHeaders(method string, url string, reqBody any, extraHeaders map[string]string) (*http.Response, error) {
+	return c.requestWithHeadersContext(context.Background(), method, url, reqBody, extraHeaders)
+}
+
+func (c *Client) requestWithHeadersContext(ctx context.Context, method string, url string, reqBody any, extraHeaders map[string]string) (*http.Response, error) {
 	var (
 		httpReq *retryablehttp.Request
 		err     error
@@ -116,6 +124,10 @@ func (c *Client) requestWithHeaders(method string, url string, reqBody any, extr
 		httpReq.Header.Set(key, value)
 	}
 
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	httpReq = httpReq.WithContext(ctx)
 	client := c.retryClient()
 	resp, err := client.Do(httpReq)
 	if err != nil {

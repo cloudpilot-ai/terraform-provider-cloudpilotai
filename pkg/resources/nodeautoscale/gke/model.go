@@ -1,10 +1,9 @@
 package gke
 
 import (
-	"github.com/hashicorp/terraform-plugin-framework/types"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	customfield "github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 )
 
 type ClusterSettingModel struct {
@@ -12,6 +11,7 @@ type ClusterSettingModel struct {
 	EnableDiskMonitor          types.Bool    `tfsdk:"enable_disk_monitor"`
 	EnableNodePoolDecommission types.Bool    `tfsdk:"enable_node_pool_decommission"`
 	EnableWorkloadMinNonSpot   types.Bool    `tfsdk:"enable_workload_min_non_spot"`
+	DisruptionCooldown         types.String  `tfsdk:"disruption_cooldown"`
 	Discount                   types.Float64 `tfsdk:"discount"`
 	PreRunCommand              types.String  `tfsdk:"pre_run_command"`
 	PostRunCommand             types.String  `tfsdk:"post_run_command"`
@@ -40,5 +40,6 @@ type ClusterModel struct {
 	ClusterSetting      customfield.NestedObject[ClusterSettingModel]                   `tfsdk:"cluster_setting"`
 	NodeClasses         customfield.NestedObjectList[api.GCENodeClassModel]             `tfsdk:"nodeclasses"`
 	NodePools           customfield.NestedObjectList[api.GCENodePoolModel]              `tfsdk:"nodepools"`
+	Workloads           customfield.NestedObjectList[api.WorkloadModel]                 `tfsdk:"workloads"`
 	ScheduledRebalances customfield.NestedObjectList[api.ScheduledRebalancePolicyModel] `tfsdk:"scheduled_rebalances"`
 }

@@ -3,6 +3,7 @@
 package client
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -10,10 +11,9 @@ import (
 	"strconv"
 	"sync"
 
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	"github.com/hashicorp/go-retryablehttp"
 	"k8s.io/klog/v2"
-
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 )
 
 func validateProviderAwareScriptRequest(provider, clusterName string, requireClusterName bool) error {
@@ -53,8 +53,10 @@ type Interface interface {
 	// rebalance nodepool configuration
 	GetNodePool(clusterID, nodePoolName string) (*api.RebalanceNodePool, error)
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
+	ListNodePoolsContext(ctx context.Context, clusterID string) (api.RebalanceNodePoolList, error)
 	ApplyNodePool(clusterID string, rebalanceNodePool api.RebalanceNodePool) error
 	DeleteNodePool(clusterID, nodePoolName string) error
+	DeleteNodePoolContext(ctx context.Context, clusterID, nodePoolName string) error
 
 	// rebalance nodeclass configuration
 	GetNodeClass(clusterID, nodeClassName string) (*api.RebalanceNodeClass, error)
@@ -321,8 +323,13 @@ func (c *Client) GetNodePool(clusterID, nodePoolName string) (*api.RebalanceNode
 }
 
 func (c *Client) ListNodePools(clusterID string) (api.RebalanceNodePoolList, error) {
+	return c.ListNodePoolsContext(context.Background(), clusterID)
+}
+
+// ListNodePoolsContext lists pools while respecting operation cancellation and deadlines.
+func (c *Client) ListNodePoolsContext(ctx context.Context, clusterID string) (api.RebalanceNodePoolList, error) {
 	url := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/nodepools", c.Endpoint, clusterID)
-	out, err := doJSON[api.RebalanceNodePoolList](c, http.MethodGet, url, nil)
+	out, err := doJSONContext[api.RebalanceNodePoolList](ctx, c, http.MethodGet, url, nil)
 	if err != nil {
 		return api.RebalanceNodePoolList{}, err
 	}
@@ -336,8 +343,14 @@ func (c *Client) ApplyNodePool(clusterID string, rebalanceNodePool api.Rebalance
 }
 
 func (c *Client) DeleteNodePool(clusterID, nodePoolName string) error {
+	return c.DeleteNodePoolContext(context.Background(), clusterID, nodePoolName)
+}
+
+// DeleteNodePoolContext starts pool deletion with operation cancellation and deadlines.
+func (c *Client) DeleteNodePoolContext(ctx context.Context, clusterID, nodePoolName string) error {
 	url := fmt.Sprintf("%s/api/v1/rebalance/clusters/%s/nodepools/%s", c.Endpoint, clusterID, nodePoolName)
-	return doJSONNoData(c, http.MethodDelete, url, nil)
+	_, err := doJSONContext[struct{}](ctx, c, http.MethodDelete, url, nil)
+	return err
 }
 
 func (c *Client) GetNodeClass(clusterID, nodeClassName string) (*api.RebalanceNodeClass, error) {

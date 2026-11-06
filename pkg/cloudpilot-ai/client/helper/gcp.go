@@ -4,10 +4,9 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/samber/lo"
-
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/pkg/cloudpilot-ai/api"
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
+	"github.com/samber/lo"
 )
 
 type gcpNodeClassConfigurationClient interface {
@@ -17,9 +16,9 @@ type gcpNodeClassConfigurationClient interface {
 }
 
 type gcpNodePoolConfigurationClient interface {
+	nodePoolDeletionClient
 	ListNodePools(clusterID string) (api.RebalanceNodePoolList, error)
 	ApplyNodePool(clusterID string, rebalanceNodePool api.RebalanceNodePool) error
-	DeleteNodePool(clusterID, nodePoolName string) error
 }
 
 type GCENodeClassPlan struct {
@@ -29,6 +28,7 @@ type GCENodeClassPlan struct {
 }
 
 type GCENodePoolPlan struct {
+	ctx               context.Context
 	clusterUID        string
 	preparedNodePools []*api.GCENodePool
 	desiredNames      map[string]struct{}
@@ -187,6 +187,7 @@ func PrepareGCENodePoolConfiguration(ctx context.Context, client gcpNodePoolConf
 	}
 
 	return &GCENodePoolPlan{
+		ctx:               ctx,
 		clusterUID:        clusterUID,
 		preparedNodePools: preparedNodePools,
 		desiredNames:      nodePoolNames,
@@ -209,7 +210,7 @@ func ApplyGCENodePoolConfiguration(client gcpNodePoolConfigurationClient, plan *
 
 	for name := range plan.previousNames {
 		if _, stillDesired := plan.desiredNames[name]; !stillDesired {
-			if err := client.DeleteNodePool(plan.clusterUID, name); err != nil {
+			if err := deleteNodePoolAndWait(plan.ctx, client, plan.clusterUID, name); err != nil {
 				return err
 			}
 		}

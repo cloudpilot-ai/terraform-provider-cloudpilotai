@@ -12,12 +12,12 @@ import (
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
 	gcpproviderv1alpha1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter-provider-gcp/apis/v1alpha1"
 	gcpcorev1 "github.com/cloudpilot-ai/lib/pkg/gcp/karpenter/apis/v1"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/samber/lo"
 	corev1 "k8s.io/api/core/v1"
+	"k8s.io/apimachinery/pkg/api/resource"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
-
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 const (
@@ -87,11 +87,15 @@ type RebalanceNodeClassList struct {
 }
 
 type EC2NodePool struct {
-	Name                   string                  `json:"name"`
-	Enable                 bool                    `json:"enable"`
-	EnableImageAccelerator bool                    `json:"enableImageAccelerator"`
-	NodePoolAnnotation     map[string]string       `json:"nodePoolAnnotation"`
-	NodePoolSpec           *awscorev1.NodePoolSpec `json:"nodePoolSpec"`
+	JobNodePoolOptimization *JobNodePoolOptimization `json:"jobNodePoolOptimization,omitempty"`
+	NRISwapPolicy           *NRISwapPolicy           `json:"nriSwapPolicy,omitempty"`
+	rawJSON                 []byte                   `json:"-"`
+	Name                    string                   `json:"name"`
+	Enable                  bool                     `json:"enable"`
+	EnableImageAccelerator  bool                     `json:"enableImageAccelerator"`
+	NodePoolAnnotation      map[string]string        `json:"nodePoolAnnotation"`
+	NodePoolSpec            *awscorev1.NodePoolSpec  `json:"nodePoolSpec"`
+	originJSON              bool                     `json:"-"`
 }
 
 type RebalanceNodePoolList struct {
@@ -101,6 +105,9 @@ type RebalanceNodePoolList struct {
 }
 
 type EC2NodeClass struct {
+	MemoryExtension                *MemoryExtensionPolicy          `json:"memoryExtension,omitempty"`
+	originJSON                     bool                            `json:"-"`
+	rawJSON                        []byte                          `json:"-"`
 	Name                           string                          `json:"name"`
 	NodeClassAnnotation            map[string]string               `json:"nodeClassAnnotation"`
 	NodeClassSpec                  *awsproviderv1.EC2NodeClassSpec `json:"nodeClassSpec"`
@@ -120,11 +127,13 @@ type ECSNodeClass struct {
 }
 
 type GCENodePool struct {
-	Name                   string                  `json:"name"`
-	Enable                 bool                    `json:"enable"`
-	EnableImageAccelerator bool                    `json:"enableImageAccelerator"`
-	NodePoolSpec           *gcpcorev1.NodePoolSpec `json:"nodePoolSpec"`
-	rawJSON                []byte                  `json:"-"`
+	JobNodePoolOptimization *JobNodePoolOptimization `json:"jobNodePoolOptimization,omitempty"`
+	Name                    string                   `json:"name"`
+	Enable                  bool                     `json:"enable"`
+	EnableImageAccelerator  bool                     `json:"enableImageAccelerator"`
+	NodePoolSpec            *gcpcorev1.NodePoolSpec  `json:"nodePoolSpec"`
+	rawJSON                 []byte                   `json:"-"`
+	originJSON              bool                     `json:"-"`
 }
 
 type GCENodeClass struct {
@@ -132,6 +141,7 @@ type GCENodeClass struct {
 	EnableImageAccelerator         bool                                  `json:"enableImageAccelerator"`
 	EnableLocalSSDEphemeralStorage *bool                                 `json:"enableLocalSSDEphemeralStorage,omitempty"`
 	NodeClassSpec                  *gcpproviderv1alpha1.GCENodeClassSpec `json:"nodeClassSpec"`
+	originJSON                     bool                                  `json:"-"`
 	rawJSON                        []byte                                `json:"-"`
 }
 
@@ -142,6 +152,7 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 
 	var nodeClassModel EC2NodeClassModel
 	nodeClassModel.Name = types.StringValue(e.Name)
+	nodeClassModel.MemoryExtension = memoryExtensionModelFromAPI(ctx, e.MemoryExtension)
 	nodeClassModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
 	localSSDEphemeralStorageEnabled := e.EnableLocalSSDEphemeralStorage
 	if e.NodeClassSpec.InstanceStorePolicy != nil && *e.NodeClassSpec.InstanceStorePolicy == awsproviderv1.InstanceStorePolicyRAID0 {
@@ -154,74 +165,9 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 		nodeClassModel.Role = types.StringValue(e.NodeClassSpec.Role)
 	}
 
-	if len(e.NodeClassSpec.SubnetSelectorTerms) > 0 {
-		models := make([]SubnetSelectorTermModel, len(e.NodeClassSpec.SubnetSelectorTerms))
-		for i, t := range e.NodeClassSpec.SubnetSelectorTerms {
-			m := SubnetSelectorTermModel{
-				Tags: customfield.NullMap[types.String](ctx),
-				ID:   types.StringNull(),
-			}
-			if t.ID != "" {
-				m.ID = types.StringValue(t.ID)
-			}
-			if len(t.Tags) > 0 {
-				tagsMap := make(map[string]types.String, len(t.Tags))
-				for k, v := range t.Tags {
-					tagsMap[k] = types.StringValue(v)
-				}
-				subnetTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
-				if diags.HasError() {
-					return nil, fmt.Errorf("subnet_selector_terms: %v", diags)
-				}
-				m.Tags = subnetTags
-			}
-			models[i] = m
-		}
-		listVal, diags := customfield.NewObjectList(ctx, models)
-		if diags.HasError() {
-			return nil, fmt.Errorf("subnet_selector_terms: %v", diags)
-		}
-		nodeClassModel.SubnetSelectorTerms = listVal
-	} else {
-		nodeClassModel.SubnetSelectorTerms = customfield.NullObjectList[SubnetSelectorTermModel](ctx)
+	if err := e.readEC2ClassSelectors(ctx, &nodeClassModel); err != nil {
+		return nil, err
 	}
-
-	if len(e.NodeClassSpec.SecurityGroupSelectorTerms) > 0 {
-		models := make([]SecurityGroupSelectorTermModel, len(e.NodeClassSpec.SecurityGroupSelectorTerms))
-		for i, t := range e.NodeClassSpec.SecurityGroupSelectorTerms {
-			m := SecurityGroupSelectorTermModel{
-				Tags: customfield.NullMap[types.String](ctx),
-				ID:   types.StringNull(),
-				Name: types.StringNull(),
-			}
-			if t.ID != "" {
-				m.ID = types.StringValue(t.ID)
-			}
-			if t.Name != "" {
-				m.Name = types.StringValue(t.Name)
-			}
-			if len(t.Tags) > 0 {
-				tagsMap := make(map[string]types.String, len(t.Tags))
-				for k, v := range t.Tags {
-					tagsMap[k] = types.StringValue(v)
-				}
-				sgTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
-				if diags.HasError() {
-					return nil, fmt.Errorf("security_group_selector_terms: %v", diags)
-				}
-				m.Tags = sgTags
-			}
-			models[i] = m
-		}
-		listVal, diags := customfield.NewObjectList(ctx, models)
-		if diags.HasError() {
-			return nil, fmt.Errorf("security_group_selector_terms: %v", diags)
-		}
-		nodeClassModel.SecurityGroupSelectorTerms = listVal
-	} else {
-		nodeClassModel.SecurityGroupSelectorTerms = customfield.NullObjectList[SecurityGroupSelectorTermModel](ctx)
-	}
-
 	if e.NodeClassSpec.Tags != nil {
 		tagsMap := make(map[string]types.String)
 		for k, v := range e.NodeClassSpec.Tags {
@@ -259,19 +205,26 @@ func (e *EC2NodeClass) ToEC2NodeClassModel(ctx context.Context) (*EC2NodeClassMo
 	if e.NodeClassSpec.Kubelet != nil &&
 		e.NodeClassSpec.Kubelet.KubeReserved != nil {
 		if cpuStr, ok := e.NodeClassSpec.Kubelet.KubeReserved["cpu"]; ok {
-			var cpuMilliCore int64
-			_, err := fmt.Sscanf(cpuStr, "%dm", &cpuMilliCore)
+			cpuQuantity, err := resource.ParseQuantity(cpuStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse extra_cpu_allocation_mcore from kubeReserved cpu: %w", err)
+			}
+			cpuMilliCore := cpuQuantity.MilliValue()
+			if resource.NewMilliQuantity(cpuMilliCore, resource.DecimalSI).Cmp(cpuQuantity) != 0 {
+				return nil, fmt.Errorf("failed to parse extra_cpu_allocation_mcore from kubeReserved cpu %q: quantity must be exactly representable as an int64 number of millicores", cpuStr)
 			}
 			nodeClassModel.ExtraCPUAllocationMCore = types.Int64Value(cpuMilliCore)
 		}
 
 		if memoryStr, ok := e.NodeClassSpec.Kubelet.KubeReserved["memory"]; ok {
-			var memoryMiB int64
-			_, err := fmt.Sscanf(memoryStr, "%dMi", &memoryMiB)
+			memoryQuantity, err := resource.ParseQuantity(memoryStr)
 			if err != nil {
 				return nil, fmt.Errorf("failed to parse extra_memory_allocation_mib from kubeReserved memory: %w", err)
+			}
+			const bytesPerMiB int64 = 1024 * 1024
+			memoryMiB := memoryQuantity.Value() / bytesPerMiB
+			if resource.NewQuantity(memoryMiB*bytesPerMiB, resource.BinarySI).Cmp(memoryQuantity) != 0 {
+				return nil, fmt.Errorf("failed to parse extra_memory_allocation_mib from kubeReserved memory %q: quantity must be exactly representable as an int64 number of MiB", memoryStr)
 			}
 			nodeClassModel.ExtraMemoryAllocationMib = types.Int64Value(memoryMiB)
 		}
@@ -296,15 +249,15 @@ func blockDeviceMappingModelsFromAWS(ctx context.Context, in []*awsproviderv1.Bl
 			model.DeviceName = types.StringValue("")
 		}
 		if m.EBS != nil {
-			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(m.EBS))
+			model.EBS = customfield.NewObjectMust(ctx, blockDeviceModelFromAWS(ctx, m.EBS))
 		}
 		out = append(out, model)
 	}
 	return out
 }
 
-func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
-	model := &BlockDeviceModel{}
+func blockDeviceModelFromAWS(ctx context.Context, in *awsproviderv1.BlockDevice) *BlockDeviceModel {
+	model := &BlockDeviceModel{VolumeSizePolicy: customfield.NullObject[VolumeSizePolicyModel](ctx)}
 	if in.Encrypted != nil {
 		model.Encrypted = types.BoolValue(*in.Encrypted)
 	}
@@ -313,6 +266,12 @@ func blockDeviceModelFromAWS(in *awsproviderv1.BlockDevice) *BlockDeviceModel {
 	}
 	if in.VolumeType != nil {
 		model.VolumeType = types.StringValue(*in.VolumeType)
+	}
+	if in.VolumeSizePolicy != nil {
+		model.VolumeSizePolicy = customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+			PerVCPUGiB: types.Int64Value(int64(in.VolumeSizePolicy.PerVCPUGiB)),
+			MaxSizeGiB: types.Int64Value(int64(in.VolumeSizePolicy.MaxSizeGiB)),
+		})
 	}
 	return model
 }
@@ -328,6 +287,8 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	)
 
 	nodePoolModel.Name = types.StringValue(e.Name)
+	nodePoolModel.JobNodePoolOptimization = jobOptimizationModelFromAPI(context.Background(), e.JobNodePoolOptimization)
+	nodePoolModel.NRISwapPolicy = nriSwapModelFromAPI(context.Background(), e.NRISwapPolicy)
 	nodePoolModel.Enable = types.BoolValue(e.Enable)
 	nodePoolModel.EnableImageAccelerator = types.BoolValue(e.EnableImageAccelerator)
 	nodePoolModel.OriginNodePoolJSON = types.StringNull()
@@ -340,6 +301,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 		nodePoolModel.NodeClass = types.StringValue(e.NodePoolSpec.Template.Spec.NodeClassRef.Name)
 	}
 
+	nodePoolModel.DisruptionCooldown = durationModel(e.NodePoolSpec.Disruption.DisruptionCooldown)
 	nodePoolModel.EnableGPU = enableGPUToBool(e.NodePoolSpec.Template.Spec.Requirements)
 
 	nodePoolModel.ProvisionPriority = types.Int32Value(lo.FromPtr(e.NodePoolSpec.Weight))
@@ -347,7 +309,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	nodePoolModel.InstanceArch = requirementsToStrings(e.NodePoolSpec.Template.Spec.Requirements, corev1.LabelArchStable, corev1.NodeSelectorOpIn)
 	nodePoolModel.CapacityType = requirementsToStrings(e.NodePoolSpec.Template.Spec.Requirements, awscorev1.CapacityTypeLabelKey, corev1.NodeSelectorOpIn)
 	nodePoolModel.Zone = requirementsToStrings(e.NodePoolSpec.Template.Spec.Requirements, corev1.LabelTopologyZone, corev1.NodeSelectorOpIn)
-	nodePoolModel.InstanceCPUMAX, err = requirementsToInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpLt)
+	nodePoolModel.InstanceCPUMAX, err = requirementsToOptionalInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceCPU, corev1.NodeSelectorOpLt)
 	if err != nil {
 		return nil, err
 	}
@@ -355,7 +317,7 @@ func (e *EC2NodePool) ToEC2NodePoolModel() (*EC2NodePoolModel, error) {
 	if err != nil {
 		return nil, err
 	}
-	nodePoolModel.InstanceMemoryMAX, err = requirementsToInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpLt)
+	nodePoolModel.InstanceMemoryMAX, err = requirementsToOptionalInt64(e.NodePoolSpec.Template.Spec.Requirements, awsproviderv1.LabelInstanceMemory, corev1.NodeSelectorOpLt)
 	if err != nil {
 		return nil, err
 	}
@@ -433,26 +395,6 @@ func requirementsToStrings(requirements []awscorev1.NodeSelectorRequirementWithM
 	return &instanceFamilies
 }
 
-func requirementsToInt64(requirements []awscorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) (types.Int64, error) {
-	v, found := lo.Find(requirements, func(r awscorev1.NodeSelectorRequirementWithMinValues) bool {
-		if r.Key == key && r.Operator == operator {
-			return true
-		}
-
-		return false
-	})
-	if !found || len(v.Values) == 0 {
-		return types.Int64Value(0), nil
-	}
-
-	intValue, err := strconv.ParseInt(v.Values[0], 10, 64)
-	if err != nil {
-		return types.Int64Value(0), err
-	}
-
-	return types.Int64Value(intValue), nil
-}
-
 func requirementsToOptionalInt64(requirements []awscorev1.NodeSelectorRequirementWithMinValues, key string, operator corev1.NodeSelectorOperator) (types.Int64, error) {
 	v, found := lo.Find(requirements, func(r awscorev1.NodeSelectorRequirementWithMinValues) bool {
 		if r.Key == key && r.Operator == operator {
@@ -483,4 +425,76 @@ func enableGPUToBool(requirements []awscorev1.NodeSelectorRequirementWithMinValu
 	})
 
 	return lo.Ternary(found, types.BoolValue(true), types.BoolValue(false))
+}
+
+func (e *EC2NodeClass) readEC2ClassSelectors(ctx context.Context, nodeClassModel *EC2NodeClassModel) error {
+	if len(e.NodeClassSpec.SubnetSelectorTerms) > 0 {
+		models := make([]SubnetSelectorTermModel, len(e.NodeClassSpec.SubnetSelectorTerms))
+		for i, t := range e.NodeClassSpec.SubnetSelectorTerms {
+			m := SubnetSelectorTermModel{
+				Tags: customfield.NullMap[types.String](ctx),
+				ID:   types.StringNull(),
+			}
+			if t.ID != "" {
+				m.ID = types.StringValue(t.ID)
+			}
+			if len(t.Tags) > 0 {
+				tagsMap := make(map[string]types.String, len(t.Tags))
+				for k, v := range t.Tags {
+					tagsMap[k] = types.StringValue(v)
+				}
+				subnetTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
+				if diags.HasError() {
+					return fmt.Errorf("subnet_selector_terms: %v", diags)
+				}
+				m.Tags = subnetTags
+			}
+			models[i] = m
+		}
+		listVal, diags := customfield.NewObjectList(ctx, models)
+		if diags.HasError() {
+			return fmt.Errorf("subnet_selector_terms: %v", diags)
+		}
+		nodeClassModel.SubnetSelectorTerms = listVal
+	} else {
+		nodeClassModel.SubnetSelectorTerms = customfield.NullObjectList[SubnetSelectorTermModel](ctx)
+	}
+
+	if len(e.NodeClassSpec.SecurityGroupSelectorTerms) > 0 {
+		models := make([]SecurityGroupSelectorTermModel, len(e.NodeClassSpec.SecurityGroupSelectorTerms))
+		for i, t := range e.NodeClassSpec.SecurityGroupSelectorTerms {
+			m := SecurityGroupSelectorTermModel{
+				Tags: customfield.NullMap[types.String](ctx),
+				ID:   types.StringNull(),
+				Name: types.StringNull(),
+			}
+			if t.ID != "" {
+				m.ID = types.StringValue(t.ID)
+			}
+			if t.Name != "" {
+				m.Name = types.StringValue(t.Name)
+			}
+			if len(t.Tags) > 0 {
+				tagsMap := make(map[string]types.String, len(t.Tags))
+				for k, v := range t.Tags {
+					tagsMap[k] = types.StringValue(v)
+				}
+				sgTags, diags := customfield.NewMap[types.String](ctx, tagsMap)
+				if diags.HasError() {
+					return fmt.Errorf("security_group_selector_terms: %v", diags)
+				}
+				m.Tags = sgTags
+			}
+			models[i] = m
+		}
+		listVal, diags := customfield.NewObjectList(ctx, models)
+		if diags.HasError() {
+			return fmt.Errorf("security_group_selector_terms: %v", diags)
+		}
+		nodeClassModel.SecurityGroupSelectorTerms = listVal
+	} else {
+		nodeClassModel.SecurityGroupSelectorTerms = customfield.NullObjectList[SecurityGroupSelectorTermModel](ctx)
+	}
+
+	return nil
 }

@@ -8,11 +8,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsproviderv1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter-provider-aws/apis/v1"
 	awscorev1 "github.com/cloudpilot-ai/lib/pkg/aws/karpenter/apis/v1"
+	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/types"
 	corev1 "k8s.io/api/core/v1"
 	"k8s.io/apimachinery/pkg/api/resource"
-
-	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 )
 
 func TestEC2NodeClassToModelLeavesExtraAllocationsNullWhenKubeReservedKeysMissing(t *testing.T) {
@@ -180,6 +179,10 @@ func TestEC2NodeClassModelAppliesFrontendFields(t *testing.T) {
 			RootVolume: types.BoolValue(true),
 			EBS: customfield.NewObjectMust(ctx, &BlockDeviceModel{
 				VolumeSize: types.StringValue("80Gi"),
+				VolumeSizePolicy: customfield.NewObjectMust(ctx, &VolumeSizePolicyModel{
+					PerVCPUGiB: types.Int64Value(10),
+					MaxSizeGiB: types.Int64Value(512),
+				}),
 				VolumeType: types.StringValue("gp3"),
 				Encrypted:  types.BoolValue(true),
 			}),
@@ -209,6 +212,9 @@ func TestEC2NodeClassModelAppliesFrontendFields(t *testing.T) {
 	if ebs.Encrypted == nil || !*ebs.Encrypted {
 		t.Fatalf("EBS encrypted = %#v", ebs)
 	}
+	if ebs.VolumeSizePolicy == nil || ebs.VolumeSizePolicy.PerVCPUGiB != 10 || ebs.VolumeSizePolicy.MaxSizeGiB != 512 {
+		t.Fatalf("EBS volume size policy = %#v", ebs.VolumeSizePolicy)
+	}
 }
 
 func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
@@ -229,6 +235,10 @@ func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
 					Encrypted:  aws.Bool(true),
 					VolumeSize: &volumeSize,
 					VolumeType: &volumeType,
+					VolumeSizePolicy: &awsproviderv1.VolumeSizePolicy{
+						PerVCPUGiB: 8,
+						MaxSizeGiB: 256,
+					},
 				},
 			}},
 		},
@@ -257,6 +267,10 @@ func TestEC2NodeClassToModelReadsFrontendFields(t *testing.T) {
 	}
 	if ebs == nil || !ebs.Encrypted.ValueBool() {
 		t.Fatalf("BlockDeviceMappings EBS encrypted = %#v", ebs)
+	}
+	policy, policyDiags := ebs.VolumeSizePolicy.Value(ctx)
+	if policyDiags.HasError() || policy == nil || policy.PerVCPUGiB.ValueInt64() != 8 || policy.MaxSizeGiB.ValueInt64() != 256 {
+		t.Fatalf("BlockDeviceMappings EBS volume size policy = %#v, diagnostics = %v", policy, policyDiags)
 	}
 }
 
@@ -309,7 +323,7 @@ func TestEC2NodeClassModelPreservesHiddenBlockDeviceFields(t *testing.T) {
 	}
 }
 
-func TestEC2NodeClassModelDoesNotPreserveExposedEBSFieldsWhenOmitted(t *testing.T) {
+func TestEC2NodeClassModelPreservesUnmanagedEBSFieldsWhenOmitted(t *testing.T) {
 	ctx := context.Background()
 	deviceName := "/dev/xvda"
 	existingVolumeSize := resource.MustParse("40Gi")
@@ -352,11 +366,11 @@ func TestEC2NodeClassModelDoesNotPreserveExposedEBSFieldsWhenOmitted(t *testing.
 	if ebs.VolumeSize == nil || ebs.VolumeSize.String() != modelVolumeSize {
 		t.Fatalf("EBS volume size = %#v", ebs.VolumeSize)
 	}
-	if ebs.Encrypted != nil {
-		t.Fatalf("EBS encrypted should remain nil when omitted from config, got %#v", ebs.Encrypted)
+	if ebs.Encrypted == nil || !*ebs.Encrypted {
+		t.Fatalf("unmanaged EBS encrypted value lost: %#v", ebs.Encrypted)
 	}
-	if ebs.VolumeType != nil {
-		t.Fatalf("EBS volume type should remain nil when omitted from config, got %#v", ebs.VolumeType)
+	if ebs.VolumeType == nil || *ebs.VolumeType != existingVolumeType {
+		t.Fatalf("unmanaged EBS volume type lost: %#v", ebs.VolumeType)
 	}
 	if ebs.IOPS == nil || *ebs.IOPS != 3000 {
 		t.Fatalf("EBS IOPS = %#v", ebs)
