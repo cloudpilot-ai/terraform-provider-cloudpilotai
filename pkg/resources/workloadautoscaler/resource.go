@@ -14,6 +14,7 @@ import (
 	"github.com/cloudpilot-ai/terraform-provider-cloudpilotai/third_party/cloudflare/customfield"
 	"github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"github.com/hashicorp/terraform-plugin-log/tflog"
 	"k8s.io/apimachinery/pkg/util/wait"
 )
@@ -287,6 +288,10 @@ func (w *WorkloadAutoscaler) Read(ctx context.Context, req resource.ReadRequest,
 
 	clusterID := data.ClusterID.ValueString()
 
+	if err := w.hydrateImportedGCPProject(ctx, &data, isImport); err != nil {
+		resp.Diagnostics.AddWarning("skipped GKE project discovery", err.Error())
+	}
+
 	if conf, err := w.client.GetWAConfiguration(clusterID); err != nil {
 		tflog.Warn(ctx, fmt.Sprintf("failed to read Workload Autoscaler configuration: %v", err))
 	} else {
@@ -520,6 +525,39 @@ func (w *WorkloadAutoscaler) deleteTrackedRecommendationPolicies(ctx context.Con
 	}
 
 	return deferredRecommendationPolicies, true
+}
+
+// hydrateImportedGCPProject records portable access metadata for generated
+// configuration without creating a kubeconfig or taking ownership of settings.
+func (w *WorkloadAutoscaler) hydrateImportedGCPProject(ctx context.Context, data *WorkloadAutoscalerModel, isImport bool) error {
+	if !isImport || !data.GCPProjectID.IsNull() {
+		return nil
+	}
+	clusterID := data.ClusterID.ValueString()
+	summary, err := w.client.GetCluster(clusterID)
+	if err != nil {
+		return err
+	}
+	if summary == nil || summary.CloudProvider != api.CloudProviderGCP {
+		return nil
+	}
+
+	projectID := ""
+	if nodeClasses, err := w.client.ListNodeClasses(clusterID); err == nil {
+		if candidates := gkeaccess.ProjectIDCandidatesFromRemoteNodeClasses(nodeClasses); len(candidates) > 0 {
+			projectID = candidates[0]
+		}
+	}
+	if projectID == "" {
+		projectID, err = gkeaccess.RunGcloudCurrentProject(ctx)
+		if err != nil {
+			return err
+		}
+	}
+	if projectID != "" {
+		data.GCPProjectID = types.StringValue(projectID)
+	}
+	return nil
 }
 
 func (w *WorkloadAutoscaler) fillMissingParameters(ctx context.Context, data *WorkloadAutoscalerModel, pathFromState bool) (string, error) {
